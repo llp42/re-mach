@@ -1,0 +1,29 @@
+[package]
+name = "re-mach"
+version = "0.1.0"
+edition = "2024"
+authors = ["Leonardo Lopes Pereira <leonardolopespereira@outlook.com>"]
+license = "GPL-2.0-or-later"
+description = "A reimplementation of the Mach microkernel in Rust"
+repository = "https://github.com/llp42/re-mach"
+publish = false
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+x86_64 = { git = "https://github.com/llp42/x86_64", branch = "master" }
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true

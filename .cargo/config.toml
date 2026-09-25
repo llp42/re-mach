@@ -1,0 +1,5 @@
+# Build as a UEFI application: target/x86_64-unknown-uefi/<profile>/kernel.efi.
+# Official prebuilt target; no overrides needed.
+
+[build]
+target = "x86_64-unknown-uefi"

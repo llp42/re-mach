@@ -1,0 +1,15 @@
+[tasks.esp]
+description = "Build the kernel and lay it out as an EFI system partition directory"
+run = [
+    "cargo build",
+    "mkdir -p target/esp/EFI/BOOT",
+    "cp target/x86_64-unknown-uefi/debug/kernel.efi target/esp/EFI/BOOT/BOOTX64.EFI",
+]
+
+[tasks.qemu]
+description = "Build the ESP and boot it in QEMU under UEFI (OVMF), with serial output on the console"
+depends = ["esp"]
+run = [
+    "cp /usr/share/edk2/ovmf/OVMF_VARS.fd target/OVMF_VARS.fd",
+    "qemu-system-x86_64 -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd -drive if=pflash,format=raw,file=target/OVMF_VARS.fd -drive format=raw,file=fat:rw:target/esp -display none -serial stdio -no-reboot -no-shutdown",
+]
