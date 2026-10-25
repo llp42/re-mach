@@ -20,5 +20,8 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 
+[dependencies]
+bitflags = "2.13.2"
+
 [build-dependencies]
 cbuild = { path = "tools/cbuild" }
