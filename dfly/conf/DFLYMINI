@@ -1,0 +1,12 @@
+#
+# DFLYMINI -- smallest bootable pc64 kernel: no drivers, serial console only.
+#
+platform	pc64
+machine		x86_64
+machine_arch	x86_64
+cpu		HAMMER_CPU
+ident		DFLYMINI
+maxusers	0
+
+device		isa
+device		sio0	at isa? port IO_COM1 flags 0x10 irq 4

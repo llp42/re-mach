@@ -1,29 +1,13 @@
-[tasks.image]
-description = "Build the kernel and package it into a bootable FAT EFI system image"
-run = [
-  "cargo build",
-  "mkdir -p target/esp/EFI/BOOT",
-  "cp target/x86_64-unknown-uefi/debug/kernel.efi target/esp/EFI/BOOT/BOOTX64.EFI",
-  "rm -f target/remach.img",
-  "mformat -i target/remach.img -C -T 65536 ::",
-  "mmd -i target/remach.img ::/EFI ::/EFI/BOOT",
-  "mcopy -i target/remach.img target/esp/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI",
-]
-
 [tasks.qemu]
-description = "Build the EFI image and boot it in QEMU via OVMF in a graphical window, with serial output on the console"
-depends = ["image"]
+description = "Build the kernel and init program and boot them in QEMU through Multiboot, with serial output on the console"
 run = """
-OVMF_DIR=/usr/share/OVMF
-[ -f "$OVMF_DIR/OVMF_CODE.fd" ] || OVMF_DIR=/usr/share/edk2/ovmf
-cp "$OVMF_DIR/OVMF_VARS.fd" target/OVMF_VARS.fd
+cargo build
+! readelf -rW target/x86_64-unknown-none/debug/kernel | grep -q R_X86_64_
 qemu-system-x86_64 \
     -machine q35 \
-    -drive if=pflash,format=raw,readonly=on,file="$OVMF_DIR/OVMF_CODE.fd" \
-    -drive if=pflash,format=raw,file=target/OVMF_VARS.fd \
-    -drive id=esp,format=raw,file=target/remach.img,if=none \
-    -device qemu-xhci,id=xhci \
-    -device usb-storage,bus=xhci.0,drive=esp \
+    -m 1G \
+    -kernel target/x86_64-unknown-none/debug/kernel \
+    -initrd target/tests/x86_64-unknown-none/debug/init \
     -net none \
     -display gtk -serial stdio -no-reboot -no-shutdown
 """

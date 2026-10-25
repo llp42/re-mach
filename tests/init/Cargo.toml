@@ -1,0 +1,17 @@
+[package]
+name = "init"
+version = "0.1.0"
+edition = "2024"
+authors = ["Leonardo Lopes Pereira <leonardolopespereira@outlook.com>"]
+license = "MIT"
+description = "First user-space program: greets on the console as the init process"
+publish = false
+
+[[bin]]
+name = "init"
+path = "src/main.rs"
+test = false
+bench = false
+
+# Built on its own by the root build script, for another target.
+[workspace]

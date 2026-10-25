@@ -1,28 +1,39 @@
 # Validation milestones
 
-The current milestone is to compile and boot without errors. Establish a
-working kernel entry and initialization path before requiring user-space
-execution or GNU Mach compatibility tests.
+Milestones set the validation scope, refining
+[ADR 0003](0003-gnu-mach-abi.md). The current milestone is to compile, boot
+without errors, and run a first user-space program: a working kernel entry,
+initialization path, and user-mode execution come before GNU Mach
+compatibility tests are required.
 
-For Rust changes, run `cargo fmt --check`, `cargo build`, and
-`cargo build --release` with the repository toolchain. For boot or hardware
-initialization changes, also boot both profiles in QEMU: verify progress
-through firmware exit and kernel initialization, reaching the intended idle
-state without panic, exception, or unexpected reset. The interactive debug
-boot task is `mise run qemu`; an equivalent headless invocation may be used
-for automated validation. An intentional idle loop is not a boot failure.
-Capture the success marker and diagnostics specified in
-[ADR 0013](0013-boot-diagnostics.md). Report commands, observed results, and
+Validate changes as follows; report the commands, observed results, and
 checks that could not run.
 
-The first compatibility milestone is to pass the existing GNU Mach tests.
-When integrating them, record the upstream revision, test inventory, and
-execution procedure; report unsupported or skipped tests explicitly.
-This establishes a reproducible baseline without inventing a replacement
-suite as the initial compatibility target.
+- Rust changes: `cargo fmt --check`, `cargo build`, and
+  `cargo build --release` with the repository toolchain. The root build
+  also builds the `tests/init/` program and refuses it with dynamic
+  relocations; the emulator tasks refuse a kernel with them
+  ([ADR 0009](0009-build-and-assembly.md)).
+- `tools/cbuild/` or `tests/init/` changes: also `cargo fmt --check` with
+  their `--manifest-path`.
+- Boot, hardware initialization, imported C, kernel build, or user-program
+  changes: also boot both profiles in QEMU through Multiboot (`-kernel`,
+  with the init program as `-initrd`), capturing the markers and
+  diagnostics of [ADR 0013](0013-boot-diagnostics.md). Verify progress
+  through the boot code, kernel entry, kernel initialization, and the init
+  program's output, without a trap, unexpected reset, or panic other than
+  the intended end state: the init program exits after its output, and the
+  kernel reports `init died (signal 0, exit 0)` and panics with
+  `Going nowhere without my init!`.
+- `mise run qemu` is the interactive debug boot task; automated validation
+  may use an equivalent headless invocation.
 
-Later, execute user-space programs to validate the public ABI in use.
-Layout checks and focused tests support this work but do not replace program
-execution. Passing the boot milestone alone makes no ABI compatibility claim.
+The first compatibility milestone is to pass the existing GNU Mach tests, a
+reproducible baseline instead of a newly invented suite. When integrating
+them, record the upstream revision, test inventory, and execution
+procedure, and report unsupported or skipped tests explicitly.
 
-This refines the validation scope of [ADR 0003](0003-gnu-mach-abi.md).
+Later, execute user-space programs to validate the public ABI in use;
+layout checks and focused tests support but do not replace program
+execution. Passing the boot milestone alone makes no ABI compatibility
+claim.

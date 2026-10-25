@@ -1,18 +1,19 @@
 # Reviewable changes
 
-Keep changes small and focused on one behavior or concern. Separating
-mechanical edits from functional changes makes review and regression
-diagnosis more reliable.
+Keep each change small and focused on one behavior or concern, and commit
+mechanical edits, such as formatting and unrelated renames, separately from
+behavior changes. This keeps review and regression diagnosis reliable.
+[ADR 0006](0006-validation-milestones.md) defines the validation a change
+requires.
 
-- Commit formatting and unrelated renames separately from behavior changes.
-- Explain the problem, resulting behavior, and validation in commit messages
-  or change descriptions; include commands, outcomes, and checks not run.
+- Explain the problem, resulting behavior, and validation in the commit
+  message or change description, including commands, outcomes, and checks
+  not run.
 - Address new compiler warnings. Keep necessary lint suppressions local and
-  explain their reason.
+  explain why.
 - Review unsafe operations, boot boundaries, and public ABI changes against
-  their contracts. Preserve source provenance when adapting existing code.
+  their contracts.
+- Preserve source provenance when adapting existing code
+  ([ADR 0011](0011-licensing-and-provenance.md)).
 - Update affected ADRs in the same change, following the process in the
   [index](README.md).
-
-Validation requirements are defined in
-[ADR 0006](0006-validation-milestones.md).

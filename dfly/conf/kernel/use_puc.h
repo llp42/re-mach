@@ -1,0 +1,1 @@
+#define NPUC 0

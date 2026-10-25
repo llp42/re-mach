@@ -1,12 +1,18 @@
-# Cargo configuration for building the re-mach kernel as a freestanding
-# (no_std, no_main) UEFI application for the official x86_64-unknown-uefi
-# target -- prebuilt by upstream (Tier 2), so no custom target-spec JSON and
-# no -Z build-std needed.
+# The kernel is an ELF executable for the official x86_64-unknown-none
+# target, prebuilt by upstream, so no custom target-spec JSON and no
+# -Z build-std. rust-lld links the Rust crate with the imported C under the
+# kernel's linker script (build.rs). A Multiboot loader loads the file and
+# enters it in 32-bit protected mode. Architecture and boot scope:
+# adrs/README.md.
 #
-# The kernel is a PE/COFF EFI application: UEFI firmware loads and relocates
-# it, then calls efi_main in 64-bit long mode. No linker script, no
-# intermediate bootloader, and no BIOS trampoline are involved in this
-# initial x86_64/UEFI target. Architecture and boot scope: adrs/README.md.
-
+# The target already uses the kernel code model, no red zone and soft
+# float; these flags match the rest of the C code generation.
 [build]
-target = "x86_64-unknown-uefi"
+target = "x86_64-unknown-none"
+
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "relocation-model=static",
+    "-C", "relro-level=off",
+    "-C", "force-frame-pointers=yes",
+]

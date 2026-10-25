@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira
-//! Kernel handoff data and boot-environment adapters.
+//! Translation of the boot loader's information into the kernel handoff.
 
-pub mod info;
-#[cfg(target_os = "uefi")]
-pub mod uefi;
+pub mod modinfo;
+pub mod multiboot;

@@ -19,7 +19,6 @@ panic = "abort"
 
 [profile.release]
 panic = "abort"
-lto = true
 
-[dependencies]
-uefi = { version = "0.41", default-features = false }
+[build-dependencies]
+cbuild = { path = "tools/cbuild" }

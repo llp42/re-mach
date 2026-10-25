@@ -1,0 +1,6 @@
+repository: https://github.com/DragonFlyBSD/DragonFlyBSD.git
+commit: 166068f391a717c3719fe5f88f76f7aeacfbb40e
+date: 2026-10-12T17:02:33+08:00
+imported: sys/ COPYRIGHT (pruned to the files the DFLYMINI kernel build reads)
+generated: conf/DFLYMINI, and conf/kernel/ and files.txt from config(8) on conf/DFLYMINI
+changed: sys/kern/tty_cons.c (console writes with no terminal go to rust_console_write)

@@ -1,0 +1,8 @@
+[package]
+name = "cbuild"
+description = "Host-side C build support for the kernel build scripts"
+version = "0.1.0"
+edition = "2024"
+authors = ["Leonardo Lopes Pereira <leonardolopespereira@outlook.com>"]
+license = "BSD-3-Clause"
+publish = false
