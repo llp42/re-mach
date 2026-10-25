@@ -4,6 +4,7 @@
 
 pub mod cpu;
 pub mod entry;
+mod memory_map;
 pub mod serial;
 
 /// ELF machine of the kernel and of user executables.

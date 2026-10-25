@@ -1976,59 +1976,7 @@ u_int32_t smapsize;
 #define PHYSMAP_HANDWAVE	(vm_paddr_t)(2 * 1024 * 1024)
 #define PHYSMAP_HANDWAVE_MASK	(PHYSMAP_HANDWAVE - 1)
 
-static void
-add_smap_entries(int *physmap_idx)
-{
-	int i;
-
-	smapsize = *((u_int32_t *)smapbase - 1);
-	smapend = (struct bios_smap *)((uintptr_t)smapbase + smapsize);
-
-	for (smap = smapbase; smap < smapend; smap++) {
-		if (boothowto & RB_VERBOSE)
-			kprintf("SMAP type=%02x base=%016lx len=%016lx\n",
-			    smap->type, smap->base, smap->length);
-
-		if (smap->type != SMAP_TYPE_MEMORY)
-			continue;
-
-		if (smap->length == 0)
-			continue;
-
-		for (i = 0; i <= *physmap_idx; i += 2) {
-			if (smap->base < physmap[i + 1]) {
-				if (boothowto & RB_VERBOSE) {
-					kprintf("Overlapping or non-monotonic "
-						"memory region, ignoring "
-						"second region\n");
-				}
-				break;
-			}
-		}
-		if (i <= *physmap_idx)
-			continue;
-
-		Realmem += smap->length;
-
-		/*
-		 * NOTE: This little bit of code initially expands
-		 *	 physmap[1] as well as later entries.
-		 */
-		if (smap->base == physmap[*physmap_idx + 1]) {
-			physmap[*physmap_idx + 1] += smap->length;
-			continue;
-		}
-
-		*physmap_idx += 2;
-		if (*physmap_idx == PHYSMAP_SIZE) {
-			kprintf("Too many segments in the physical "
-				"address map, giving up\n");
-			break;
-		}
-		physmap[*physmap_idx] = smap->base;
-		physmap[*physmap_idx + 1] = smap->base + smap->length;
-	}
-}
+void add_smap_entries(int *physmap_idx);
 
 static void
 add_efi_map_entries(int *physmap_idx)
