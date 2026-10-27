@@ -62,7 +62,14 @@ extern "efiapi" fn efi_main(
     arch::init(memory_map)
 }
 
+/// Prints `panic: <message> at <location>` on the serial port, as dfly's
+/// `panic`, and halts.
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
+    let _ = write!(arch::Serial, "panic: {}", info.message());
+    if let Some(location) = info.location() {
+        let _ = write!(arch::Serial, " at {location}");
+    }
+    let _ = arch::Serial.write_str("\r\n");
     arch::halt()
 }

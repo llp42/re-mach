@@ -24,7 +24,7 @@ use core::fmt::Write;
 use crate::smp::PER_CPU_0;
 use crate::uefi::{self, MemoryMap};
 pub use per_cpu::PerCpu;
-use serial::Serial;
+pub use serial::Serial;
 use stack::Stack;
 
 /// Bytes per page.
