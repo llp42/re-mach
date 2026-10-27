@@ -18,6 +18,8 @@ pub struct PseudoDescriptor {
 pub const IA32_EFER: u32 = 0xc000_0080;
 /// GS base MSR.
 pub const IA32_GS_BASE: u32 = 0xc000_0101;
+/// Page attribute table MSR.
+pub const IA32_PAT: u32 = 0x277;
 
 /// Loads the GDT, then DS, ES, FS, GS and SS with kernel data and CS with
 /// kernel code, as dfly's `lgdt` does.
@@ -110,6 +112,29 @@ pub unsafe fn write_msr(msr: u32, value: u64) {
     }
 }
 
+/// Reads CR0.
+pub fn read_cr0() -> u64 {
+    let value;
+    // SAFETY: reading CR0 has no side effects.
+    unsafe {
+        asm!("mov %cr0, {}", out(reg) value, options(nomem, nostack, preserves_flags, att_syntax));
+    }
+    value
+}
+
+/// Writes CR0.
+///
+/// # Safety
+///
+/// CR0 controls protection, paging and caching; a wrong value faults or
+/// changes behavior anywhere.
+pub unsafe fn write_cr0(value: u64) {
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        asm!("mov {}, %cr0", in(reg) value, options(nostack, preserves_flags, att_syntax));
+    }
+}
+
 /// Reads CR4.
 pub fn read_cr4() -> u64 {
     let value;
@@ -133,6 +158,16 @@ pub unsafe fn write_cr4(value: u64) {
     }
 }
 
+/// Reads CR3: the PML4's physical address and its flags.
+pub fn read_cr3() -> u64 {
+    let value;
+    // SAFETY: reading CR3 has no side effects.
+    unsafe {
+        asm!("mov %cr3, {}", out(reg) value, options(nomem, nostack, preserves_flags, att_syntax));
+    }
+    value
+}
+
 /// Writes CR3, switching page tables.
 ///
 /// # Safety
@@ -154,4 +189,13 @@ pub fn read_cr2() -> u64 {
         asm!("mov %cr2, {}", out(reg) value, options(nomem, nostack, preserves_flags, att_syntax));
     }
     value
+}
+
+/// Writes back every modified cache line to memory and invalidates the
+/// caches (`wbinvd`).
+pub fn write_back_and_invalidate_cache() {
+    // SAFETY: memory keeps its contents; only the caches empty.
+    unsafe {
+        asm!("wbinvd", options(nostack, preserves_flags, att_syntax));
+    }
 }

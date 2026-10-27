@@ -9,6 +9,7 @@ mod icu;
 mod idt;
 mod instructions;
 mod page_table;
+mod pat;
 mod per_cpu;
 mod pmap;
 mod port;

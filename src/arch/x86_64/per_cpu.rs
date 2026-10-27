@@ -8,6 +8,7 @@ use super::cpu::{self, Cpuid};
 use super::gdt::{self, Gdt};
 use super::idt::{self, Idt};
 use super::instructions;
+use super::pat;
 use super::stack::Stack;
 use super::tss::{self, IST_STACK_SIZE, Tss};
 use crate::smp;
@@ -58,4 +59,5 @@ pub fn init(per_cpu: &'static smp::PerCpu) {
     idt::init(per_cpu);
     cpu::identify(per_cpu);
     cpu::initialize(per_cpu);
+    pat::init(per_cpu);
 }
