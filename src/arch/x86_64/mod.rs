@@ -3,8 +3,10 @@
 //! x86_64 machine-dependent code.
 
 mod gdt;
+mod idt;
 mod percpu;
 mod serial;
+mod trap;
 
 use core::arch::asm;
 use core::fmt::Write;
@@ -23,6 +25,7 @@ pub fn init(memory_map: MemoryMap) -> ! {
     gdt::init(&PER_CPU_0);
     // SAFETY: nothing reads GS yet.
     unsafe { GsBase::write(VirtAddr::from_ptr(&PER_CPU_0)) };
+    idt::init(&PER_CPU_0);
     for area in memory_map {
         let _ = write!(
             Serial,
