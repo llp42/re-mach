@@ -20,6 +20,12 @@ pub use status::Status;
 pub use system_table::SystemTable;
 pub use table_header::TableHeader;
 
+/// `EfiBootServicesCode`: free once nothing uses the firmware's code.
+pub const BOOT_SERVICES_CODE: u32 = 3;
+
+/// `EfiBootServicesData`: free once nothing uses the firmware's data.
+pub const BOOT_SERVICES_DATA: u32 = 4;
+
 /// `EfiConventionalMemory`: free once boot services exit.
 pub const CONVENTIONAL_MEMORY: u32 = 7;
 

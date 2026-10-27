@@ -8,7 +8,9 @@ mod gdt;
 mod icu;
 mod idt;
 mod instructions;
+mod page_table;
 mod per_cpu;
+mod pmap;
 mod port;
 mod serial;
 mod stack;
@@ -54,7 +56,6 @@ extern "sysv64" fn init_on_boot_stack(memory_map: *mut MemoryMap<'static>) -> ! 
     // SAFETY: `init` handed its map over and never runs again.
     let memory_map = unsafe { memory_map.read() };
     serial::init();
-    per_cpu::init(&PER_CPU_0);
     icu::init();
     for area in memory_map.clone() {
         let _ = write!(
@@ -66,6 +67,23 @@ extern "sysv64" fn init_on_boot_stack(memory_map: *mut MemoryMap<'static>) -> ! 
         );
     }
     boot_memory::init(memory_map);
+    let md = &PER_CPU_0.md;
+    let guards = [
+        BOOT_STACK.guard(),
+        md.double_fault_stack.guard(),
+        md.debug_stack.guard(),
+        md.machine_check_stack.guard(),
+    ];
+    // SAFETY: once, on the boot CPU, identity-mapped, with `boot_memory`
+    // ready; `init_at_kernel_base` takes over.
+    unsafe { pmap::bootstrap(init_at_kernel_base, &guards) }
+}
+
+/// The rest of the boot, at `KERNEL_BASE`.
+extern "sysv64" fn init_at_kernel_base() -> ! {
+    per_cpu::init(&PER_CPU_0);
+    pmap::remove_identity();
+    boot_memory::release_boot_services();
     halt();
 }
 

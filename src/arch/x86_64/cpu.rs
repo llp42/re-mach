@@ -16,14 +16,14 @@ const LEAF_1_EDX_FXSR: u32 = 1 << 24;
 /// CPUID.01H:EDX.SSE.
 const LEAF_1_EDX_SSE: u32 = 1 << 25;
 /// CPUID.80000001H:EDX.NX: no-execute pages.
-const EXTENDED_EDX_NX: u32 = 1 << 20;
+pub(super) const EXTENDED_EDX_NX: u32 = 1 << 20;
 
 /// CR4.OSFXSR: the OS saves SSE state with `fxsave`.
 const CR4_OSFXSR: u64 = 1 << 9;
 /// CR4.OSXMMEXCPT: the OS handles SIMD exceptions (#XM).
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
 /// `IA32_EFER.NXE`: no-execute pages.
-const EFER_NXE: u64 = 1 << 11;
+pub(super) const EFER_NXE: u64 = 1 << 11;
 
 /// The CPUID results the kernel keeps; atomic, so they're set through `&self`.
 pub struct Cpuid {

@@ -6,6 +6,7 @@
 #![no_main]
 
 mod arch;
+mod pe;
 mod smp;
 mod uefi;
 

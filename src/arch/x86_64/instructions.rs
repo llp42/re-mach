@@ -133,6 +133,19 @@ pub unsafe fn write_cr4(value: u64) {
     }
 }
 
+/// Writes CR3, switching page tables.
+///
+/// # Safety
+///
+/// `value` is the physical address of a PML4 that maps the running code, its
+/// stack and the data it uses.
+pub unsafe fn write_cr3(value: u64) {
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        asm!("mov {}, %cr3", in(reg) value, options(nostack, preserves_flags, att_syntax));
+    }
+}
+
 /// Reads CR2, the last page-fault address.
 pub fn read_cr2() -> u64 {
     let value;
