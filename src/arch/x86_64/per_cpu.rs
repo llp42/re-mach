@@ -8,6 +8,7 @@ use super::cpu::{self, Cpuid};
 use super::gdt::{self, Gdt};
 use super::idt::{self, Idt};
 use super::instructions;
+use super::tss::{self, Stack, Tss};
 use crate::smp;
 
 /// One CPU's machine-dependent state.
@@ -18,6 +19,14 @@ pub struct PerCpu {
     pub(super) idt: Idt,
     /// This CPU's CPUID results.
     pub(super) cpuid: Cpuid,
+    /// This CPU's TSS.
+    pub(super) tss: Tss,
+    /// IST stack for NMI and #DF.
+    pub(super) double_fault_stack: Stack,
+    /// IST stack for #DB.
+    pub(super) debug_stack: Stack,
+    /// IST stack for #MC.
+    pub(super) machine_check_stack: Stack,
 }
 
 impl PerCpu {
@@ -26,6 +35,10 @@ impl PerCpu {
             gdt: Gdt::new(),
             idt: Idt::new(),
             cpuid: Cpuid::new(),
+            tss: Tss::new(),
+            double_fault_stack: Stack::new(),
+            debug_stack: Stack::new(),
+            machine_check_stack: Stack::new(),
         }
     }
 }
@@ -40,6 +53,7 @@ pub fn init(per_cpu: &'static smp::PerCpu) {
             u64::try_from(ptr::from_ref(per_cpu).expose_provenance()).unwrap(),
         );
     }
+    tss::init(per_cpu);
     idt::init(per_cpu);
     cpu::identify(per_cpu);
     cpu::initialize(per_cpu);

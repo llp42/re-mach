@@ -11,6 +11,7 @@ mod per_cpu;
 mod port;
 mod serial;
 mod trap;
+mod tss;
 
 use core::arch::asm;
 use core::fmt::Write;

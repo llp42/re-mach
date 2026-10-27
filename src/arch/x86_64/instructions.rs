@@ -77,6 +77,19 @@ pub unsafe fn read_msr(msr: u32) -> u64 {
     u64::from(high) << 32 | u64::from(low)
 }
 
+/// Loads the task register.
+///
+/// # Safety
+///
+/// `selector` names an available TSS descriptor in the loaded GDT, and that
+/// TSS stays valid.
+pub unsafe fn load_task_register(selector: u16) {
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        asm!("ltr {0:x}", in(reg) selector, options(nostack, preserves_flags, att_syntax));
+    }
+}
+
 /// Writes `value` to `msr`.
 ///
 /// # Safety

@@ -8,6 +8,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use super::gdt::{KERNEL_CODE_INDEX, KERNEL_PRIVILEGE, selector};
 use super::instructions::{self, PseudoDescriptor};
 use super::trap;
+use super::tss::{IST_DEBUG, IST_DOUBLE_FAULT, IST_MACHINE_CHECK};
 use crate::smp::PerCpu;
 
 /// A 64-bit IDT gate; atomic halves, so it can be set through `&self`.
@@ -26,17 +27,19 @@ impl Gate {
         }
     }
 
-    /// Makes this an interrupt gate (type 0xe), present, ring 0, no IST.
+    /// Makes this an interrupt gate (type 0xe), present, ring 0, on IST slot
+    /// `ist` (0 for none).
     ///
     /// # Safety
     ///
-    /// `handler` is an interrupt entry point, and this vector can't fire
-    /// while the two halves are written.
-    pub unsafe fn set(&self, handler: u64, selector: u16) {
+    /// `handler` is an interrupt entry point, the loaded TSS has a stack in
+    /// slot `ist`, and this vector can't fire while the two halves are written.
+    pub unsafe fn set(&self, handler: u64, selector: u16, ist: u8) {
         self.high.store(handler >> 32, Ordering::Relaxed);
         self.low.store(
             (handler & 0xffff)
                 | u64::from(selector) << 16
+                | u64::from(ist) << 32
                 | 0x8e << 40
                 | (handler & 0xffff_0000) << 32,
             Ordering::Relaxed,
@@ -70,11 +73,20 @@ impl Idt {
 pub fn init(per_cpu: &'static PerCpu) {
     let idt = &per_cpu.md.idt;
     for (vector, gate) in (0..=u8::MAX).zip(&idt.0) {
-        // SAFETY: the stub is this vector's entry point; the IDT isn't loaded yet.
+        // dfly's IST slots, plus Linux's for #MC.
+        let ist = match vector {
+            2 | 8 => IST_DOUBLE_FAULT, // NMI, #DF
+            1 => IST_DEBUG,            // #DB
+            18 => IST_MACHINE_CHECK,   // #MC
+            _ => 0,
+        };
+        // SAFETY: the stub is this vector's entry point; `tss::init` filled
+        // the slots; the IDT isn't loaded yet.
         unsafe {
             gate.set(
                 trap::stub(vector),
                 selector(KERNEL_CODE_INDEX, KERNEL_PRIVILEGE),
+                ist,
             );
         }
     }
