@@ -3,6 +3,7 @@
 //! `x86_64` machine-dependent code.
 
 mod gdt;
+mod icu;
 mod idt;
 mod instructions;
 mod per_cpu;
@@ -30,6 +31,7 @@ pub fn init(memory_map: MemoryMap) -> ! {
         );
     }
     idt::init(&PER_CPU_0);
+    icu::init();
     for area in memory_map {
         let _ = write!(
             Serial,
