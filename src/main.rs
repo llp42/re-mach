@@ -6,6 +6,7 @@
 #![no_main]
 
 mod arch;
+mod smp;
 mod uefi;
 
 use core::ffi::c_void;
