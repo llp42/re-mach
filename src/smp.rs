@@ -3,7 +3,7 @@
 //! Per-CPU data.
 
 use core::ptr;
-use core::sync::atomic::AtomicPtr;
+use core::sync::atomic::{AtomicPtr, AtomicUsize};
 
 use crate::arch;
 use crate::kern::Thread;
@@ -20,6 +20,11 @@ pub struct PerCpu {
     /// Machine-dependent part.
     pub md: arch::PerCpu,
 }
+
+/// CPUs running (dfly's `ncpus`).
+pub static CPU_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// `CPU_COUNT` rounded up to a power of two (dfly's `ncpus_fit`).
+pub static CPU_COUNT_FIT: AtomicUsize = AtomicUsize::new(0);
 
 /// CPU 0's state: static, since there is no allocator in early boot.
 pub static PER_CPU_0: PerCpu = PerCpu {

@@ -3,6 +3,7 @@
 //! Machine-independent kernel core, like dfly's `sys/kern`.
 
 mod init;
+pub mod param;
 mod thread;
 
 pub use init::THREAD0;

@@ -22,8 +22,8 @@ use core::arch::asm;
 use core::fmt::Write;
 use core::sync::atomic::Ordering;
 
-use crate::kern::THREAD0;
-use crate::smp::PER_CPU_0;
+use crate::kern::{self, THREAD0};
+use crate::smp::{self, PER_CPU_0};
 use crate::uefi::{self, MemoryMap};
 pub use per_cpu::PerCpu;
 pub use serial::Serial;
@@ -91,6 +91,10 @@ extern "sysv64" fn init_at_kernel_base() -> ! {
     THREAD0
         .per_cpu
         .store((&raw const PER_CPU_0).cast_mut(), Ordering::Relaxed);
+    // Start with one CPU.
+    smp::CPU_COUNT.store(1, Ordering::Relaxed);
+    smp::CPU_COUNT_FIT.store(1, Ordering::Relaxed);
+    kern::param::init1();
     per_cpu::init(&PER_CPU_0);
     pmap::remove_identity();
     boot_memory::release_boot_services();
