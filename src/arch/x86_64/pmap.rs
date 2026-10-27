@@ -13,6 +13,7 @@ use super::boot_memory;
 use super::cpu::{EFER_NXE, EXTENDED_EDX_NX};
 use super::instructions::{self, IA32_EFER};
 use super::page_table::{self, ENTRIES, EXECUTE_DISABLE, LARGE_PAGE, PRESENT, PageTable, WRITABLE};
+use super::pat;
 use crate::pe::{self, Image};
 
 /// Bytes a page directory entry maps (2 MiB) and a PDPT entry (1 GiB).
@@ -85,6 +86,8 @@ pub unsafe fn bootstrap(next: extern "sysv64" fn() -> !, guards: &[u64]) -> ! {
     KERNEL_PML4.store(pml4, Ordering::Relaxed);
     // SAFETY: the new tables map this code, its stack and data where they are.
     unsafe { instructions::write_cr3(pml4) };
+    // As dfly's `pmap_bootstrap` ends with `pmap_init_pat`.
+    pat::init();
 
     let image = Image::this();
     let delta = KERNEL_BASE.wrapping_sub(image.address());

@@ -32,7 +32,7 @@ pub struct Cpuid {
     /// Leaf 1 EAX: stepping, model, family.
     signature: AtomicU32,
     leaf_1_ecx: AtomicU32,
-    pub(super) leaf_1_edx: AtomicU32,
+    leaf_1_edx: AtomicU32,
     /// Leaf 7, subleaf 0; zero if the CPU lacks it.
     leaf_7_ebx: AtomicU32,
     leaf_7_ecx: AtomicU32,

@@ -3,10 +3,9 @@
 //! The page attribute table, like dfly's `pmap_init_pat`: the memory type
 //! each PAT, PCD and PWT combination in a page table entry selects.
 
-use core::sync::atomic::Ordering;
+use core::arch::x86_64::__cpuid;
 
 use super::instructions::{self, IA32_PAT};
-use crate::smp::PerCpu;
 
 /// CPUID.01H:EDX.PAT.
 const LEAF_1_EDX_PAT: u32 = 1 << 16;
@@ -41,9 +40,9 @@ const LAYOUT: [u8; 8] = [
 ];
 
 /// Loads `LAYOUT` into this CPU's PAT, if it has one, with caches and TLB
-/// flushed around the change, as dfly does.
-pub fn init(per_cpu: &'static PerCpu) {
-    if per_cpu.md.cpuid.leaf_1_edx.load(Ordering::Relaxed) & LEAF_1_EDX_PAT == 0 {
+/// flushed around the change, as dfly does; runs before `cpu::identify`.
+pub fn init() {
+    if __cpuid(1).edx & LEAF_1_EDX_PAT == 0 {
         return;
     }
     let cr0 = instructions::read_cr0();
