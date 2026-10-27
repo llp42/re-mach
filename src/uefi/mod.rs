@@ -20,6 +20,12 @@ pub use status::Status;
 pub use system_table::SystemTable;
 pub use table_header::TableHeader;
 
+/// `EfiConventionalMemory`: free once boot services exit.
+pub const CONVENTIONAL_MEMORY: u32 = 7;
+
+/// `EFI_PAGE_SIZE`: the unit of `MemoryDescriptor::number_of_pages`.
+pub const PAGE_SIZE: u64 = 4096;
+
 /// `EFI_PHYSICAL_ADDRESS`.
 pub type PhysicalAddress = u64;
 

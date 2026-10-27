@@ -2,9 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! Task state segments, one per CPU, and their IST stacks.
 
-use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use super::PAGE_SIZE;
 use super::gdt::{KERNEL_PRIVILEGE, TSS_INDEX, selector};
 use super::instructions;
 use crate::smp::PerCpu;
@@ -17,25 +17,7 @@ pub const IST_DEBUG: u8 = 2;
 pub const IST_MACHINE_CHECK: u8 = 3;
 
 /// Bytes per IST stack: two pages, as dfly and Linux use.
-const STACK_SIZE: usize = 8192;
-
-/// A stack only the CPU uses, through an IST slot.
-#[repr(C, align(16))]
-pub struct Stack(UnsafeCell<[u8; STACK_SIZE]>);
-
-// SAFETY: Rust code never touches the bytes; only the CPU writes them, as a stack.
-unsafe impl Sync for Stack {}
-
-impl Stack {
-    pub const fn new() -> Self {
-        Self(UnsafeCell::new([0; STACK_SIZE]))
-    }
-
-    /// The address past the end, where the CPU starts pushing.
-    fn top(&self) -> u64 {
-        u64::try_from(self.0.get().expose_provenance() + STACK_SIZE).unwrap()
-    }
-}
+pub const IST_STACK_SIZE: usize = PAGE_SIZE * 2;
 
 /// A 64-bit TSS as the 32-bit words of its Intel SDM layout; atomic, so it
 /// can be set through `&self`.

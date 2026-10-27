@@ -9,6 +9,7 @@ mod arch;
 mod smp;
 mod uefi;
 
+use core::cell::UnsafeCell;
 use core::ffi::c_void;
 use core::fmt::{self, Write};
 use core::panic::PanicInfo;
@@ -28,6 +29,14 @@ impl Write for Console {
     }
 }
 
+/// Memory map storage: static, so it outlives the firmware's stack.
+struct MemoryMapBuffer(UnsafeCell<[u64; 2048]>);
+
+// SAFETY: only `efi_main` uses it, once, on the boot CPU.
+unsafe impl Sync for MemoryMapBuffer {}
+
+static MEMORY_MAP_BUFFER: MemoryMapBuffer = MemoryMapBuffer(UnsafeCell::new([0; 2048]));
+
 // UEFI entry point.
 #[unsafe(no_mangle)]
 extern "efiapi" fn efi_main(
@@ -38,10 +47,11 @@ extern "efiapi" fn efi_main(
     let mut console = Console(unsafe { (*system_table).con_out });
     let _ = console.write_str("Hello, world! (re-mach)\r\n");
 
-    let mut buffer = [0; 2048];
+    // SAFETY: `efi_main` runs once, on one CPU; nothing else uses the buffer.
+    let buffer = unsafe { &mut *MEMORY_MAP_BUFFER.0.get() };
     // SAFETY: arguments come from the firmware; boot services are active.
     let memory_map =
-        match unsafe { uefi::SystemTable::exit_boot_services(system_table, image, &mut buffer) } {
+        match unsafe { uefi::SystemTable::exit_boot_services(system_table, image, buffer) } {
             Ok(memory_map) => memory_map,
             Err(status) => {
                 let _ = write!(console, "ExitBootServices failed: {status:?}\r\n");

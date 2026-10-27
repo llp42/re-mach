@@ -8,7 +8,8 @@ use super::cpu::{self, Cpuid};
 use super::gdt::{self, Gdt};
 use super::idt::{self, Idt};
 use super::instructions;
-use super::tss::{self, Stack, Tss};
+use super::stack::Stack;
+use super::tss::{self, IST_STACK_SIZE, Tss};
 use crate::smp;
 
 /// One CPU's machine-dependent state.
@@ -22,11 +23,11 @@ pub struct PerCpu {
     /// This CPU's TSS.
     pub(super) tss: Tss,
     /// IST stack for NMI and #DF.
-    pub(super) double_fault_stack: Stack,
+    pub(super) double_fault_stack: Stack<IST_STACK_SIZE>,
     /// IST stack for #DB.
-    pub(super) debug_stack: Stack,
+    pub(super) debug_stack: Stack<IST_STACK_SIZE>,
     /// IST stack for #MC.
-    pub(super) machine_check_stack: Stack,
+    pub(super) machine_check_stack: Stack<IST_STACK_SIZE>,
 }
 
 impl PerCpu {
