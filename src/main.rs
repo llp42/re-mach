@@ -6,6 +6,7 @@
 #![no_main]
 
 mod arch;
+mod kern;
 #[expect(unused, reason = "no user until vm_page")]
 mod lock;
 mod pe;

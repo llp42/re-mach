@@ -20,7 +20,9 @@ mod tss;
 
 use core::arch::asm;
 use core::fmt::Write;
+use core::sync::atomic::Ordering;
 
+use crate::kern::THREAD0;
 use crate::smp::PER_CPU_0;
 use crate::uefi::{self, MemoryMap};
 pub use per_cpu::PerCpu;
@@ -82,6 +84,13 @@ extern "sysv64" fn init_on_boot_stack(memory_map: *mut MemoryMap<'static>) -> ! 
 
 /// The rest of the boot, at `KERNEL_BASE`.
 extern "sysv64" fn init_at_kernel_base() -> ! {
+    // As dfly's `hammer_time`: curthread is never null from here on.
+    PER_CPU_0
+        .current_thread
+        .store((&raw const THREAD0).cast_mut(), Ordering::Relaxed);
+    THREAD0
+        .per_cpu
+        .store((&raw const PER_CPU_0).cast_mut(), Ordering::Relaxed);
     per_cpu::init(&PER_CPU_0);
     pmap::remove_identity();
     boot_memory::release_boot_services();

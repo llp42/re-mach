@@ -16,8 +16,12 @@ pub struct PseudoDescriptor {
 
 /// Extended features MSR (long mode, no-execute, `syscall`).
 pub const IA32_EFER: u32 = 0xc000_0080;
+/// FS base MSR.
+pub const IA32_FS_BASE: u32 = 0xc000_0100;
 /// GS base MSR.
 pub const IA32_GS_BASE: u32 = 0xc000_0101;
+/// The GS base `swapgs` exchanges with GS's.
+pub const IA32_KERNEL_GS_BASE: u32 = 0xc000_0102;
 /// Page attribute table MSR.
 pub const IA32_PAT: u32 = 0x277;
 

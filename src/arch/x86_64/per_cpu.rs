@@ -47,12 +47,15 @@ impl PerCpu {
 /// Sets up the CPU running this, with its `per_cpu` area.
 pub fn init(per_cpu: &'static smp::PerCpu) {
     gdt::init(per_cpu);
-    // SAFETY: nothing reads GS yet.
+    // As dfly's `hammer_time`: FS and the `swapgs` base hold user values.
+    // SAFETY: nothing reads FS or GS yet.
     unsafe {
+        instructions::write_msr(instructions::IA32_FS_BASE, 0);
         instructions::write_msr(
             instructions::IA32_GS_BASE,
             u64::try_from(ptr::from_ref(per_cpu).expose_provenance()).unwrap(),
         );
+        instructions::write_msr(instructions::IA32_KERNEL_GS_BASE, 0);
     }
     tss::init(per_cpu);
     idt::init(per_cpu);
