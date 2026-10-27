@@ -6,6 +6,8 @@
 #![no_main]
 
 mod arch;
+#[expect(unused, reason = "no user until vm_page")]
+mod lock;
 mod pe;
 mod smp;
 mod uefi;
