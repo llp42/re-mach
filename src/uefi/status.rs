@@ -12,6 +12,10 @@ const ERROR: usize = 1 << (usize::BITS - 1);
 #[derive(PartialEq, Eq)]
 pub struct Status(usize);
 
+#[expect(
+    clippy::decimal_bitwise_operands,
+    reason = "decimal codes, as the UEFI spec lists them"
+)]
 impl Status {
     pub const SUCCESS: Self = Self(0);
 

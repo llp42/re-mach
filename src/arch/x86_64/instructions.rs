@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
+//! Instruction wrappers, like dfly's `cpufunc.h`.
+
+use core::arch::asm;
+
+use super::gdt::{KERNEL_CODE_INDEX, KERNEL_DATA_INDEX, KERNEL_PRIVILEGE, selector};
+
+/// `lgdt`/`lidt` operand.
+#[repr(C, packed)]
+pub struct PseudoDescriptor {
+    /// Table size in bytes, minus one.
+    pub limit: u16,
+    pub base: *const (),
+}
+
+/// GS base MSR.
+pub const IA32_GS_BASE: u32 = 0xc000_0101;
+
+/// Loads the GDT, then DS, ES, FS, GS and SS with kernel data and CS with
+/// kernel code, as dfly's `lgdt` does.
+///
+/// # Safety
+///
+/// `descriptor` describes a GDT that stays valid, with kernel code and data at
+/// their indices; no interrupt may arrive meanwhile.
+pub unsafe fn load_gdt(descriptor: &PseudoDescriptor) {
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        asm!(
+            "lgdt ({descriptor})",
+            "mov {data:e}, %ds",
+            "mov {data:e}, %es",
+            "mov {data:e}, %fs",
+            "mov {data:e}, %gs",
+            "mov {data:e}, %ss",
+            "pushq ${code}",
+            "lea 2f(%rip), {return_address}",
+            "push {return_address}",
+            "lretq",
+            "2:",
+            descriptor = in(reg) descriptor,
+            data = in(reg) u32::from(selector(KERNEL_DATA_INDEX, KERNEL_PRIVILEGE)),
+            code = const selector(KERNEL_CODE_INDEX, KERNEL_PRIVILEGE),
+            return_address = out(reg) _,
+            options(preserves_flags, att_syntax),
+        );
+    }
+}
+
+/// Loads the IDT.
+///
+/// # Safety
+///
+/// `descriptor` describes an IDT that stays valid, whose present gates point
+/// to interrupt handlers.
+pub unsafe fn load_idt(descriptor: &PseudoDescriptor) {
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        asm!("lidt ({descriptor})", descriptor = in(reg) descriptor, options(readonly, nostack, preserves_flags, att_syntax));
+    }
+}
+
+/// Writes `value` to `msr`.
+///
+/// # Safety
+///
+/// MSR writes can change any CPU behavior.
+pub unsafe fn write_msr(msr: u32, value: u64) {
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        asm!(
+            "mov %rax, %rdx",
+            "shr $32, %rdx",
+            "wrmsr",
+            in("ecx") msr,
+            inout("rax") value => _,
+            out("rdx") _,
+            options(nostack, att_syntax),
+        );
+    }
+}
+
+/// Reads CR2, the last page-fault address.
+pub fn read_cr2() -> u64 {
+    let value;
+    // SAFETY: reading CR2 has no side effects.
+    unsafe {
+        asm!("mov %cr2, {}", out(reg) value, options(nomem, nostack, preserves_flags, att_syntax));
+    }
+    value
+}

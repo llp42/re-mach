@@ -10,7 +10,7 @@ use crate::arch;
 #[repr(C)]
 pub struct PerCpu {
     /// Points to itself; first, so the arch can read it at offset 0.
-    pub this: AtomicPtr<PerCpu>,
+    pub this: AtomicPtr<Self>,
     /// This CPU's index.
     pub id: usize,
     /// Machine-dependent part.

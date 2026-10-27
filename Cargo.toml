@@ -14,8 +14,9 @@ path = "src/main.rs"
 test = false
 bench = false
 
-[dependencies]
-x86_64 = { git = "https://github.com/llp42/x86_64", branch = "master" }
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
 
 [profile.dev]
 panic = "abort"

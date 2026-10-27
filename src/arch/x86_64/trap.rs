@@ -5,10 +5,8 @@
 use core::arch::naked_asm;
 use core::fmt::Write;
 
-use x86_64::VirtAddr;
-use x86_64::registers::control::Cr2;
-
 use super::halt;
+use super::instructions;
 use super::serial::Serial;
 
 /// What the stubs and the CPU pushed, lowest address first.
@@ -86,8 +84,9 @@ unsafe extern "sysv64" fn stubs() {
 }
 
 /// Entry stub for `vector`.
-pub fn stub(vector: u8) -> VirtAddr {
-    VirtAddr::from_ptr(stubs as *const ()).align_up(16u64) + u64::from(vector) * 16
+pub fn stub(vector: u8) -> u64 {
+    let base = u64::try_from((stubs as *const ()).expose_provenance()).unwrap();
+    base.next_multiple_of(16) + u64::from(vector) * 16
 }
 
 /// Reports a trap on COM1 and halts.
@@ -103,7 +102,7 @@ extern "sysv64" fn trap(frame: &TrapFrame) -> ! {
         frame.vector, name, frame.error_code, frame.rip, frame.cs, frame.rflags, frame.rsp
     );
     if frame.vector == 14 {
-        let _ = write!(Serial, " cr2 {:#x}", Cr2::read_raw());
+        let _ = write!(Serial, " cr2 {:#x}", instructions::read_cr2());
     }
     let _ = write!(Serial, "\r\n");
     halt()

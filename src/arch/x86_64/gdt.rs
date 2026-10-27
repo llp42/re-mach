@@ -2,32 +2,57 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! Global descriptor tables, one per CPU.
 
-use x86_64::PrivilegeLevel;
-use x86_64::instructions::segmentation::{CS, DS, ES, FS, GS, SS, Segment};
-use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
+use core::ptr;
+use core::sync::atomic::AtomicU64;
 
+use super::instructions::{self, PseudoDescriptor};
 use crate::smp::PerCpu;
 
-/// Null, kernel code, kernel data.
-pub const fn new() -> GlobalDescriptorTable {
-    let mut gdt = GlobalDescriptorTable::new();
-    gdt.append(Descriptor::kernel_code_segment());
-    gdt.append(Descriptor::kernel_data_segment());
-    gdt
+/// Kernel code descriptor index.
+pub const KERNEL_CODE_INDEX: u16 = 1;
+/// Kernel data descriptor index.
+pub const KERNEL_DATA_INDEX: u16 = 2;
+
+/// Kernel privilege level.
+pub const KERNEL_PRIVILEGE: u16 = 0;
+
+/// Selector for descriptor `index` at `privilege` (dfly `GSEL`).
+pub const fn selector(index: u16, privilege: u16) -> u16 {
+    index << 3 | privilege
+}
+
+/// A GDT; entries are atomic because the CPU writes them (accessed and busy bits).
+#[repr(C)]
+pub struct Gdt([AtomicU64; 3]);
+
+impl Gdt {
+    /// Null, kernel code, kernel data; accessed bits preset.
+    pub const fn new() -> Self {
+        Self([
+            AtomicU64::new(0),
+            AtomicU64::new(0x00af_9b00_0000_ffff), // KERNEL_CODE_INDEX: 64-bit code, ring 0
+            AtomicU64::new(0x00cf_9300_0000_ffff), // KERNEL_DATA_INDEX: data, ring 0
+        ])
+    }
+
+    /// Loads this GDT and reloads every segment register.
+    ///
+    /// # Safety
+    ///
+    /// No interrupt may arrive meanwhile.
+    pub unsafe fn load(&'static self) {
+        let descriptor = PseudoDescriptor {
+            limit: u16::try_from(size_of_val(self) - 1).unwrap(),
+            base: ptr::from_ref(self).cast(),
+        };
+        // SAFETY: `self` is static and holds kernel code and data at their
+        // indices; the caller keeps interrupts away.
+        unsafe { instructions::load_gdt(&descriptor) };
+    }
 }
 
 /// Loads `per_cpu`'s GDT and reloads the segment registers.
 pub fn init(per_cpu: &'static PerCpu) {
-    per_cpu.md.gdt.load();
-    let code = SegmentSelector::new(1, PrivilegeLevel::Ring0);
-    let data = SegmentSelector::new(2, PrivilegeLevel::Ring0);
-    // SAFETY: entries 1 and 2 are kernel code and data; interrupts are off.
-    unsafe {
-        CS::set_reg(code);
-        SS::set_reg(data);
-        DS::set_reg(data);
-        ES::set_reg(data);
-        FS::set_reg(data);
-        GS::set_reg(data);
-    }
+    // SAFETY: interrupts are off.
+    unsafe { per_cpu.md.gdt.load() };
 }
