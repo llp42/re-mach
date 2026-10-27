@@ -14,6 +14,8 @@ pub struct PseudoDescriptor {
     pub base: *const (),
 }
 
+/// Extended features MSR (long mode, no-execute, `syscall`).
+pub const IA32_EFER: u32 = 0xc000_0080;
 /// GS base MSR.
 pub const IA32_GS_BASE: u32 = 0xc000_0101;
 
@@ -61,6 +63,20 @@ pub unsafe fn load_idt(descriptor: &PseudoDescriptor) {
     }
 }
 
+/// Reads `msr`.
+///
+/// # Safety
+///
+/// Reading an MSR the CPU doesn't have raises #GP.
+pub unsafe fn read_msr(msr: u32) -> u64 {
+    let (low, high): (u32, u32);
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        asm!("rdmsr", in("ecx") msr, out("eax") low, out("edx") high, options(nomem, nostack, preserves_flags, att_syntax));
+    }
+    u64::from(high) << 32 | u64::from(low)
+}
+
 /// Writes `value` to `msr`.
 ///
 /// # Safety
@@ -78,6 +94,29 @@ pub unsafe fn write_msr(msr: u32, value: u64) {
             out("rdx") _,
             options(nostack, att_syntax),
         );
+    }
+}
+
+/// Reads CR4.
+pub fn read_cr4() -> u64 {
+    let value;
+    // SAFETY: reading CR4 has no side effects.
+    unsafe {
+        asm!("mov %cr4, {}", out(reg) value, options(nomem, nostack, preserves_flags, att_syntax));
+    }
+    value
+}
+
+/// Writes CR4.
+///
+/// # Safety
+///
+/// CR4 controls paging and CPU features; a wrong value faults or changes
+/// behavior anywhere.
+pub unsafe fn write_cr4(value: u64) {
+    // SAFETY: guaranteed by the caller.
+    unsafe {
+        asm!("mov {}, %cr4", in(reg) value, options(nostack, preserves_flags, att_syntax));
     }
 }
 
