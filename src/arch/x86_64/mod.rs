@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! x86_64 machine-dependent code.
 
+mod apic;
 mod pic;
 mod serial;
 
@@ -17,6 +18,7 @@ use serial::Serial;
 pub fn init(memory_map: MemoryMap) -> ! {
     interrupts::disable();
     pic::disable();
+    apic::enable();
     serial::init();
     for area in memory_map {
         let _ = write!(
