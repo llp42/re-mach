@@ -14,16 +14,12 @@ use core::fmt::Write;
 use x86_64::instructions::interrupts;
 use x86_64::registers::rflags::{self, RFlags};
 
-use crate::boot::uefi::MemoryMap;
+use crate::boot::BootInfo;
 use crate::smp::PerCpu as _;
 use serial::Serial;
 
-/// Machine-dependent initialization, after leaving boot services.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "passed to the boot stack by address"
-)]
-pub fn init(memory_map: MemoryMap) -> ! {
+/// Machine-dependent initialization, once the boot source is done.
+pub fn init<B: BootInfo>(boot_info: &B) -> ! {
     interrupts::disable();
     pic::disable();
     apic::enable();
@@ -33,30 +29,28 @@ pub fn init(memory_map: MemoryMap) -> ! {
             "movq {top}, %rsp",
             "callq {entry}",
             top = in(reg) boot_stack::top(),
-            entry = sym init_on_boot_stack,
-            in("rdi") &raw const memory_map,
+            entry = sym init_on_boot_stack::<B>,
+            in("rdi") core::ptr::from_ref(boot_info),
             options(noreturn, att_syntax),
         );
     }
 }
 
 /// Rest of `init`, on the boot stack.
-extern "sysv64" fn init_on_boot_stack(memory_map: *const MemoryMap) -> ! {
-    // SAFETY: `init`'s frame on the abandoned firmware stack is intact.
-    let memory_map = unsafe { memory_map.read() };
+extern "sysv64" fn init_on_boot_stack<B: BootInfo>(boot_info: *const B) -> ! {
+    // SAFETY: the caller's frame on the abandoned entry stack is intact.
+    let boot_info = unsafe { &*boot_info };
     // SAFETY: the boot CPU is CPU 0; nothing read `cpu_id` yet.
     unsafe { per_cpu::init(0) };
     // SAFETY: an empty RFLAGS keeps DF clear.
     unsafe { rflags::write(RFlags::empty()) };
     serial::init();
     let _ = write!(Serial, "cpu {}\r\n", per_cpu::PerCpu::cpu_id());
-    for area in memory_map {
+    for region in boot_info.memory_map() {
         let _ = write!(
             Serial,
-            "memory area base {:#x} length {:#x} kind {}\r\n",
-            area.physical_start,
-            area.number_of_pages * 4096,
-            area.ty
+            "memory area address {:#x} length {:#x} kind {:?}\r\n",
+            region.address, region.length, region.kind
         );
     }
     halt();

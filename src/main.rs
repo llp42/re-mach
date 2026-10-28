@@ -51,7 +51,7 @@ extern "efiapi" fn efi_main(
                 return status;
             }
         };
-    arch::init(memory_map)
+    arch::init(&uefi::Uefi::new(memory_map))
 }
 
 #[panic_handler]

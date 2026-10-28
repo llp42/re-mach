@@ -4,6 +4,7 @@
 //!
 //! Spec names in Rust case. Handles and unused entries are `*mut c_void`.
 
+mod boot_info;
 mod boot_services;
 mod memory_descriptor;
 mod memory_map;
@@ -12,6 +13,7 @@ mod status;
 mod system_table;
 mod table_header;
 
+pub use boot_info::Uefi;
 pub use boot_services::BootServices;
 pub use memory_descriptor::MemoryDescriptor;
 pub use memory_map::MemoryMap;

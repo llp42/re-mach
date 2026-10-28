@@ -7,6 +7,7 @@ use core::slice::ChunksExact;
 use super::MemoryDescriptor;
 
 /// Iterator over the final memory map.
+#[derive(Clone)]
 pub struct MemoryMap<'a> {
     entries: ChunksExact<'a, u64>,
 }
