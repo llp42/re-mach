@@ -3,6 +3,7 @@
 //! x86_64 machine-dependent code.
 
 mod apic;
+mod boot_stack;
 mod pic;
 mod serial;
 
@@ -15,10 +16,31 @@ use crate::uefi::MemoryMap;
 use serial::Serial;
 
 /// Machine-dependent initialization, after leaving boot services.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "passed to the boot stack by address"
+)]
 pub fn init(memory_map: MemoryMap) -> ! {
     interrupts::disable();
     pic::disable();
     apic::enable();
+    // SAFETY: own 16-byte-aligned stack; the callee never returns.
+    unsafe {
+        asm!(
+            "movq {top}, %rsp",
+            "callq {entry}",
+            top = in(reg) boot_stack::top(),
+            entry = sym init_on_boot_stack,
+            in("rdi") &raw const memory_map,
+            options(noreturn, att_syntax),
+        );
+    }
+}
+
+/// Rest of `init`, on the boot stack.
+extern "sysv64" fn init_on_boot_stack(memory_map: *const MemoryMap) -> ! {
+    // SAFETY: `init`'s frame on the abandoned firmware stack is intact.
+    let memory_map = unsafe { memory_map.read() };
     serial::init();
     for area in memory_map {
         let _ = write!(
