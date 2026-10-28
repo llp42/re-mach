@@ -12,6 +12,7 @@ use core::arch::asm;
 use core::fmt::Write;
 
 use x86_64::instructions::interrupts;
+use x86_64::registers::rflags::{self, RFlags};
 
 use crate::smp::PerCpu as _;
 use crate::uefi::MemoryMap;
@@ -45,6 +46,8 @@ extern "sysv64" fn init_on_boot_stack(memory_map: *const MemoryMap) -> ! {
     let memory_map = unsafe { memory_map.read() };
     // SAFETY: the boot CPU is CPU 0; nothing read `cpu_id` yet.
     unsafe { per_cpu::init(0) };
+    // SAFETY: an empty RFLAGS keeps DF clear.
+    unsafe { rflags::write(RFlags::empty()) };
     serial::init();
     let _ = write!(Serial, "cpu {}\r\n", per_cpu::PerCpu::cpu_id());
     for area in memory_map {
