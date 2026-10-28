@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! x86_64 machine-dependent code.
 
+mod pic;
 mod serial;
 
 use core::arch::asm;
@@ -15,6 +16,7 @@ use serial::Serial;
 /// Machine-dependent initialization, after leaving boot services.
 pub fn init(memory_map: MemoryMap) -> ! {
     interrupts::disable();
+    pic::disable();
     serial::init();
     for area in memory_map {
         let _ = write!(
