@@ -4,6 +4,8 @@
 
 pub mod uefi;
 
+use core::fmt::Write;
+
 /// One memory-map entry.
 #[derive(Clone, Copy)]
 pub struct MemoryRegion {
@@ -26,4 +28,14 @@ pub enum MemoryKind {
 /// (UEFI, Multiboot2).
 pub trait BootInfo {
     fn memory_map(&self) -> impl Iterator<Item = MemoryRegion>;
+}
+
+/// Prints the kernel's name and version.
+pub fn banner(out: &mut impl Write) {
+    let _ = write!(
+        out,
+        "{} {}\r\n",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION")
+    );
 }

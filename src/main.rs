@@ -39,7 +39,6 @@ extern "efiapi" fn efi_main(
 ) -> uefi::Status {
     // SAFETY: `system_table` comes from the firmware.
     let mut console = Console(unsafe { (*system_table).con_out });
-    let _ = console.write_str("Hello, world! (re-mach)\r\n");
 
     let mut buffer = [0; 2048];
     // SAFETY: arguments come from the firmware; boot services are active.

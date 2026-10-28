@@ -13,11 +13,11 @@ pub fn init() {
     unsafe {
         Port::<u8>::new(COM1 + 1).write(0x00); // disable interrupts
         Port::<u8>::new(COM1 + 3).write(0x80); // enable DLAB to set the baud rate divisor
-        Port::<u8>::new(COM1 + 0).write(0x03); // divisor low byte: 38400 baud
+        Port::<u8>::new(COM1 + 0).write(0x01); // divisor low byte: 115200 baud
         Port::<u8>::new(COM1 + 1).write(0x00); // divisor high byte
         Port::<u8>::new(COM1 + 3).write(0x03); // 8 bits, no parity, one stop bit; DLAB off
         Port::<u8>::new(COM1 + 2).write(0xc7); // enable + clear FIFOs
-        Port::<u8>::new(COM1 + 4).write(0x0b); // RTS/DSR set
+        Port::<u8>::new(COM1 + 4).write(0x0b); // DTR, RTS, OUT2
     }
 }
 

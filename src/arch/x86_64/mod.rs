@@ -15,7 +15,7 @@ use core::fmt::Write;
 use x86_64::instructions::interrupts;
 use x86_64::registers::rflags::{self, RFlags};
 
-use crate::boot::BootInfo;
+use crate::boot::{self, BootInfo};
 use crate::smp::PerCpu as _;
 use serial::Serial;
 
@@ -46,6 +46,7 @@ extern "sysv64" fn init_on_boot_stack<B: BootInfo>(boot_info: *const B) -> ! {
     // SAFETY: an empty RFLAGS keeps DF clear.
     unsafe { rflags::write(RFlags::empty()) };
     serial::init();
+    boot::banner(&mut Serial);
     // SAFETY: the boot CPU, before any `features` call.
     unsafe { cpuid::discover() };
     let features = cpuid::features();
