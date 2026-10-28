@@ -4,6 +4,7 @@
 
 mod apic;
 mod boot_stack;
+mod per_cpu;
 mod pic;
 mod serial;
 
@@ -12,6 +13,7 @@ use core::fmt::Write;
 
 use x86_64::instructions::interrupts;
 
+use crate::smp::PerCpu as _;
 use crate::uefi::MemoryMap;
 use serial::Serial;
 
@@ -41,7 +43,10 @@ pub fn init(memory_map: MemoryMap) -> ! {
 extern "sysv64" fn init_on_boot_stack(memory_map: *const MemoryMap) -> ! {
     // SAFETY: `init`'s frame on the abandoned firmware stack is intact.
     let memory_map = unsafe { memory_map.read() };
+    // SAFETY: the boot CPU is CPU 0; nothing read `cpu_id` yet.
+    unsafe { per_cpu::init(0) };
     serial::init();
+    let _ = write!(Serial, "cpu {}\r\n", per_cpu::PerCpu::cpu_id());
     for area in memory_map {
         let _ = write!(
             Serial,
