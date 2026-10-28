@@ -33,6 +33,7 @@ dependencies = [
 name = "re-mach"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "lock_api",
  "x86_64",
 ]
