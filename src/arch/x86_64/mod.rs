@@ -4,6 +4,7 @@
 
 mod apic;
 mod boot_stack;
+mod cpuid;
 mod per_cpu;
 mod pic;
 mod serial;
@@ -45,6 +46,21 @@ extern "sysv64" fn init_on_boot_stack<B: BootInfo>(boot_info: *const B) -> ! {
     // SAFETY: an empty RFLAGS keeps DF clear.
     unsafe { rflags::write(RFlags::empty()) };
     serial::init();
+    // SAFETY: the boot CPU, before any `features` call.
+    unsafe { cpuid::discover() };
+    let features = cpuid::features();
+    let _ = write!(
+        Serial,
+        "cpu family {} model {} stepping {} pge {} pae {} sep {} fxsr {} xsave {}\r\n",
+        features.family_id(),
+        features.model_id(),
+        features.stepping_id(),
+        features.has_pge(),
+        features.has_pae(),
+        features.has_sysenter_sysexit(),
+        features.has_fxsave_fxstor(),
+        features.has_xsave()
+    );
     let _ = write!(Serial, "cpu {}\r\n", per_cpu::PerCpu::cpu_id());
     for region in boot_info.memory_map() {
         let _ = write!(
