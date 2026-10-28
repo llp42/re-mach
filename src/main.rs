@@ -6,13 +6,15 @@
 #![no_main]
 
 mod arch;
+mod boot;
 mod config;
 mod smp;
-mod uefi;
 
 use core::ffi::c_void;
 use core::fmt::{self, Write};
 use core::panic::PanicInfo;
+
+use boot::uefi;
 
 /// UEFI console; only valid while boot services are active.
 struct Console(*mut uefi::SimpleTextOutputProtocol);

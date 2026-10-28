@@ -14,8 +14,8 @@ use core::fmt::Write;
 use x86_64::instructions::interrupts;
 use x86_64::registers::rflags::{self, RFlags};
 
+use crate::boot::uefi::MemoryMap;
 use crate::smp::PerCpu as _;
-use crate::uefi::MemoryMap;
 use serial::Serial;
 
 /// Machine-dependent initialization, after leaving boot services.
