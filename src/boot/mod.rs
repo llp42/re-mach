@@ -29,6 +29,8 @@ pub enum MemoryKind {
 pub trait BootInfo {
     /// Physical address of the ACPI RSDP, newest revision first.
     fn acpi_rsdp(&self) -> Option<u64>;
+    /// Physical address of the EFI system table.
+    fn efi_system_table(&self) -> Option<u64>;
     fn memory_map(&self) -> impl Iterator<Item = MemoryRegion>;
 }
 

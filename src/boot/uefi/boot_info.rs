@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! Boot information from UEFI.
 
-use core::slice;
+use core::{ptr, slice};
 
 use super::{Guid, MemoryMap, SystemTable};
 use crate::boot::{BootInfo, MemoryKind, MemoryRegion};
@@ -37,6 +37,10 @@ impl BootInfo for Uefi<'_> {
         let find = |guid| tables.iter().find(|table| table.vendor_guid == guid);
         let table = find(Guid::ACPI_20_TABLE).or_else(|| find(Guid::ACPI_TABLE))?;
         u64::try_from(table.vendor_table.addr()).ok()
+    }
+
+    fn efi_system_table(&self) -> Option<u64> {
+        u64::try_from(ptr::from_ref(self.system_table).addr()).ok()
     }
 
     fn memory_map(&self) -> impl Iterator<Item = MemoryRegion> {

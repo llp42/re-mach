@@ -8,6 +8,7 @@
 mod arch;
 mod boot;
 mod config;
+mod kern;
 mod smp;
 
 use core::ffi::c_void;

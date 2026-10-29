@@ -5,10 +5,12 @@
 
 use core::cell::UnsafeCell;
 use core::fmt::Write;
+use core::sync::atomic::Ordering;
 use core::{ptr, slice};
 
 use super::serial::Serial;
 use crate::boot::BootInfo;
+use crate::kern::host::HOST_EFI_SYSTAB_ADDRESS;
 
 const RSDP_SIGNATURE: &[u8; 8] = b"RSD PTR ";
 const RSDP_ALIGN: usize = 16;
@@ -27,13 +29,16 @@ unsafe impl Sync for Rsdp {}
 /// Copy of the verified RSDP; `None` if none was found.
 static RSDP: Rsdp = Rsdp(UnsafeCell::new(None));
 
-/// Saves a copy of the verified RSDP.
+/// Saves the EFI system table address and a copy of the verified RSDP.
 ///
 /// # Safety
 ///
 /// Runs once, on the boot CPU. The first 2 MiB are identity-mapped and
 /// readable; so is `boot_info`'s RSDP, for 20 bytes or 36 if revision 2.
 pub unsafe fn init(boot_info: &impl BootInfo) {
+    if let Some(address) = boot_info.efi_system_table() {
+        HOST_EFI_SYSTAB_ADDRESS.store(address, Ordering::Relaxed);
+    }
     let rsdp = boot_info
         .acpi_rsdp()
         .and_then(|address| usize::try_from(address).ok())
