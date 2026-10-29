@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
-//! re-mach: a minimal freestanding hello-world kernel for x86_64.
+//! re-mach: a minimal freestanding hello-world kernel for `x86_64`.
 
 #![no_std]
 #![no_main]
