@@ -10,8 +10,7 @@ use super::Status;
 #[repr(C)]
 pub struct SimpleTextOutputProtocol {
     pub reset: *mut c_void,
-    pub output_string:
-        unsafe extern "efiapi" fn(this: *mut SimpleTextOutputProtocol, string: *mut u16) -> Status,
+    pub output_string: unsafe extern "efiapi" fn(this: *mut Self, string: *mut u16) -> Status,
     pub test_string: *mut c_void,
     pub query_mode: *mut c_void,
     pub set_mode: *mut c_void,
