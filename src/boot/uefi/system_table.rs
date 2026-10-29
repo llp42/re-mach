@@ -52,11 +52,11 @@ impl SystemTable {
             // SAFETY: valid pointers; `map_size` is `buffer`'s size.
             let status = unsafe {
                 (boot_services.get_memory_map)(
-                    &mut map_size,
+                    &raw mut map_size,
                     buffer.as_mut_ptr().cast(),
-                    &mut map_key,
-                    &mut descriptor_size,
-                    &mut descriptor_version,
+                    &raw mut map_key,
+                    &raw mut descriptor_size,
+                    &raw mut descriptor_version,
                 )
             };
             if status != Status::SUCCESS {
