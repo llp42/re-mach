@@ -12,6 +12,10 @@ const ERROR: usize = 1 << (usize::BITS - 1);
 #[derive(PartialEq, Eq)]
 pub struct Status(usize);
 
+#[expect(
+    clippy::decimal_bitwise_operands,
+    reason = "the spec numbers status codes in decimal"
+)]
 impl Status {
     pub const SUCCESS: Self = Self(0);
 
