@@ -52,6 +52,7 @@ pub struct BootServices {
     pub start_image: *mut c_void,
     pub exit: *mut c_void,
     pub unload_image: *mut c_void,
+    #[expect(clippy::struct_field_names, reason = "the spec's name")]
     pub exit_boot_services:
         unsafe extern "efiapi" fn(image_handle: *mut c_void, map_key: usize) -> Status,
 
