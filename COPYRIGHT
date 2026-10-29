@@ -1,7 +1,41 @@
-Files marked "Inspired by GNU Mach" draw on GNU Mach, commit
+re-mach
+=======
+
+re-mach is a new kernel, written from scratch in Rust. It is free
+software under the GNU General Public License, version 2 or, at your
+option, any later version (LICENSES/GPL-2.0-or-later.txt).
+
+It is inspired by GNU Mach, the microkernel of the GNU Hurd, at commit
 fa3026b9d18261dce7152b93c4b106798404bae3 of
-https://git.savannah.gnu.org/git/hurd/gnumach.git. The GNU Mach files
-drawn on are:
+<https://git.savannah.gnu.org/git/hurd/gnumach.git>. re-mach
+reproduces GNU Mach's interface to user space, and much of its code
+was written by reading GNU Mach's: its algorithms, its data structures
+and its behaviour.
+
+re-mach is a fully new implementation, but it was not made in a clean
+room. Its files were written with GNU Mach's sources open, and a file
+of re-mach may draw on several files of GNU Mach. The work as a whole
+is therefore treated as derived from GNU Mach, and the respect owed to
+GNU Mach's authors is kept here, in this single file, rather than in
+each source file. A source file that draws on an upstream says so in
+one line,
+
+    // Inspired by GNU Mach; see COPYRIGHT.
+
+and carries the copyright of its own authors only.
+
+
+GNU Mach
+--------
+
+Upstream: <https://git.savannah.gnu.org/git/hurd/gnumach.git>,
+commit fa3026b9d18261dce7152b93c4b106798404bae3.
+
+GNU Mach descends from Mach 3.0 of Carnegie Mellon University, through
+Mach 4 of the University of Utah. The GNU Mach files re-mach drew on,
+as a whole, are below, each with the copyright lines, authors and
+licence it carries at that commit. The licence texts are in LICENSES/,
+named by their identifiers.
 
 SPDX-FileName: i386/i386at/acpi_parse_apic.c
 SPDX-FileCopyrightText: 2018-2020 Free Software Foundation, Inc.
