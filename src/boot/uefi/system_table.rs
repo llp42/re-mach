@@ -74,7 +74,7 @@ impl SystemTable {
                     return Ok(MemoryMap::new(&buffer[..map_size / 8], descriptor_size));
                 }
                 // Stale map key: retry.
-                Status::INVALID_PARAMETER => continue,
+                Status::INVALID_PARAMETER => {}
                 status => return Err(status),
             }
         }
