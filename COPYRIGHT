@@ -39,18 +39,24 @@ named by their identifiers.
 
 SPDX-FileName: i386/i386at/acpi_parse_apic.c
 SPDX-FileCopyrightText: 2018-2020 Free Software Foundation, Inc.
+SPDX-FileContributor: Juan Bosco Garcia
+SPDX-FileContributor: Almudena Garcia Jurado-Centurion
 SPDX-License-Identifier: GPL-2.0-or-later
 
 SPDX-FileName: i386/i386at/acpi_parse_apic.h
 SPDX-FileCopyrightText: 2018-2020 Free Software Foundation, Inc.
+SPDX-FileContributor: Juan Bosco Garcia
+SPDX-FileContributor: Almudena Garcia Jurado-Centurion
 SPDX-License-Identifier: GPL-2.0-or-later
 
 SPDX-FileName: i386/i386at/biosmem.c
 SPDX-FileCopyrightText: 2010-2014 Free Software Foundation
+SPDX-FileContributor: Richard Braun
 SPDX-License-Identifier: GPL-2.0-or-later
 
 SPDX-FileName: i386/i386at/biosmem.h
 SPDX-FileCopyrightText: 2010-2014 Free Software Foundation, Inc.
+SPDX-FileContributor: Richard Braun
 SPDX-License-Identifier: GPL-2.0-or-later
 
 SPDX-FileName: include/mach/host_info.h
