@@ -4,6 +4,7 @@
 
 mod acpi;
 mod apic;
+mod biosmem;
 mod boot_stack;
 mod cpuid;
 mod per_cpu;
@@ -19,6 +20,11 @@ use x86_64::registers::rflags::{self, RFlags};
 use crate::boot::{self, BootInfo};
 use crate::smp::PerCpu as _;
 use serial::Serial;
+
+unsafe extern "C" {
+    /// The kernel image's first byte, its DOS header.
+    safe static __ImageBase: u8;
+}
 
 /// Machine-dependent initialization, once the boot source is done.
 pub fn init<B: BootInfo>(boot_info: &B) -> ! {
@@ -66,6 +72,17 @@ extern "sysv64" fn init_on_boot_stack<B: BootInfo>(boot_info: *const B) -> ! {
     let _ = write!(Serial, "cpu {}\r\n", per_cpu::PerCpu::cpu_id());
     // SAFETY: once, on the boot CPU; assumes the first 2 MiB and boot data are identity-mapped.
     unsafe { acpi::init(boot_info) };
+    let image = (&raw const __ImageBase).addr();
+    // SAFETY: the loader keeps the PE headers: `e_lfanew` at 0x3c, then
+    // the PE32+ `SizeOfImage` 80 bytes past it.
+    let size = unsafe {
+        let e_lfanew = core::ptr::with_exposed_provenance::<u32>(image + 0x3c).read_unaligned();
+        core::ptr::with_exposed_provenance::<u32>(image + usize::try_from(e_lfanew).unwrap() + 80)
+            .read_unaligned()
+    };
+    let start = u64::try_from(image).unwrap();
+    // SAFETY: the boot CPU; identity-mapped, so `start` is physical.
+    unsafe { biosmem::register_boot_data(start, start + u64::from(size), false) };
     for region in boot_info.memory_map() {
         let _ = write!(
             Serial,
