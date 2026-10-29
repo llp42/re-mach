@@ -5,7 +5,8 @@
 use core::ffi::c_void;
 
 use super::{
-    BootServices, MemoryDescriptor, MemoryMap, SimpleTextOutputProtocol, Status, TableHeader,
+    BootServices, ConfigurationTable, MemoryDescriptor, MemoryMap, SimpleTextOutputProtocol,
+    Status, TableHeader,
 };
 
 /// `EFI_SYSTEM_TABLE`.
@@ -23,7 +24,7 @@ pub struct SystemTable {
     pub runtime_services: *mut c_void,
     pub boot_services: *mut BootServices,
     pub number_of_table_entries: usize,
-    pub configuration_table: *mut c_void,
+    pub configuration_table: *mut ConfigurationTable,
 }
 
 impl SystemTable {

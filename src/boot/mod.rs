@@ -27,6 +27,8 @@ pub enum MemoryKind {
 /// Boot data; each source implements it over its original data
 /// (UEFI, Multiboot2).
 pub trait BootInfo {
+    /// Physical address of the ACPI RSDP, newest revision first.
+    fn acpi_rsdp(&self) -> Option<u64>;
     fn memory_map(&self) -> impl Iterator<Item = MemoryRegion>;
 }
 

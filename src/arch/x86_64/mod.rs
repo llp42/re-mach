@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! x86_64 machine-dependent code.
 
+mod acpi;
 mod apic;
 mod boot_stack;
 mod cpuid;
@@ -63,6 +64,8 @@ extern "sysv64" fn init_on_boot_stack<B: BootInfo>(boot_info: *const B) -> ! {
         features.has_xsave()
     );
     let _ = write!(Serial, "cpu {}\r\n", per_cpu::PerCpu::cpu_id());
+    // SAFETY: once, on the boot CPU; assumes the first 2 MiB and boot data are identity-mapped.
+    unsafe { acpi::init(boot_info) };
     for region in boot_info.memory_map() {
         let _ = write!(
             Serial,

@@ -1,0 +1,12 @@
+Files marked "Inspired by GNU Mach" draw on GNU Mach, commit
+fa3026b9d18261dce7152b93c4b106798404bae3 of
+https://git.savannah.gnu.org/git/hurd/gnumach.git. The GNU Mach files
+drawn on are:
+
+SPDX-FileName: i386/i386at/acpi_parse_apic.c
+SPDX-FileCopyrightText: 2018-2020 Free Software Foundation, Inc.
+SPDX-License-Identifier: GPL-2.0-or-later
+
+SPDX-FileName: i386/i386at/acpi_parse_apic.h
+SPDX-FileCopyrightText: 2018-2020 Free Software Foundation, Inc.
+SPDX-License-Identifier: GPL-2.0-or-later

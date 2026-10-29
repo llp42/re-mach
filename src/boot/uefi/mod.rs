@@ -6,6 +6,8 @@
 
 mod boot_info;
 mod boot_services;
+mod configuration_table;
+mod guid;
 mod memory_descriptor;
 mod memory_map;
 mod simple_text_output_protocol;
@@ -15,6 +17,8 @@ mod table_header;
 
 pub use boot_info::Uefi;
 pub use boot_services::BootServices;
+pub use configuration_table::ConfigurationTable;
+pub use guid::Guid;
 pub use memory_descriptor::MemoryDescriptor;
 pub use memory_map::MemoryMap;
 pub use simple_text_output_protocol::SimpleTextOutputProtocol;

@@ -2,21 +2,43 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! Boot information from UEFI.
 
-use super::MemoryMap;
+use core::slice;
+
+use super::{Guid, MemoryMap, SystemTable};
 use crate::boot::{BootInfo, MemoryKind, MemoryRegion};
 
 /// A view over the firmware's data; copies nothing.
 pub struct Uefi<'a> {
+    system_table: &'a SystemTable,
     memory_map: MemoryMap<'a>,
 }
 
 impl<'a> Uefi<'a> {
-    pub const fn new(memory_map: MemoryMap<'a>) -> Self {
-        Self { memory_map }
+    pub const fn new(system_table: &'a SystemTable, memory_map: MemoryMap<'a>) -> Self {
+        Self {
+            system_table,
+            memory_map,
+        }
     }
 }
 
 impl BootInfo for Uefi<'_> {
+    fn acpi_rsdp(&self) -> Option<u64> {
+        if self.system_table.configuration_table.is_null() {
+            return None;
+        }
+        // SAFETY: the firmware's table, kept after `ExitBootServices`.
+        let tables = unsafe {
+            slice::from_raw_parts(
+                self.system_table.configuration_table,
+                self.system_table.number_of_table_entries,
+            )
+        };
+        let find = |guid| tables.iter().find(|table| table.vendor_guid == guid);
+        let table = find(Guid::ACPI_20_TABLE).or_else(|| find(Guid::ACPI_TABLE))?;
+        u64::try_from(table.vendor_table.addr()).ok()
+    }
+
     fn memory_map(&self) -> impl Iterator<Item = MemoryRegion> {
         self.memory_map.clone().map(|descriptor| MemoryRegion {
             address: descriptor.physical_start,
