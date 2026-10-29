@@ -60,9 +60,9 @@ SPDX-FileContributor: Richard Braun
 SPDX-License-Identifier: GPL-2.0-or-later
 
 SPDX-FileName: include/mach/host_info.h
-SPDX-FileCopyrightText: 1988-1993 Carnegie Mellon University
+SPDX-FileCopyrightText: 1993, 1992, 1991, 1990, 1989, 1988 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
 
 SPDX-FileName: kern/host.c
-SPDX-FileCopyrightText: 1988-1993 Carnegie Mellon University
+SPDX-FileCopyrightText: 1993, 1992, 1991, 1990, 1989, 1988 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
