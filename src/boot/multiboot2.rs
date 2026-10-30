@@ -31,6 +31,7 @@ pub struct TagType(pub u32);
 
 impl TagType {
     pub const END: Self = Self(0);
+    pub const MODULE: Self = Self(3);
     pub const MMAP: Self = Self(6);
     pub const EFI64: Self = Self(12);
     pub const ACPI_OLD: Self = Self(14);
@@ -60,6 +61,14 @@ const TAG_ALIGN: usize = 8;
 struct TagHeader {
     ty: TagType,
     size: u32,
+}
+
+/// Start of the module tag; the module's command line follows.
+#[repr(C)]
+struct ModuleTag {
+    _header: TagHeader,
+    mod_start: u32,
+    mod_end: u32,
 }
 
 /// Start of the memory map tag; the entries follow.
@@ -126,6 +135,11 @@ impl<'a> Info<'a> {
 
 /// An information tag.
 pub enum Tag<'a> {
+    /// A module's physical range, `mod_end` past its last byte.
+    Module {
+        mod_start: u32,
+        mod_end: u32,
+    },
     Mmap(Mmap<'a>),
     /// Copy of the ACPI 1.0 RSDP.
     AcpiOld(&'a [u8]),
@@ -150,6 +164,13 @@ impl Tag<'_> {
         // SAFETY: guaranteed by the caller.
         unsafe {
             match header.ty {
+                TagType::MODULE => {
+                    let tag = ptr::with_exposed_provenance::<ModuleTag>(address).read();
+                    Self::Module {
+                        mod_start: tag.mod_start,
+                        mod_end: tag.mod_end,
+                    }
+                }
                 TagType::MMAP => Self::Mmap(Mmap::new(address)),
                 TagType::ACPI_OLD => Self::AcpiOld(slice::from_raw_parts(
                     ptr::with_exposed_provenance(body),

@@ -85,6 +85,18 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe {
         boot_memory::register_boot_data(PhysAddr(start)..PhysAddr(end), Retention::Temporary);
     }
+    for tag in boot_info.tags() {
+        if let multiboot2::Tag::Module { mod_start, mod_end } = tag {
+            let (start, end) = (u64::from(mod_start), u64::from(mod_end));
+            // SAFETY: the boot CPU; a module, until no longer needed.
+            unsafe {
+                boot_memory::register_boot_data(
+                    PhysAddr(start)..PhysAddr(end),
+                    Retention::Temporary,
+                );
+            }
+        }
+    }
     // SAFETY: the boot CPU, once.
     unsafe { boot_memory::bootstrap(boot_info) };
     halt();
