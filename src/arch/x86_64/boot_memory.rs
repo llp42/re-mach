@@ -185,8 +185,8 @@ impl Map {
         let (entries, len) = unsafe { (&mut *self.entries.get(), &mut *self.len.get()) };
         let built = boot_info.mmap().into_iter().flatten().filter_map(|entry| {
             MapEntry {
-                base_addr: PhysAddr(usize::try_from(entry.base_addr).unwrap()),
-                length: usize::try_from(entry.length).unwrap(),
+                base_addr: PhysAddr(entry.base_addr),
+                length: entry.length,
                 kind: EntryKind::from(entry.ty),
             }
             .narrow_to_pages()

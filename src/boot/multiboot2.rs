@@ -163,8 +163,8 @@ pub enum Tag<'a> {
     /// A module's physical range, `mod_end` past its last byte, and its
     /// command line.
     Module {
-        mod_start: u32,
-        mod_end: u32,
+        mod_start: usize,
+        mod_end: usize,
         cmdline: &'a CStr,
     },
     Mmap(Mmap<'a>),
@@ -200,8 +200,8 @@ impl Tag<'_> {
                     let tag = ptr::with_exposed_provenance::<ModuleTag>(address).read();
                     let cmdline = address + size_of::<ModuleTag>();
                     Self::Module {
-                        mod_start: tag.mod_start,
-                        mod_end: tag.mod_end,
+                        mod_start: usize::try_from(tag.mod_start).unwrap(),
+                        mod_end: usize::try_from(tag.mod_end).unwrap(),
                         cmdline: CStr::from_ptr(ptr::with_exposed_provenance::<c_char>(cmdline)),
                     }
                 }
@@ -256,20 +256,31 @@ impl Iterator for Mmap<'_> {
     fn next(&mut self) -> Option<MmapEntry> {
         (self.next < self.end).then(|| {
             // SAFETY: the loader's entries fill the tag, `entry_size` apart.
-            let entry = unsafe { ptr::with_exposed_provenance::<MmapEntry>(self.next).read() };
+            let entry = unsafe { ptr::with_exposed_provenance::<RawMmapEntry>(self.next).read() };
             self.next += self.entry_size;
-            entry
+            MmapEntry {
+                base_addr: usize::try_from(entry.base_addr).unwrap(),
+                length: usize::try_from(entry.length).unwrap(),
+                ty: entry.ty,
+            }
         })
     }
 }
 
 /// One memory map entry.
 #[derive(Clone, Copy)]
-#[repr(C)]
 pub struct MmapEntry {
-    pub base_addr: u64,
-    pub length: u64,
+    pub base_addr: usize,
+    pub length: usize,
     pub ty: MemoryType,
+}
+
+/// A memory map entry as the loader lays it out.
+#[repr(C)]
+struct RawMmapEntry {
+    base_addr: u64,
+    length: u64,
+    ty: MemoryType,
     _reserved: u32,
 }
 
@@ -308,25 +319,37 @@ impl Iterator for ElfSections<'_> {
         (self.left > 0).then(|| {
             // SAFETY: the loader's `num` headers follow the tag, `entsize`
             // apart.
-            let section =
-                unsafe { ptr::with_exposed_provenance::<ElfSection>(self.next).read_unaligned() };
+            let section = unsafe {
+                ptr::with_exposed_provenance::<RawElfSection>(self.next).read_unaligned()
+            };
             self.next += self.entsize;
             self.left -= 1;
-            section
+            ElfSection {
+                ty: section.ty,
+                addr: usize::try_from(section.addr).unwrap(),
+                size: usize::try_from(section.size).unwrap(),
+            }
         })
     }
 }
 
-/// One ELF64 section header.
+/// One ELF section header.
 #[derive(Clone, Copy)]
-#[repr(C)]
 pub struct ElfSection {
-    _name: u32,
     pub ty: ElfSectionType,
+    pub addr: usize,
+    pub size: usize,
+}
+
+/// An ELF64 section header as the loader lays it out.
+#[repr(C)]
+struct RawElfSection {
+    _name: u32,
+    ty: ElfSectionType,
     _flags: u64,
-    pub addr: u64,
+    addr: u64,
     _offset: u64,
-    pub size: u64,
+    size: u64,
     _link: u32,
     _info: u32,
     _addralign: u64,

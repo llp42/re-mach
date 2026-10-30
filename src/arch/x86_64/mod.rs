@@ -122,8 +122,7 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
                     matches!(section.ty, ElfSectionType::SYMTAB | ElfSectionType::STRTAB)
                         && section.size != 0
                 }) {
-                    let start = usize::try_from(section.addr).unwrap();
-                    let end = start + usize::try_from(section.size).unwrap();
+                    let (start, end) = (section.addr, section.addr + section.size);
                     // SAFETY: the boot CPU; a symbol or string table, kept.
                     unsafe {
                         boot_memory::register_boot_data(
@@ -136,12 +135,10 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
             Tag::Module {
                 mod_start, mod_end, ..
             } => {
-                let start = usize::try_from(mod_start).unwrap();
-                let end = usize::try_from(mod_end).unwrap();
                 // SAFETY: the boot CPU; a module, until no longer needed.
                 unsafe {
                     boot_memory::register_boot_data(
-                        PhysAddr(start)..PhysAddr(end),
+                        PhysAddr(mod_start)..PhysAddr(mod_end),
                         Retention::Temporary,
                     );
                 }
@@ -192,12 +189,11 @@ unsafe fn copy_boot_info(boot_info: multiboot2::Info) {
                 mod_end,
                 cmdline,
             } => {
-                let size = usize::try_from(mod_end - mod_start).unwrap();
+                let size = mod_end - mod_start;
                 // SAFETY: guaranteed by the caller.
                 let start = unsafe { alloc_bytes(size) };
                 let copy = phys_to_virt::<u8>(start);
-                let module =
-                    ptr::with_exposed_provenance::<u8>(usize::try_from(mod_start).unwrap());
+                let module = ptr::with_exposed_provenance::<u8>(mod_start);
                 let bytes = cmdline.to_bytes_with_nul();
                 // SAFETY: guaranteed by the caller.
                 let string = phys_to_virt::<u8>(unsafe { alloc_bytes(bytes.len()) });
