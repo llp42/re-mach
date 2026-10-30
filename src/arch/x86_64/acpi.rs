@@ -36,7 +36,7 @@ static RSDP: Rsdp = Rsdp(UnsafeCell::new(None));
 ///
 /// Runs once, on the boot CPU. The first 2 MiB are identity-mapped and
 /// readable.
-pub unsafe fn init(boot_info: &Info) {
+pub unsafe fn init(boot_info: Info) {
     let (mut old, mut new) = (None, None);
     for tag in boot_info.tags() {
         match tag {

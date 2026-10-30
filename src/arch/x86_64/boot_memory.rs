@@ -181,7 +181,7 @@ impl Map {
     /// # Safety
     ///
     /// Runs on the boot CPU only.
-    unsafe fn build(&self, boot_info: &Info) {
+    unsafe fn build(&self, boot_info: Info) {
         // SAFETY: guaranteed by the caller.
         let (entries, len) = unsafe { (&mut *self.entries.get(), &mut *self.len.get()) };
         let built = boot_info.mmap().into_iter().flatten().filter_map(|entry| {
@@ -442,7 +442,7 @@ unsafe fn mem_upper_end() -> PhysAddr {
 /// # Safety
 ///
 /// Runs once, on the boot CPU.
-pub unsafe fn bootstrap(boot_info: &Info) {
+pub unsafe fn bootstrap(boot_info: Info) {
     // SAFETY: guaranteed by the caller.
     unsafe {
         MAP.build(boot_info);

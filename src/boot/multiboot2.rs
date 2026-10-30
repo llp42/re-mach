@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! Multiboot2, from its specification: header values, and the boot
-//! information read in place.
+//! information read in place, trusting the loader.
 
+use core::marker::PhantomData;
 use core::{iter, ptr, slice};
 
 /// Header magic.
@@ -24,6 +25,7 @@ impl HeaderTagType {
 
 /// Information tag type; loaders may add types the kernel does not know.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
 pub struct TagType(pub u32);
 
 impl TagType {
@@ -36,6 +38,7 @@ impl TagType {
 
 /// Memory map entry type; any other value is reserved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
 pub struct MemoryType(pub u32);
 
 impl MemoryType {
@@ -45,45 +48,63 @@ impl MemoryType {
     pub const BADRAM: Self = Self(5);
 }
 
-/// Bytes of the structure's and of each tag's header; tags are aligned to it.
-const HEADER_SIZE: usize = 8;
+/// Bytes before the first tag: `total_size` and `reserved`.
+const INFO_HEADER_SIZE: usize = 8;
 
-/// Smallest memory map entry.
-const MMAP_ENTRY_SIZE: usize = 24;
+/// Tags start on 8-byte boundaries.
+const TAG_ALIGN: usize = 8;
+
+/// Start of every tag.
+#[repr(C)]
+struct TagHeader {
+    ty: TagType,
+    size: u32,
+}
+
+/// Start of the memory map tag; the entries follow.
+#[repr(C)]
+struct MmapTag {
+    header: TagHeader,
+    entry_size: u32,
+    _entry_version: u32,
+}
 
 /// The boot information structure.
 #[derive(Clone, Copy)]
-pub struct Info<'a>(&'a [u8]);
+pub struct Info<'a> {
+    address: usize,
+    _info: PhantomData<&'a [u8]>,
+}
 
 impl<'a> Info<'a> {
     /// The structure at `address`.
     ///
     /// # Safety
     ///
-    /// `address` holds the loader's structure, 8-byte aligned, readable and
-    /// unchanged for `'a`.
-    pub unsafe fn from_address(address: usize) -> Self {
-        let start = ptr::with_exposed_provenance::<u32>(address);
-        // SAFETY: guaranteed by the caller; `total_size` comes first.
-        let total_size = usize::try_from(unsafe { start.read() }).unwrap_or(0);
-        // SAFETY: guaranteed by the caller.
-        Self(unsafe { slice::from_raw_parts(start.cast::<u8>(), total_size) })
+    /// `address` holds the loader's structure, readable and unchanged for `'a`.
+    pub const unsafe fn from_address(address: usize) -> Self {
+        Self {
+            address,
+            _info: PhantomData,
+        }
     }
 
-    /// The tags before the end tag, in order; stops at a malformed one.
+    /// The tags before the end tag, in order.
     pub fn tags(self) -> impl Iterator<Item = Tag<'a>> {
-        let mut rest = self.0.get(HEADER_SIZE..).unwrap_or_default();
+        let mut address = self.address + INFO_HEADER_SIZE;
         iter::from_fn(move || {
-            let ty = TagType(read_u32(rest, 0)?);
-            let size = usize::try_from(read_u32(rest, 4)?).ok()?;
-            let body = rest.get(HEADER_SIZE..size)?;
-            rest = rest
-                .get(size.next_multiple_of(HEADER_SIZE)..)
-                .unwrap_or_default();
-            Some((ty, body))
+            let tag = address;
+            // SAFETY: the loader puts its tags one after another, the end
+            // tag last.
+            let header = unsafe { ptr::with_exposed_provenance::<TagHeader>(tag).read() };
+            address += usize::try_from(header.size)
+                .unwrap()
+                .next_multiple_of(TAG_ALIGN);
+            Some((tag, header))
         })
-        .take_while(|&(ty, _)| ty != TagType::END)
-        .map(|(ty, body)| Tag::parse(ty, body))
+        .take_while(|(_, header)| header.ty != TagType::END)
+        // SAFETY: as above.
+        .map(|(tag, header)| unsafe { Tag::parse(tag, &header) })
     }
 
     /// The memory map, if a tag holds one.
@@ -104,40 +125,64 @@ pub enum Tag<'a> {
     AcpiNew(&'a [u8]),
     /// Physical address of the EFI system table.
     Efi64(u64),
-    /// A type not read here, or a malformed tag.
+    /// A type not read here.
     Other,
 }
 
-impl<'a> Tag<'a> {
-    /// The tag of type `ty`, whose contents after its header are `body`.
-    fn parse(ty: TagType, body: &'a [u8]) -> Self {
-        let tag = match ty {
-            TagType::MMAP => Mmap::parse(body).map(Self::Mmap),
-            TagType::ACPI_OLD => Some(Self::AcpiOld(body)),
-            TagType::ACPI_NEW => Some(Self::AcpiNew(body)),
-            TagType::EFI64 => read_u64(body, 0).map(Self::Efi64),
-            _ => None,
-        };
-        tag.unwrap_or(Self::Other)
+impl Tag<'_> {
+    /// The tag at `address`, whose header is `header`.
+    ///
+    /// # Safety
+    ///
+    /// `address` holds the loader's tag, readable and unchanged for the
+    /// result's lifetime.
+    unsafe fn parse(address: usize, header: &TagHeader) -> Self {
+        let body = address + size_of::<TagHeader>();
+        let len = usize::try_from(header.size).unwrap() - size_of::<TagHeader>();
+        // SAFETY: guaranteed by the caller.
+        unsafe {
+            match header.ty {
+                TagType::MMAP => Self::Mmap(Mmap::new(address)),
+                TagType::ACPI_OLD => Self::AcpiOld(slice::from_raw_parts(
+                    ptr::with_exposed_provenance(body),
+                    len,
+                )),
+                TagType::ACPI_NEW => Self::AcpiNew(slice::from_raw_parts(
+                    ptr::with_exposed_provenance(body),
+                    len,
+                )),
+                TagType::EFI64 => Self::Efi64(ptr::with_exposed_provenance::<u64>(body).read()),
+                _ => Self::Other,
+            }
+        }
     }
 }
 
 /// The memory map's entries.
 #[derive(Clone)]
 pub struct Mmap<'a> {
+    next: usize,
+    end: usize,
     entry_size: usize,
-    entries: &'a [u8],
+    _info: PhantomData<&'a [u8]>,
 }
 
-impl<'a> Mmap<'a> {
-    /// The map in a memory map tag's `body`: entry size and version, then
-    /// the entries.
-    fn parse(body: &'a [u8]) -> Option<Self> {
-        let entry_size = usize::try_from(read_u32(body, 0)?).ok()?;
-        (entry_size >= MMAP_ENTRY_SIZE).then(|| Self {
-            entry_size,
-            entries: body.get(8..).unwrap_or_default(),
-        })
+impl Mmap<'_> {
+    /// The map in the memory map tag at `address`.
+    ///
+    /// # Safety
+    ///
+    /// `address` holds the loader's memory map tag, readable and unchanged
+    /// for the result's lifetime.
+    unsafe fn new(address: usize) -> Self {
+        // SAFETY: guaranteed by the caller.
+        let tag = unsafe { ptr::with_exposed_provenance::<MmapTag>(address).read() };
+        Self {
+            next: address + size_of::<MmapTag>(),
+            end: address + usize::try_from(tag.header.size).unwrap(),
+            entry_size: usize::try_from(tag.entry_size).unwrap(),
+            _info: PhantomData,
+        }
     }
 }
 
@@ -145,32 +190,21 @@ impl Iterator for Mmap<'_> {
     type Item = MmapEntry;
 
     fn next(&mut self) -> Option<MmapEntry> {
-        let entry = self.entries.get(..self.entry_size)?;
-        self.entries = &self.entries[self.entry_size..];
-        Some(MmapEntry {
-            base_addr: read_u64(entry, 0)?,
-            length: read_u64(entry, 8)?,
-            ty: MemoryType(read_u32(entry, 16)?),
+        (self.next < self.end).then(|| {
+            // SAFETY: the loader's entries fill the tag, `entry_size` apart.
+            let entry = unsafe { ptr::with_exposed_provenance::<MmapEntry>(self.next).read() };
+            self.next += self.entry_size;
+            entry
         })
     }
 }
 
 /// One memory map entry.
 #[derive(Clone, Copy)]
+#[repr(C)]
 pub struct MmapEntry {
     pub base_addr: u64,
     pub length: u64,
     pub ty: MemoryType,
-}
-
-/// The native-endian `u32` at `at`.
-fn read_u32(bytes: &[u8], at: usize) -> Option<u32> {
-    let bytes = bytes.get(at..at + 4)?;
-    Some(u32::from_ne_bytes(<[u8; 4]>::try_from(bytes).ok()?))
-}
-
-/// The native-endian `u64` at `at`.
-fn read_u64(bytes: &[u8], at: usize) -> Option<u64> {
-    let bytes = bytes.get(at..at + 8)?;
-    Some(u64::from_ne_bytes(<[u8; 8]>::try_from(bytes).ok()?))
+    _reserved: u32,
 }

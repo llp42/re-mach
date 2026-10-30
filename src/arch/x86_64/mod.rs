@@ -71,7 +71,7 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     );
     let _ = write!(Serial, "cpu {}\r\n", per_cpu::PerCpu::cpu_id());
     // SAFETY: once, on the boot CPU; the first 4 GiB are identity-mapped.
-    unsafe { acpi::init(&boot_info) };
+    unsafe { acpi::init(boot_info) };
     let start = u64::try_from((&raw const boot_start).addr()).unwrap();
     let end = u64::try_from((&raw const _end).addr()).unwrap() - MIN_KERNEL_ADDRESS;
     // SAFETY: the boot CPU; from `.boot`, which holds the live page tables.
@@ -79,7 +79,7 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
         boot_memory::register_boot_data(PhysAddr(start)..PhysAddr(end), Retention::Permanent);
     }
     // SAFETY: the boot CPU, once.
-    unsafe { boot_memory::bootstrap(&boot_info) };
+    unsafe { boot_memory::bootstrap(boot_info) };
     for entry in boot_info.mmap().into_iter().flatten() {
         let _ = write!(
             Serial,
