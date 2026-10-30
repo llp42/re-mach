@@ -53,7 +53,7 @@ static BOOT_DATA: BootDataArray = BootDataArray {
 const MAX_MAP_ENTRIES: usize = 128;
 
 /// Memory range kinds; later ones are more restrictive and win overlaps.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum EntryKind {
     Available,
     Reserved,
@@ -85,6 +85,11 @@ struct MapEntry {
 }
 
 impl MapEntry {
+    /// End of the range, past its last byte.
+    fn end(&self) -> PhysAddr {
+        self.base_addr + self.length
+    }
+
     /// Narrows available, NVS and disabled ranges to whole pages; `None` if
     /// the range wraps around.
     fn narrow_to_pages(mut self) -> Option<Self> {
@@ -104,6 +109,8 @@ impl MapEntry {
 struct Map {
     entries: UnsafeCell<[MapEntry; MAX_MAP_ENTRIES * 2]>,
     len: UnsafeCell<usize>,
+    /// Input of `normalize`.
+    copy: UnsafeCell<[MapEntry; MAX_MAP_ENTRIES]>,
 }
 
 // SAFETY: only the boot CPU touches it.
@@ -131,6 +138,62 @@ impl Map {
             *len += 1;
         }
     }
+
+    /// Sorts the map, drops empty ranges and resolves overlaps: the most
+    /// restrictive kind wins.
+    ///
+    /// # Safety
+    ///
+    /// Runs on the boot CPU only.
+    unsafe fn normalize(&self) {
+        // SAFETY: guaranteed by the caller.
+        let (entries, len, copy) = unsafe {
+            (
+                &mut *self.entries.get(),
+                &mut *self.len.get(),
+                &mut *self.copy.get(),
+            )
+        };
+        let mut n = 0;
+        for entry in &entries[..*len] {
+            if entry.length != 0 {
+                copy[n] = *entry;
+                n += 1;
+            }
+        }
+        let copy = &copy[..n];
+        *len = 0;
+        // Walks from boundary to boundary of the ranges.
+        let Some(mut start) = copy.iter().map(|entry| entry.base_addr).min() else {
+            return;
+        };
+        while let Some(end) = copy
+            .iter()
+            .flat_map(|entry| [entry.base_addr, entry.end()])
+            .filter(|&point| point > start)
+            .min()
+        {
+            let covering = copy
+                .iter()
+                .filter(|entry| entry.base_addr <= start && end <= entry.end());
+            if let Some(kind) = covering.map(|entry| entry.kind).max() {
+                if let Some(last) = entries[..*len].last_mut()
+                    && last.end() == start
+                    && last.kind == kind
+                {
+                    last.length += end - start;
+                } else {
+                    entries[*len] = MapEntry {
+                        base_addr: start,
+                        length: end - start,
+                        kind,
+                    };
+                    *len += 1;
+                }
+            }
+            start = end;
+        }
+    }
 }
 
 static MAP: Map = Map {
@@ -142,6 +205,13 @@ static MAP: Map = Map {
         }; MAX_MAP_ENTRIES * 2],
     ),
     len: UnsafeCell::new(0),
+    copy: UnsafeCell::new(
+        [MapEntry {
+            base_addr: PhysAddr(0),
+            length: 0,
+            kind: EntryKind::Available,
+        }; MAX_MAP_ENTRIES],
+    ),
 };
 
 /// Keeps `range` from the page allocator; `Temporary` data is released
@@ -194,5 +264,8 @@ pub unsafe fn register_boot_data(range: Range<PhysAddr>, retention: Retention) {
 /// Runs once, on the boot CPU.
 pub unsafe fn bootstrap(boot_info: &impl BootInfo) {
     // SAFETY: guaranteed by the caller.
-    unsafe { MAP.build(boot_info) };
+    unsafe {
+        MAP.build(boot_info);
+        MAP.normalize();
+    }
 }

@@ -2,6 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! Page arithmetic.
 
+use core::ops::{Add, Sub};
+
 use super::memory_layout::PAGE_SIZE;
 
 /// Physical address, for page arithmetic.
@@ -27,5 +29,21 @@ impl PhysAddr {
     /// Bytes from `other` up to `self`; `None` if `other` is above `self`.
     pub const fn checked_sub(self, other: Self) -> Option<u64> {
         self.0.checked_sub(other.0)
+    }
+}
+
+impl Add<u64> for PhysAddr {
+    type Output = Self;
+
+    fn add(self, length: u64) -> Self {
+        Self(self.0 + length)
+    }
+}
+
+impl Sub for PhysAddr {
+    type Output = u64;
+
+    fn sub(self, other: Self) -> u64 {
+        self.0 - other.0
     }
 }
