@@ -475,7 +475,6 @@ pub unsafe fn bootstrap(boot_info: Info) {
 /// # Safety
 ///
 /// Runs on the boot CPU only, after `bootstrap`.
-#[expect(dead_code, reason = "alloc_bytes calls it")]
 pub unsafe fn alloc_pages(count: usize) -> PhysAddr {
     assert!(count != 0, "boot_memory: attempt to allocate 0 page");
     // SAFETY: guaranteed by the caller.

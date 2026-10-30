@@ -26,7 +26,7 @@ use crate::boot::multiboot2::{self, ElfSectionType, Tag};
 use crate::smp::PerCpu as _;
 use address::PhysAddr;
 use boot_memory::Retention;
-use memory_layout::MIN_KERNEL_ADDRESS;
+use memory_layout::{MIN_KERNEL_ADDRESS, PAGE_SIZE};
 use serial::Serial;
 
 unsafe extern "C" {
@@ -125,4 +125,20 @@ pub fn halt() -> ! {
     loop {
         unsafe { asm!("hlt") };
     }
+}
+
+/// Boot memory for `size` bytes, rounded up to whole pages.
+///
+/// # Panics
+///
+/// If `size` is 0 or more than the boot heap has left.
+///
+/// # Safety
+///
+/// Runs on the boot CPU only, after boot memory's bootstrap.
+#[expect(dead_code, reason = "the command line copy calls it")]
+unsafe fn alloc_bytes(size: usize) -> PhysAddr {
+    let page_size = usize::try_from(PAGE_SIZE).unwrap();
+    // SAFETY: guaranteed by the caller.
+    unsafe { boot_memory::alloc_pages(size.div_ceil(page_size)) }
 }
