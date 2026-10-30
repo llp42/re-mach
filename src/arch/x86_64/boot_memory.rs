@@ -335,8 +335,8 @@ struct Heap {
 unsafe impl Sync for Heap {}
 
 impl Heap {
-    /// Takes the largest free area between 1 MiB and `mem_upper_end` as the
-    /// boot heap, avoiding all boot data.
+    /// Takes the largest free area of available memory between 1 MiB and the
+    /// direct map's end as the boot heap, avoiding all boot data.
     ///
     /// # Panics
     ///
@@ -345,15 +345,22 @@ impl Heap {
     /// # Safety
     ///
     /// Runs on the boot CPU only.
-    unsafe fn init(&self, mem_upper_end: PhysAddr) {
-        let end = mem_upper_end.align_down().min(DIRECT_MAP_LIMIT);
-        let mut heap = PhysAddr(0)..PhysAddr(0);
-        let mut start = LOW_MEMORY_END;
+    unsafe fn init(&self) {
         // SAFETY: guaranteed by the caller.
-        while let Some(gap) = unsafe { BOOT_DATA.find_gap(start..end) } {
-            start = gap.end;
-            if gap.end - gap.start > heap.end - heap.start {
-                heap = gap;
+        let (entries, len) = unsafe { (&*MAP.entries.get(), *MAP.len.get()) };
+        let mut heap = PhysAddr(0)..PhysAddr(0);
+        for entry in entries[..len]
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::Available)
+        {
+            let mut start = entry.base_addr.max(LOW_MEMORY_END);
+            let end = entry.end().min(DIRECT_MAP_LIMIT);
+            // SAFETY: guaranteed by the caller.
+            while let Some(gap) = unsafe { BOOT_DATA.find_gap(start..end) } {
+                start = gap.end;
+                if gap.end - gap.start > heap.end - heap.start {
+                    heap = gap;
+                }
             }
         }
         assert!(
@@ -418,24 +425,6 @@ pub unsafe fn register_boot_data(range: Range<PhysAddr>, retention: Retention) {
     *len += 1;
 }
 
-/// End of the available range that holds 1 MiB, or 1 MiB if none does.
-///
-/// # Safety
-///
-/// Runs on the boot CPU only.
-unsafe fn mem_upper_end() -> PhysAddr {
-    // SAFETY: guaranteed by the caller.
-    let (entries, len) = unsafe { (&*MAP.entries.get(), *MAP.len.get()) };
-    entries[..len]
-        .iter()
-        .find(|entry| {
-            entry.kind == EntryKind::Available
-                && entry.base_addr <= LOW_MEMORY_END
-                && entry.end() > LOW_MEMORY_END
-        })
-        .map_or(LOW_MEMORY_END, MapEntry::end)
-}
-
 /// Sets up boot memory from the boot information.
 ///
 /// # Safety
@@ -474,5 +463,5 @@ pub unsafe fn bootstrap(boot_info: Info) {
         }
     }
     // SAFETY: guaranteed by the caller.
-    unsafe { HEAP.init(mem_upper_end()) };
+    unsafe { HEAP.init() };
 }
