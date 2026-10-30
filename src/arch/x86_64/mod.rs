@@ -4,6 +4,7 @@
 
 mod acpi;
 mod address;
+mod ap_boot;
 mod apic;
 mod boot_memory;
 mod boot_stack;

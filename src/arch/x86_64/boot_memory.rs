@@ -5,9 +5,20 @@
 
 use core::cell::UnsafeCell;
 use core::ops::Range;
+use core::sync::atomic::Ordering;
 
 use super::address::PhysAddr;
+use super::ap_boot;
+use super::memory_layout::{DMA_LIMIT, PAGE_SIZE, Segment};
 use crate::boot::{BootInfo, MemoryKind};
+use crate::config::MAX_CPUS;
+
+/// Start of usable low memory; the first 64 KiB are left to BIOS data and
+/// to buggy hardware.
+const LOW_MEMORY_BASE: PhysAddr = PhysAddr(0x1_0000);
+
+/// End of the first MiB.
+const LOW_MEMORY_END: PhysAddr = PhysAddr(0x10_0000);
 
 const MAX_BOOT_DATA: usize = 64;
 
@@ -29,6 +40,31 @@ struct BootData {
     retention: Retention,
 }
 
+impl BootData {
+    /// Clips `area` to the part before this boot data, or after it when it
+    /// covers the start of `area`; `None` if nothing is left.
+    ///
+    /// # Panics
+    ///
+    /// If rounding the end of this boot data overflows.
+    fn clip(&self, area: Range<PhysAddr>) -> Option<Range<PhysAddr>> {
+        let start = self.start.align_down();
+        let end = self
+            .end
+            .checked_align_up()
+            .expect("boot_memory: invalid boot data");
+        if end <= area.start || start >= area.end {
+            Some(area)
+        } else if start > area.start {
+            Some(area.start..start)
+        } else if end >= area.end {
+            None
+        } else {
+            Some(end..area.end)
+        }
+    }
+}
+
 /// Sorted array of boot data descriptors.
 struct BootDataArray {
     data: UnsafeCell<[BootData; MAX_BOOT_DATA]>,
@@ -37,6 +73,27 @@ struct BootDataArray {
 
 // SAFETY: only the boot CPU touches it.
 unsafe impl Sync for BootDataArray {}
+
+impl BootDataArray {
+    /// The first part of `range` that avoids all boot data, page-aligned;
+    /// `None` if there is none.
+    ///
+    /// # Safety
+    ///
+    /// Runs on the boot CPU only.
+    unsafe fn find_gap(&self, range: Range<PhysAddr>) -> Option<Range<PhysAddr>> {
+        let start = range.start.checked_align_up()?;
+        let end = range.end.align_down();
+        if start >= end {
+            return None;
+        }
+        // SAFETY: guaranteed by the caller.
+        let (data, len) = unsafe { (&*self.data.get(), *self.len.get()) };
+        data[..len]
+            .iter()
+            .try_fold(start..end, |area, boot_data| boot_data.clip(area))
+    }
+}
 
 static BOOT_DATA: BootDataArray = BootDataArray {
     data: UnsafeCell::new(
@@ -194,6 +251,35 @@ impl Map {
             start = end;
         }
     }
+
+    /// Narrows `range` to the available memory it holds: from the first
+    /// available page to the end of the last available range starting in it.
+    ///
+    /// # Safety
+    ///
+    /// Runs on the boot CPU only.
+    unsafe fn available_span(&self, range: Range<PhysAddr>) -> Option<Range<PhysAddr>> {
+        // SAFETY: guaranteed by the caller.
+        let (entries, len) = unsafe { (&*self.entries.get(), *self.len.get()) };
+        let mut span: Option<Range<PhysAddr>> = None;
+        for entry in entries[..len]
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::Available)
+        {
+            let Some(start) = entry.base_addr.checked_align_up() else {
+                break;
+            };
+            if start >= range.end {
+                break;
+            }
+            let end = entry.end().align_down();
+            if start < end && end > range.start {
+                span = Some(span.map_or(start, |span| span.start)..end);
+            }
+        }
+        let span = span?;
+        Some(span.start.max(range.start)..span.end.min(range.end))
+    }
 }
 
 static MAP: Map = Map {
@@ -213,6 +299,28 @@ static MAP: Map = Map {
         }; MAX_MAP_ENTRIES],
     ),
 };
+
+/// Physical segments, from the memory map.
+struct Segments(UnsafeCell<[Range<PhysAddr>; Segment::COUNT]>);
+
+// SAFETY: only the boot CPU touches it.
+unsafe impl Sync for Segments {}
+
+impl Segments {
+    /// Sets the bounds of `segment`.
+    ///
+    /// # Safety
+    ///
+    /// Runs on the boot CPU only.
+    unsafe fn set(&self, segment: Segment, range: Range<PhysAddr>) {
+        // SAFETY: guaranteed by the caller.
+        unsafe { (*self.0.get())[usize::from(segment)] = range };
+    }
+}
+
+static SEGMENTS: Segments = Segments(UnsafeCell::new(
+    [const { PhysAddr(0)..PhysAddr(0) }; Segment::COUNT],
+));
 
 /// Keeps `range` from the page allocator; `Temporary` data is released
 /// once no longer needed.
@@ -268,4 +376,19 @@ pub unsafe fn bootstrap(boot_info: &impl BootInfo) {
         MAP.build(boot_info);
         MAP.normalize();
     }
+    // SAFETY: guaranteed by the caller.
+    let dma = unsafe { MAP.available_span(LOW_MEMORY_BASE..DMA_LIMIT) }
+        .expect("boot_memory: unable to find any memory segment");
+    if MAX_CPUS > 1 {
+        // Grab an early page for AP boot code, which must be below 1 MiB.
+        // SAFETY: guaranteed by the caller.
+        let gap = unsafe { BOOT_DATA.find_gap(dma.clone()) }
+            .filter(|gap| gap.end - gap.start >= PAGE_SIZE && gap.start < LOW_MEMORY_END)
+            .expect("No memory for AP boot code.");
+        ap_boot::ADDRESS.store(gap.start.0, Ordering::Relaxed);
+        // SAFETY: guaranteed by the caller.
+        unsafe { register_boot_data(gap.start..gap.start + PAGE_SIZE, Retention::Permanent) };
+    }
+    // SAFETY: guaranteed by the caller.
+    unsafe { SEGMENTS.set(Segment::Dma, dma) };
 }
