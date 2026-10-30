@@ -28,7 +28,6 @@ const MAX_BOOT_DATA: usize = 64;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Retention {
     /// Released once no longer needed.
-    #[expect(dead_code, reason = "no boot data is temporary yet")]
     Temporary,
     /// Kept for good.
     Permanent,

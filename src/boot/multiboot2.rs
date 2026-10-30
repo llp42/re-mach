@@ -4,6 +4,7 @@
 //! information read in place, trusting the loader.
 
 use core::marker::PhantomData;
+use core::ops::Range;
 use core::{iter, ptr, slice};
 
 /// Header magic.
@@ -87,6 +88,13 @@ impl<'a> Info<'a> {
             address,
             _info: PhantomData,
         }
+    }
+
+    /// The structure's physical range.
+    pub fn range(self) -> Range<usize> {
+        // SAFETY: `total_size` comes first; guaranteed by `from_address`.
+        let total_size = unsafe { ptr::with_exposed_provenance::<u32>(self.address).read() };
+        self.address..self.address + usize::try_from(total_size).unwrap()
     }
 
     /// The tags before the end tag, in order.

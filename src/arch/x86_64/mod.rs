@@ -78,6 +78,13 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe {
         boot_memory::register_boot_data(PhysAddr(start)..PhysAddr(end), Retention::Permanent);
     }
+    let info = boot_info.range();
+    let start = u64::try_from(info.start).unwrap();
+    let end = u64::try_from(info.end).unwrap();
+    // SAFETY: the boot CPU; the boot information, until no longer needed.
+    unsafe {
+        boot_memory::register_boot_data(PhysAddr(start)..PhysAddr(end), Retention::Temporary);
+    }
     // SAFETY: the boot CPU, once.
     unsafe { boot_memory::bootstrap(boot_info) };
     for entry in boot_info.mmap().into_iter().flatten() {
