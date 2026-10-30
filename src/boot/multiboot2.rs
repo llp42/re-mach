@@ -3,6 +3,7 @@
 //! Multiboot2, from its specification: header values, and the boot
 //! information read in place, trusting the loader.
 
+use core::ffi::{CStr, c_char};
 use core::marker::PhantomData;
 use core::ops::Range;
 use core::{iter, ptr, slice};
@@ -31,6 +32,7 @@ pub struct TagType(pub u32);
 
 impl TagType {
     pub const END: Self = Self(0);
+    pub const CMDLINE: Self = Self(1);
     pub const MODULE: Self = Self(3);
     pub const MMAP: Self = Self(6);
     pub const ELF_SECTIONS: Self = Self(9);
@@ -156,6 +158,8 @@ impl<'a> Info<'a> {
 
 /// An information tag.
 pub enum Tag<'a> {
+    /// The kernel's command line.
+    Cmdline(&'a CStr),
     /// A module's physical range, `mod_end` past its last byte.
     Module {
         mod_start: u32,
@@ -187,6 +191,9 @@ impl Tag<'_> {
         // SAFETY: guaranteed by the caller.
         unsafe {
             match header.ty {
+                TagType::CMDLINE => {
+                    Self::Cmdline(CStr::from_ptr(ptr::with_exposed_provenance::<c_char>(body)))
+                }
                 TagType::MODULE => {
                     let tag = ptr::with_exposed_provenance::<ModuleTag>(address).read();
                     Self::Module {

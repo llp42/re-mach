@@ -20,7 +20,6 @@ pub const KERNEL_MAP_SIZE: u64 = 1024 * 1024 * 1024;
 
 /// Kernel virtual address of the physical `address`, physical memory being
 /// mapped directly from `MIN_KERNEL_ADDRESS`.
-#[expect(dead_code, reason = "the command line copy calls it")]
 pub fn phys_to_virt<T>(address: PhysAddr) -> *mut T {
     let virt = address.0 + MIN_KERNEL_ADDRESS;
     ptr::with_exposed_provenance_mut(usize::try_from(virt).unwrap())

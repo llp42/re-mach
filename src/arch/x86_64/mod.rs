@@ -17,6 +17,8 @@ mod pic;
 mod serial;
 
 use core::arch::asm;
+use core::cell::UnsafeCell;
+use core::ffi::CStr;
 use core::fmt::Write;
 
 use x86_64::registers::rflags::{self, RFlags};
@@ -26,8 +28,16 @@ use crate::boot::multiboot2::{self, ElfSectionType, Tag};
 use crate::smp::PerCpu as _;
 use address::PhysAddr;
 use boot_memory::Retention;
-use memory_layout::{MIN_KERNEL_ADDRESS, PAGE_SIZE};
+use memory_layout::{MIN_KERNEL_ADDRESS, PAGE_SIZE, phys_to_virt};
 use serial::Serial;
+
+struct KernelCommandLine(UnsafeCell<&'static CStr>);
+
+// SAFETY: written once by `init`, before any reader.
+unsafe impl Sync for KernelCommandLine {}
+
+/// The kernel's command line; empty until `init` copies the loader's.
+static KERNEL_COMMAND_LINE: KernelCommandLine = KernelCommandLine(UnsafeCell::new(c""));
 
 unsafe extern "C" {
     /// The image's first byte, in `.boot`, which runs where it is loaded.
@@ -118,7 +128,27 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     }
     // SAFETY: the boot CPU, once.
     unsafe { boot_memory::bootstrap(boot_info) };
+    for tag in boot_info.tags() {
+        if let Tag::Cmdline(cmdline) = tag {
+            let bytes = cmdline.to_bytes_with_nul();
+            // SAFETY: the boot CPU, after boot memory's bootstrap.
+            let copy = phys_to_virt::<u8>(unsafe { alloc_bytes(bytes.len()) });
+            // SAFETY: fresh boot memory, mapped at the kernel map base; then
+            // NUL-terminated and never written again.
+            unsafe {
+                copy.copy_from_nonoverlapping(bytes.as_ptr(), bytes.len());
+                *KERNEL_COMMAND_LINE.0.get() = CStr::from_ptr(copy.cast());
+            }
+        }
+    }
     halt();
+}
+
+/// The kernel's command line, as the loader gave it; empty if none.
+#[expect(dead_code, reason = "the console and the bootstrap read it")]
+pub fn kernel_command_line() -> &'static CStr {
+    // SAFETY: written only by `init`, before any reader.
+    unsafe { *KERNEL_COMMAND_LINE.0.get() }
 }
 
 pub fn halt() -> ! {
@@ -136,7 +166,6 @@ pub fn halt() -> ! {
 /// # Safety
 ///
 /// Runs on the boot CPU only, after boot memory's bootstrap.
-#[expect(dead_code, reason = "the command line copy calls it")]
 unsafe fn alloc_bytes(size: usize) -> PhysAddr {
     let page_size = usize::try_from(PAGE_SIZE).unwrap();
     // SAFETY: guaranteed by the caller.
