@@ -10,7 +10,7 @@ use core::{ptr, slice};
 
 use super::serial::Serial;
 use crate::boot::BootInfo;
-use crate::kern::host::HOST_EFI_SYSTAB_ADDRESS;
+use crate::kernel::host::HOST_EFI_SYSTAB_ADDRESS;
 
 const RSDP_SIGNATURE: &[u8; 8] = b"RSD PTR ";
 const RSDP_ALIGN: usize = 16;
