@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! Boot information from UEFI.
 
-use core::{ptr, slice};
+use core::{iter, ptr, slice};
 
 use super::{Guid, MemoryMap, SystemTable};
 use crate::boot::{BootInfo, MemoryKind, MemoryRegion};
@@ -44,7 +44,7 @@ impl BootInfo for Uefi<'_> {
     }
 
     fn memory_map(&self) -> impl Iterator<Item = MemoryRegion> {
-        self.memory_map.clone().map(|descriptor| MemoryRegion {
+        let regions = self.memory_map.clone().map(|descriptor| MemoryRegion {
             address: descriptor.physical_start,
             length: descriptor.number_of_pages * 4096,
             kind: match descriptor.ty {
@@ -57,6 +57,19 @@ impl BootInfo for Uefi<'_> {
                 // Reserved, runtime services, MMIO, unaccepted and the rest.
                 _ => MemoryKind::Reserved,
             },
+        });
+        let mut regions = regions.peekable();
+        // Joins neighbours of the same kind; boot memory keeps at most 128 entries.
+        iter::from_fn(move || {
+            let mut region = regions.next()?;
+            while let Some(next) = regions.next_if(|next| {
+                next.kind == region.kind
+                    && region.address.checked_add(region.length) == Some(next.address)
+                    && next.address.checked_add(next.length).is_some()
+            }) {
+                region.length += next.length;
+            }
+            Some(region)
         })
     }
 }

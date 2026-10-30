@@ -15,7 +15,7 @@ pub struct MemoryRegion {
 }
 
 /// What a memory region holds; Multiboot2's memory types.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryKind {
     Available,
     Reserved,
