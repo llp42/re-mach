@@ -44,9 +44,9 @@ pub unsafe fn init(boot_info: &impl BootInfo) {
         .and_then(|address| usize::try_from(address).ok())
         .filter(|&address| address != 0)
         // SAFETY: guaranteed by the caller.
-        .and_then(|address| unsafe { check(address) })
+        .and_then(|address| unsafe { parse_rsdp(address) })
         // SAFETY: guaranteed by the caller.
-        .or_else(|| unsafe { from_bios() });
+        .or_else(|| unsafe { search_bios() });
     // SAFETY: no reader yet.
     unsafe { *RSDP.0.get() = rsdp };
 }
@@ -58,7 +58,7 @@ pub unsafe fn init(boot_info: &impl BootInfo) {
 ///
 /// `address` is non-null, identity-mapped and readable for 20 bytes, or 36
 /// if its revision is 2.
-unsafe fn check(address: usize) -> Option<[u8; RSDP_V2_SIZE]> {
+unsafe fn parse_rsdp(address: usize) -> Option<[u8; RSDP_V2_SIZE]> {
     let start = ptr::with_exposed_provenance::<u8>(address);
     // SAFETY: guaranteed by the caller.
     let v1 = unsafe { slice::from_raw_parts(start, RSDP_V1_SIZE) };
@@ -91,7 +91,7 @@ unsafe fn check(address: usize) -> Option<[u8; RSDP_V2_SIZE]> {
 /// # Safety
 ///
 /// The first 2 MiB are identity-mapped and readable.
-unsafe fn from_bios() -> Option<[u8; RSDP_V2_SIZE]> {
+unsafe fn search_bios() -> Option<[u8; RSDP_V2_SIZE]> {
     // SAFETY: the BIOS data area's EBDA segment; guaranteed by the caller.
     let segment = unsafe { ptr::with_exposed_provenance::<u16>(0x40e).read() };
     let ebda = usize::from(segment) << 4;
@@ -109,5 +109,5 @@ unsafe fn search(start: usize, end: usize) -> Option<[u8; RSDP_V2_SIZE]> {
         .step_by(RSDP_ALIGN)
         .filter(|&address| address != 0)
         // SAFETY: guaranteed by the caller.
-        .find_map(|address| unsafe { check(address) })
+        .find_map(|address| unsafe { parse_rsdp(address) })
 }
