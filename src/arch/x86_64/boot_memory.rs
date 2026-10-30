@@ -9,7 +9,9 @@ use core::sync::atomic::Ordering;
 
 use super::address::PhysAddr;
 use super::ap_boot;
-use super::memory_layout::{DMA_LIMIT, PAGE_SIZE, Segment};
+use super::memory_layout::{
+    DIRECT_MAP_LIMIT, DMA_LIMIT, DMA32_LIMIT, HIGH_MEMORY_LIMIT, PAGE_SIZE, Segment,
+};
 use crate::boot::{BootInfo, MemoryKind};
 use crate::config::MAX_CPUS;
 
@@ -391,4 +393,15 @@ pub unsafe fn bootstrap(boot_info: &impl BootInfo) {
     }
     // SAFETY: guaranteed by the caller.
     unsafe { SEGMENTS.set(Segment::Dma, dma) };
+    for (segment, range) in [
+        (Segment::DirectMap, DMA_LIMIT..DIRECT_MAP_LIMIT),
+        (Segment::Dma32, DIRECT_MAP_LIMIT..DMA32_LIMIT),
+        (Segment::HighMemory, DMA32_LIMIT..HIGH_MEMORY_LIMIT),
+    ] {
+        // SAFETY: guaranteed by the caller.
+        if let Some(found) = unsafe { MAP.available_span(range) } {
+            // SAFETY: guaranteed by the caller.
+            unsafe { SEGMENTS.set(segment, found) };
+        }
+    }
 }
