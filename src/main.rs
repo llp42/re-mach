@@ -11,11 +11,20 @@ mod config;
 mod kernel;
 mod smp;
 
+use core::cell::UnsafeCell;
 use core::ffi::c_void;
 use core::fmt::{self, Write};
 use core::panic::PanicInfo;
 
 use boot::uefi;
+
+/// Buffer for the final memory map, inside the kernel image.
+struct MemoryMapBuffer(UnsafeCell<[u64; 2048]>);
+
+// SAFETY: only `efi_main` uses it, once.
+unsafe impl Sync for MemoryMapBuffer {}
+
+static MEMORY_MAP_BUFFER: MemoryMapBuffer = MemoryMapBuffer(UnsafeCell::new([0; 2048]));
 
 /// UEFI console; only valid while boot services are active.
 struct Console(*mut uefi::SimpleTextOutputProtocol);
@@ -41,10 +50,11 @@ extern "efiapi" fn efi_main(
     // SAFETY: `system_table` comes from the firmware.
     let mut console = Console(unsafe { (*system_table).con_out });
 
-    let mut buffer = [0; 2048];
+    // SAFETY: the firmware enters `efi_main` once; nothing else touches the buffer.
+    let buffer = unsafe { &mut *MEMORY_MAP_BUFFER.0.get() };
     // SAFETY: arguments come from the firmware; boot services are active.
     let memory_map =
-        match unsafe { uefi::SystemTable::exit_boot_services(system_table, image, &mut buffer) } {
+        match unsafe { uefi::SystemTable::exit_boot_services(system_table, image, buffer) } {
             Ok(memory_map) => memory_map,
             Err(status) => {
                 let _ = write!(console, "ExitBootServices failed: {status:?}\r\n");
