@@ -9,4 +9,4 @@ use core::sync::atomic::AtomicU64;
 pub const HOST_NO_UEFI: u64 = u64::MAX;
 
 /// Physical address of the EFI system table, or `HOST_NO_UEFI`.
-pub static HOST_EFI_SYSTAB_ADDRESS: AtomicU64 = AtomicU64::new(HOST_NO_UEFI);
+pub static EFI_SYSTEM_TABLE_ADDRESS: AtomicU64 = AtomicU64::new(HOST_NO_UEFI);

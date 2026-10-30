@@ -10,7 +10,7 @@ use core::{ptr, slice};
 
 use super::serial::Serial;
 use crate::boot::BootInfo;
-use crate::kernel::host::HOST_EFI_SYSTAB_ADDRESS;
+use crate::kernel::host::EFI_SYSTEM_TABLE_ADDRESS;
 
 const RSDP_SIGNATURE: &[u8; 8] = b"RSD PTR ";
 const RSDP_ALIGN: usize = 16;
@@ -37,7 +37,7 @@ static RSDP: Rsdp = Rsdp(UnsafeCell::new(None));
 /// readable; so is `boot_info`'s RSDP, for 20 bytes or 36 if revision 2.
 pub unsafe fn init(boot_info: &impl BootInfo) {
     if let Some(address) = boot_info.efi_system_table() {
-        HOST_EFI_SYSTAB_ADDRESS.store(address, Ordering::Relaxed);
+        EFI_SYSTEM_TABLE_ADDRESS.store(address, Ordering::Relaxed);
     }
     let rsdp = boot_info
         .acpi_rsdp()
