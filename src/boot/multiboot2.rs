@@ -160,10 +160,12 @@ impl<'a> Info<'a> {
 pub enum Tag<'a> {
     /// The kernel's command line.
     Cmdline(&'a CStr),
-    /// A module's physical range, `mod_end` past its last byte.
+    /// A module's physical range, `mod_end` past its last byte, and its
+    /// command line.
     Module {
         mod_start: u32,
         mod_end: u32,
+        cmdline: &'a CStr,
     },
     Mmap(Mmap<'a>),
     /// The kernel's ELF section headers.
@@ -196,9 +198,11 @@ impl Tag<'_> {
                 }
                 TagType::MODULE => {
                     let tag = ptr::with_exposed_provenance::<ModuleTag>(address).read();
+                    let cmdline = address + size_of::<ModuleTag>();
                     Self::Module {
                         mod_start: tag.mod_start,
                         mod_end: tag.mod_end,
+                        cmdline: CStr::from_ptr(ptr::with_exposed_provenance::<c_char>(cmdline)),
                     }
                 }
                 TagType::MMAP => Self::Mmap(Mmap::new(address)),

@@ -20,6 +20,7 @@ use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::ffi::CStr;
 use core::fmt::Write;
+use core::{ptr, slice};
 
 use x86_64::registers::rflags::{self, RFlags};
 
@@ -38,6 +39,23 @@ unsafe impl Sync for KernelCommandLine {}
 
 /// The kernel's command line; empty until `init` copies the loader's.
 static KERNEL_COMMAND_LINE: KernelCommandLine = KernelCommandLine(UnsafeCell::new(c""));
+
+/// A boot module, copied into boot memory.
+#[expect(dead_code, reason = "the bootstrap reads it")]
+pub struct BootModule {
+    /// Its physical range, `end` past its last byte.
+    pub start: PhysAddr,
+    pub end: PhysAddr,
+    pub command_line: &'static CStr,
+}
+
+struct BootModules(UnsafeCell<&'static [BootModule]>);
+
+// SAFETY: written once by `init`, before any reader.
+unsafe impl Sync for BootModules {}
+
+/// The boot modules; empty until `init` copies the loader's.
+static BOOT_MODULES: BootModules = BootModules(UnsafeCell::new(&[]));
 
 unsafe extern "C" {
     /// The image's first byte, in `.boot`, which runs where it is loaded.
@@ -113,7 +131,9 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
                     }
                 }
             }
-            Tag::Module { mod_start, mod_end } => {
+            Tag::Module {
+                mod_start, mod_end, ..
+            } => {
                 let (start, end) = (u64::from(mod_start), u64::from(mod_end));
                 // SAFETY: the boot CPU; a module, until no longer needed.
                 unsafe {
@@ -128,20 +148,75 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     }
     // SAFETY: the boot CPU, once.
     unsafe { boot_memory::bootstrap(boot_info) };
+    // SAFETY: the boot CPU, once, after boot memory's bootstrap.
+    unsafe { copy_boot_info(boot_info) };
+    halt();
+}
+
+/// Copies into boot memory what outlives the boot information: the
+/// kernel's command line, and the modules with theirs.
+///
+/// # Safety
+///
+/// Runs once, on the boot CPU, after boot memory's bootstrap.
+unsafe fn copy_boot_info(boot_info: multiboot2::Info) {
+    let count = boot_info
+        .tags()
+        .filter(|tag| matches!(tag, Tag::Module { .. }))
+        .count();
+    let modules = if count == 0 {
+        ptr::NonNull::dangling().as_ptr()
+    } else {
+        // SAFETY: guaranteed by the caller.
+        phys_to_virt::<BootModule>(unsafe { alloc_bytes(count * size_of::<BootModule>()) })
+    };
+    let mut len = 0;
     for tag in boot_info.tags() {
-        if let Tag::Cmdline(cmdline) = tag {
-            let bytes = cmdline.to_bytes_with_nul();
-            // SAFETY: the boot CPU, after boot memory's bootstrap.
-            let copy = phys_to_virt::<u8>(unsafe { alloc_bytes(bytes.len()) });
-            // SAFETY: fresh boot memory, mapped at the kernel map base; then
-            // NUL-terminated and never written again.
-            unsafe {
-                copy.copy_from_nonoverlapping(bytes.as_ptr(), bytes.len());
-                *KERNEL_COMMAND_LINE.0.get() = CStr::from_ptr(copy.cast());
+        match tag {
+            Tag::Cmdline(cmdline) => {
+                let bytes = cmdline.to_bytes_with_nul();
+                // SAFETY: guaranteed by the caller.
+                let copy = phys_to_virt::<u8>(unsafe { alloc_bytes(bytes.len()) });
+                // SAFETY: fresh boot memory, mapped at the kernel map base;
+                // then NUL-terminated and never written again.
+                unsafe {
+                    copy.copy_from_nonoverlapping(bytes.as_ptr(), bytes.len());
+                    *KERNEL_COMMAND_LINE.0.get() = CStr::from_ptr(copy.cast());
+                }
             }
+            Tag::Module {
+                mod_start,
+                mod_end,
+                cmdline,
+            } => {
+                let size = usize::try_from(mod_end - mod_start).unwrap();
+                // SAFETY: guaranteed by the caller.
+                let start = unsafe { alloc_bytes(size) };
+                let copy = phys_to_virt::<u8>(start);
+                let module =
+                    ptr::with_exposed_provenance::<u8>(usize::try_from(mod_start).unwrap());
+                let bytes = cmdline.to_bytes_with_nul();
+                // SAFETY: guaranteed by the caller.
+                let string = phys_to_virt::<u8>(unsafe { alloc_bytes(bytes.len()) });
+                // SAFETY: the module is below 4 GiB, identity-mapped, and
+                // temporary boot data, so apart from fresh boot memory; the
+                // copies are then never written again.
+                unsafe {
+                    copy.copy_from_nonoverlapping(module, size);
+                    string.copy_from_nonoverlapping(bytes.as_ptr(), bytes.len());
+                    modules.add(len).write(BootModule {
+                        start,
+                        end: start + u64::try_from(size).unwrap(),
+                        command_line: CStr::from_ptr(string.cast()),
+                    });
+                }
+                len += 1;
+            }
+            _ => {}
         }
     }
-    halt();
+    // SAFETY: `len` modules written, in boot memory never written again.
+    unsafe { *BOOT_MODULES.0.get() = slice::from_raw_parts(modules, len) };
 }
 
 /// The kernel's command line, as the loader gave it; empty if none.
@@ -149,6 +224,13 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
 pub fn kernel_command_line() -> &'static CStr {
     // SAFETY: written only by `init`, before any reader.
     unsafe { *KERNEL_COMMAND_LINE.0.get() }
+}
+
+/// The boot modules, in the loader's order.
+#[expect(dead_code, reason = "the bootstrap reads them")]
+pub fn boot_modules() -> &'static [BootModule] {
+    // SAFETY: written only by `init`, before any reader.
+    unsafe { *BOOT_MODULES.0.get() }
 }
 
 pub fn halt() -> ! {
