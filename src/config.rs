@@ -3,4 +3,4 @@
 //! Build-time configuration.
 
 /// Most CPUs supported.
-pub const NCPUS: usize = 8;
+pub const MAX_CPUS: usize = 8;

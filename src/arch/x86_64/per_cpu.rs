@@ -9,7 +9,7 @@ use core::mem::offset_of;
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{GsBase, KernelGsBase};
 
-use crate::config::NCPUS;
+use crate::config::MAX_CPUS;
 use crate::smp;
 
 /// One CPU's data; the GS base points at the current CPU's.
@@ -23,7 +23,7 @@ struct Slot(UnsafeCell<PerCpu>);
 // SAFETY: each CPU writes only its own slot, in `init`.
 unsafe impl Sync for Slot {}
 
-static PER_CPU: [Slot; NCPUS] = [const { Slot(UnsafeCell::new(PerCpu { id: 0 })) }; NCPUS];
+static PER_CPU: [Slot; MAX_CPUS] = [const { Slot(UnsafeCell::new(PerCpu { id: 0 })) }; MAX_CPUS];
 
 /// Fills CPU `cpu_id`'s data and points the GS base at it.
 ///
