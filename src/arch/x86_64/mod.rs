@@ -87,13 +87,6 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     }
     // SAFETY: the boot CPU, once.
     unsafe { boot_memory::bootstrap(boot_info) };
-    for entry in boot_info.mmap().into_iter().flatten() {
-        let _ = write!(
-            Serial,
-            "memory area address {:#x} length {:#x} kind {:?}\r\n",
-            entry.base_addr, entry.length, entry.ty
-        );
-    }
     halt();
 }
 
