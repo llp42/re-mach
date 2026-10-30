@@ -24,8 +24,8 @@ pub enum Retention {
 /// Boot data descriptor.
 #[derive(Clone, Copy)]
 struct BootData {
-    start: u64,
-    end: u64,
+    start: PhysAddr,
+    end: PhysAddr,
     retention: Retention,
 }
 
@@ -41,8 +41,8 @@ unsafe impl Sync for BootDataArray {}
 static BOOT_DATA: BootDataArray = BootDataArray {
     data: UnsafeCell::new(
         [BootData {
-            start: 0,
-            end: 0,
+            start: PhysAddr(0),
+            end: PhysAddr(0),
             retention: Retention::Permanent,
         }; MAX_BOOT_DATA],
     ),
@@ -155,7 +155,7 @@ static MAP: Map = Map {
 /// # Safety
 ///
 /// Runs on the boot CPU only.
-pub unsafe fn register_boot_data(range: Range<u64>, retention: Retention) {
+pub unsafe fn register_boot_data(range: Range<PhysAddr>, retention: Retention) {
     let Range { start, end } = range;
     assert!(start < end, "boot_memory: invalid boot data");
     // SAFETY: guaranteed by the caller.

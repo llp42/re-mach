@@ -22,6 +22,7 @@ use x86_64::registers::rflags::{self, RFlags};
 
 use crate::boot::{self, BootInfo};
 use crate::smp::PerCpu as _;
+use address::PhysAddr;
 use boot_memory::Retention;
 use serial::Serial;
 
@@ -90,7 +91,10 @@ extern "sysv64" fn init_on_boot_stack<B: BootInfo>(boot_info: *const B) -> ! {
     let start = u64::try_from(image).unwrap();
     // SAFETY: the boot CPU; identity-mapped, so `start` is physical.
     unsafe {
-        boot_memory::register_boot_data(start..start + u64::from(size), Retention::Permanent);
+        boot_memory::register_boot_data(
+            PhysAddr(start)..PhysAddr(start + u64::from(size)),
+            Retention::Permanent,
+        );
     }
     // SAFETY: the boot CPU, once.
     unsafe { boot_memory::bootstrap(&boot_info) };

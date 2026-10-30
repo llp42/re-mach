@@ -5,7 +5,7 @@
 use super::memory_layout::PAGE_SIZE;
 
 /// Physical address, for page arithmetic.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PhysAddr(pub u64);
 
 impl PhysAddr {
