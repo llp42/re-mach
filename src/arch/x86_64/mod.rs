@@ -25,6 +25,7 @@ use crate::boot::{self, BootInfo};
 use crate::smp::PerCpu as _;
 use address::PhysAddr;
 use boot_memory::Retention;
+pub use memory_layout::IMAGE_MAX_ADDRESS;
 use serial::Serial;
 
 unsafe extern "C" {

@@ -5,8 +5,8 @@
 use core::ffi::c_void;
 
 use super::{
-    BootServices, ConfigurationTable, MemoryDescriptor, MemoryMap, SimpleTextOutputProtocol,
-    Status, TableHeader,
+    AllocateType, BootServices, ConfigurationTable, MemoryDescriptor, MemoryMap, MemoryType,
+    PhysicalAddress, SimpleTextOutputProtocol, Status, TableHeader,
 };
 
 /// `EFI_SYSTEM_TABLE`.
@@ -28,6 +28,31 @@ pub struct SystemTable {
 }
 
 impl SystemTable {
+    /// Allocates `pages` pages placed by `type` and `address`; returns
+    /// their address.
+    ///
+    /// # Safety
+    ///
+    /// Boot services active.
+    pub unsafe fn allocate_pages(
+        &self,
+        r#type: AllocateType,
+        memory_type: MemoryType,
+        pages: usize,
+        address: PhysicalAddress,
+    ) -> Result<PhysicalAddress, Status> {
+        let mut memory = address;
+        // SAFETY: guaranteed by the caller; `memory` is valid.
+        let status = unsafe {
+            ((*self.boot_services).allocate_pages)(r#type, memory_type, pages, &raw mut memory)
+        };
+        if status == Status::SUCCESS {
+            Ok(memory)
+        } else {
+            Err(status)
+        }
+    }
+
     /// Reads the memory map into `buffer` and exits boot services.
     ///
     /// Errors: the firmware's status, or `UNSUPPORTED` for an unusable entry

@@ -14,6 +14,7 @@ mod smp;
 use core::cell::UnsafeCell;
 use core::ffi::c_void;
 use core::fmt::{self, Write};
+use core::mem;
 use core::panic::PanicInfo;
 
 use boot::uefi;
@@ -41,9 +42,33 @@ impl Write for Console {
     }
 }
 
+/// `efi_main`'s signature.
+type EfiMain = extern "efiapi" fn(*mut c_void, *mut uefi::SystemTable) -> uefi::Status;
+
 // UEFI entry point.
 #[unsafe(no_mangle)]
 extern "efiapi" fn efi_main(
+    image: *mut c_void,
+    system_table: *mut uefi::SystemTable,
+) -> uefi::Status {
+    // SAFETY: `system_table` comes from the firmware.
+    let mut console = Console(unsafe { (*system_table).con_out });
+    // SAFETY: boot services are active; nothing ran from the image yet.
+    let shift = match unsafe { uefi::move_image(&*system_table, arch::IMAGE_MAX_ADDRESS) } {
+        Ok(shift) => shift,
+        Err(status) => {
+            let _ = write!(console, "Moving the image failed: {status:?}\r\n");
+            return status;
+        }
+    };
+    let moved = (efi_main_moved as EfiMain as *const ()).map_addr(|addr| addr.wrapping_add(shift));
+    // SAFETY: the moved copy holds the same code, relocated for its address.
+    let moved = unsafe { mem::transmute::<*const (), EfiMain>(moved) };
+    moved(image, system_table)
+}
+
+/// Rest of `efi_main`, in the moved image.
+extern "efiapi" fn efi_main_moved(
     image: *mut c_void,
     system_table: *mut uefi::SystemTable,
 ) -> uefi::Status {

@@ -4,7 +4,21 @@
 
 use core::ffi::c_void;
 
-use super::{MemoryDescriptor, Status, TableHeader};
+use super::{MemoryDescriptor, PhysicalAddress, Status, TableHeader};
+
+/// `EFI_ALLOCATE_TYPE`.
+#[repr(u32)]
+pub enum AllocateType {
+    MaxAddress = 1,
+}
+
+/// `EFI_MEMORY_TYPE`. Any value is valid, including types not listed here.
+#[repr(transparent)]
+pub struct MemoryType(u32);
+
+impl MemoryType {
+    pub const LOADER_CODE: Self = Self(1);
+}
 
 /// `EFI_BOOT_SERVICES`.
 #[repr(C)]
@@ -16,7 +30,12 @@ pub struct BootServices {
     pub restore_tpl: *mut c_void,
 
     // Memory services
-    pub allocate_pages: *mut c_void,
+    pub allocate_pages: unsafe extern "efiapi" fn(
+        r#type: AllocateType,
+        memory_type: MemoryType,
+        pages: usize,
+        memory: *mut PhysicalAddress,
+    ) -> Status,
     pub free_pages: *mut c_void,
     pub get_memory_map: unsafe extern "efiapi" fn(
         memory_map_size: *mut usize,
