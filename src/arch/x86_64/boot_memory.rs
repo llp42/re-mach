@@ -47,17 +47,17 @@ static BOOT_DATA: BootDataArray = BootDataArray {
 ///
 /// Runs on the boot CPU only.
 pub unsafe fn register_boot_data(start: u64, end: u64, temporary: bool) {
-    assert!(start < end, "biosmem: invalid boot data");
+    assert!(start < end, "boot_memory: invalid boot data");
     // SAFETY: guaranteed by the caller.
     let (data, len) = unsafe { (&mut *BOOT_DATA.data.get(), &mut *BOOT_DATA.len.get()) };
-    assert!(*len < data.len(), "biosmem: too many boot data ranges");
+    assert!(*len < data.len(), "boot_memory: too many boot data ranges");
     let mut i = 0;
     while i < *len {
         let entry = &mut data[i];
         if end > entry.start && start < entry.end {
             assert!(
                 start >= entry.start && end <= entry.end,
-                "biosmem: invalid boot data"
+                "boot_memory: invalid boot data"
             );
             // Included: a permanent range stays permanent.
             entry.temporary &= temporary;

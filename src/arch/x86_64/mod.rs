@@ -4,7 +4,7 @@
 
 mod acpi;
 mod apic;
-mod biosmem;
+mod boot_memory;
 mod boot_stack;
 mod cpuid;
 mod per_cpu;
@@ -82,7 +82,7 @@ extern "sysv64" fn init_on_boot_stack<B: BootInfo>(boot_info: *const B) -> ! {
     };
     let start = u64::try_from(image).unwrap();
     // SAFETY: the boot CPU; identity-mapped, so `start` is physical.
-    unsafe { biosmem::register_boot_data(start, start + u64::from(size), false) };
+    unsafe { boot_memory::register_boot_data(start, start + u64::from(size), false) };
     for region in boot_info.memory_map() {
         let _ = write!(
             Serial,
