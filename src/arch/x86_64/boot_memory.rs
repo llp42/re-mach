@@ -465,3 +465,28 @@ pub unsafe fn bootstrap(boot_info: Info) {
     // SAFETY: guaranteed by the caller.
     unsafe { HEAP.init() };
 }
+
+/// Takes `count` pages from the top of the boot heap.
+///
+/// # Panics
+///
+/// If `count` is 0 or more than the heap has left.
+///
+/// # Safety
+///
+/// Runs on the boot CPU only, after `bootstrap`.
+#[expect(dead_code, reason = "alloc_bytes calls it")]
+pub unsafe fn alloc_pages(count: usize) -> PhysAddr {
+    assert!(count != 0, "boot_memory: attempt to allocate 0 page");
+    // SAFETY: guaranteed by the caller.
+    let free = unsafe { &mut *HEAP.free.get() };
+    let addr = u64::try_from(count)
+        .ok()
+        .and_then(|count| count.checked_mul(PAGE_SIZE))
+        .and_then(|size| free.end.0.checked_sub(size))
+        .map(PhysAddr)
+        .filter(|&addr| addr >= free.start)
+        .expect("boot_memory: unable to allocate memory");
+    free.end = addr;
+    addr
+}
