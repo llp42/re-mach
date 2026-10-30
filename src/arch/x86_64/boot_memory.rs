@@ -4,15 +4,26 @@
 //! Boot-time physical memory.
 
 use core::cell::UnsafeCell;
+use core::ops::Range;
 
 const MAX_BOOT_DATA: usize = 64;
+
+/// How long boot data is kept.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Retention {
+    /// Released once no longer needed.
+    #[expect(dead_code, reason = "no boot data is temporary yet")]
+    Temporary,
+    /// Kept for good.
+    Permanent,
+}
 
 /// Boot data descriptor.
 #[derive(Clone, Copy)]
 struct BootData {
     start: u64,
     end: u64,
-    temporary: bool,
+    retention: Retention,
 }
 
 /// Sorted array of boot data descriptors.
@@ -29,14 +40,14 @@ static BOOT_DATA: BootDataArray = BootDataArray {
         [BootData {
             start: 0,
             end: 0,
-            temporary: false,
+            retention: Retention::Permanent,
         }; MAX_BOOT_DATA],
     ),
     len: UnsafeCell::new(0),
 };
 
-/// Keeps `start..end` from the page allocator; `temporary` data is
-/// released once no longer needed.
+/// Keeps `range` from the page allocator; `Temporary` data is released
+/// once no longer needed.
 ///
 /// # Panics
 ///
@@ -46,7 +57,8 @@ static BOOT_DATA: BootDataArray = BootDataArray {
 /// # Safety
 ///
 /// Runs on the boot CPU only.
-pub unsafe fn register_boot_data(start: u64, end: u64, temporary: bool) {
+pub unsafe fn register_boot_data(range: Range<u64>, retention: Retention) {
+    let Range { start, end } = range;
     assert!(start < end, "boot_memory: invalid boot data");
     // SAFETY: guaranteed by the caller.
     let (data, len) = unsafe { (&mut *BOOT_DATA.data.get(), &mut *BOOT_DATA.len.get()) };
@@ -60,7 +72,7 @@ pub unsafe fn register_boot_data(start: u64, end: u64, temporary: bool) {
                 "boot_memory: invalid boot data"
             );
             // Included: a permanent range stays permanent.
-            entry.temporary &= temporary;
+            entry.retention = entry.retention.max(retention);
             return;
         }
         if end <= entry.start {
@@ -72,7 +84,7 @@ pub unsafe fn register_boot_data(start: u64, end: u64, temporary: bool) {
     data[i] = BootData {
         start,
         end,
-        temporary,
+        retention,
     };
     *len += 1;
 }
