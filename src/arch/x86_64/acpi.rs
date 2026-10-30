@@ -9,7 +9,7 @@ use core::sync::atomic::Ordering;
 use core::{ptr, slice};
 
 use super::serial::Serial;
-use crate::boot::BootInfo;
+use crate::boot::multiboot2::{Info, Tag};
 use crate::kernel::host::EFI_SYSTEM_TABLE_ADDRESS;
 
 const RSDP_SIGNATURE: &[u8; 8] = b"RSD PTR ";
@@ -29,43 +29,39 @@ unsafe impl Sync for Rsdp {}
 /// Copy of the verified RSDP; `None` if none was found.
 static RSDP: Rsdp = Rsdp(UnsafeCell::new(None));
 
-/// Saves the EFI system table address and a copy of the verified RSDP.
+/// Saves the EFI system table address and a copy of the verified RSDP:
+/// the boot information's newest, or else the BIOS's.
 ///
 /// # Safety
 ///
 /// Runs once, on the boot CPU. The first 2 MiB are identity-mapped and
-/// readable; so is `boot_info`'s RSDP, for 20 bytes or 36 if revision 2.
-pub unsafe fn init(boot_info: &impl BootInfo) {
-    if let Some(address) = boot_info.efi_system_table() {
-        EFI_SYSTEM_TABLE_ADDRESS.store(address, Ordering::Relaxed);
+/// readable.
+pub unsafe fn init(boot_info: &Info) {
+    let (mut old, mut new) = (None, None);
+    for tag in boot_info.tags() {
+        match tag {
+            Tag::AcpiOld(copy) => old = Some(copy),
+            Tag::AcpiNew(copy) => new = Some(copy),
+            Tag::Efi64(address) => EFI_SYSTEM_TABLE_ADDRESS.store(address, Ordering::Relaxed),
+            _ => {}
+        }
     }
-    let rsdp = boot_info
-        .acpi_rsdp()
-        .and_then(|address| usize::try_from(address).ok())
-        .filter(|&address| address != 0)
-        // SAFETY: guaranteed by the caller.
-        .and_then(|address| unsafe { parse_rsdp(address) })
+    let rsdp = new
+        .or(old)
+        .and_then(parse_rsdp)
         // SAFETY: guaranteed by the caller.
         .or_else(|| unsafe { search_bios() });
     // SAFETY: no reader yet.
     unsafe { *RSDP.0.get() = rsdp };
 }
 
-/// A copy of the RSDP at `address`, if its signature, revision and
-/// checksum are good.
-///
-/// # Safety
-///
-/// `address` is non-null, identity-mapped and readable for 20 bytes, or 36
-/// if its revision is 2.
-unsafe fn parse_rsdp(address: usize) -> Option<[u8; RSDP_V2_SIZE]> {
-    let start = ptr::with_exposed_provenance::<u8>(address);
-    // SAFETY: guaranteed by the caller.
-    let v1 = unsafe { slice::from_raw_parts(start, RSDP_V1_SIZE) };
-    if v1[..RSDP_SIGNATURE.len()] != *RSDP_SIGNATURE {
+/// A copy of the RSDP at the start of `bytes`, if its signature, revision
+/// and checksum are good.
+fn parse_rsdp(bytes: &[u8]) -> Option<[u8; RSDP_V2_SIZE]> {
+    if bytes.get(..RSDP_SIGNATURE.len())? != RSDP_SIGNATURE {
         return None;
     }
-    let size = match v1[RSDP_REVISION] {
+    let size = match *bytes.get(RSDP_REVISION)? {
         0 => {
             let _ = write!(Serial, "ACPI v1.0\r\n");
             RSDP_V1_SIZE
@@ -76,8 +72,7 @@ unsafe fn parse_rsdp(address: usize) -> Option<[u8; RSDP_V2_SIZE]> {
         }
         _ => return None,
     };
-    // SAFETY: guaranteed by the caller.
-    let rsdp = unsafe { slice::from_raw_parts(start, size) };
+    let rsdp = bytes.get(..size)?;
     if rsdp.iter().fold(0u8, |sum, &byte| sum.wrapping_add(byte)) != 0 {
         return None;
     }
@@ -108,6 +103,9 @@ unsafe fn search(start: usize, end: usize) -> Option<[u8; RSDP_V2_SIZE]> {
     (start..end)
         .step_by(RSDP_ALIGN)
         .filter(|&address| address != 0)
-        // SAFETY: guaranteed by the caller.
-        .find_map(|address| unsafe { parse_rsdp(address) })
+        .find_map(|address| {
+            let start = ptr::with_exposed_provenance::<u8>(address);
+            // SAFETY: guaranteed by the caller.
+            parse_rsdp(unsafe { slice::from_raw_parts(start, RSDP_V2_SIZE) })
+        })
 }

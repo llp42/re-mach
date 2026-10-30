@@ -1,15 +1,22 @@
-[tasks.esp]
-description = "Build the kernel and lay it out as an EFI system partition directory"
+[tasks.iso]
+description = "Build the kernel and a GRUB rescue ISO that boots it through Multiboot2"
 run = [
     "cargo build",
-    "mkdir -p target/esp/EFI/BOOT",
-    "cp target/x86_64-unknown-uefi/debug/kernel.efi target/esp/EFI/BOOT/BOOTX64.EFI",
+    "mkdir -p target/iso/boot/grub",
+    "cp target/x86_64-unknown-none/debug/kernel target/iso/boot/kernel",
+    "printf 'set timeout=0\\nmenuentry re-mach {\\n  multiboot2 /boot/kernel\\n}\\n' > target/iso/boot/grub/grub.cfg",
+    "grub2-mkrescue -o target/kernel.iso target/iso",
 ]
 
 [tasks.qemu]
-description = "Build the ESP and boot it in QEMU under UEFI (OVMF), with serial output on the console"
-depends = ["esp"]
+description = "Boot the ISO in QEMU under BIOS (SeaBIOS), with serial output on the console"
+depends = ["iso"]
+run = "qemu-system-x86_64 -cdrom target/kernel.iso -display none -serial stdio -no-reboot -no-shutdown"
+
+[tasks.qemu-efi]
+description = "Boot the ISO in QEMU under UEFI (OVMF), with serial output on the console"
+depends = ["iso"]
 run = [
     "cp /usr/share/edk2/ovmf/OVMF_VARS.fd target/OVMF_VARS.fd",
-    "qemu-system-x86_64 -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd -drive if=pflash,format=raw,file=target/OVMF_VARS.fd -drive format=raw,file=fat:rw:target/esp -display none -serial stdio -no-reboot -no-shutdown",
+    "qemu-system-x86_64 -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd -drive if=pflash,format=raw,file=target/OVMF_VARS.fd -cdrom target/kernel.iso -display none -serial stdio -no-reboot -no-shutdown",
 ]

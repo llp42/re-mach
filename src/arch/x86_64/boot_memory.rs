@@ -12,7 +12,7 @@ use super::ap_boot;
 use super::memory_layout::{
     DIRECT_MAP_LIMIT, DMA_LIMIT, DMA32_LIMIT, HIGH_MEMORY_LIMIT, PAGE_SIZE, Segment,
 };
-use crate::boot::{BootInfo, MemoryKind};
+use crate::boot::multiboot2::{Info, MemoryType};
 use crate::config::MAX_CPUS;
 
 /// Start of usable low memory; the first 64 KiB are left to BIOS data and
@@ -123,14 +123,14 @@ enum EntryKind {
     Disabled,
 }
 
-impl From<MemoryKind> for EntryKind {
-    fn from(kind: MemoryKind) -> Self {
-        match kind {
-            MemoryKind::Available => Self::Available,
-            MemoryKind::Reserved => Self::Reserved,
-            MemoryKind::AcpiReclaimable => Self::Acpi,
-            MemoryKind::Nvs => Self::Nvs,
-            MemoryKind::BadRam => Self::Unusable,
+impl From<MemoryType> for EntryKind {
+    fn from(ty: MemoryType) -> Self {
+        match ty {
+            MemoryType::AVAILABLE => Self::Available,
+            MemoryType::ACPI_RECLAIMABLE => Self::Acpi,
+            MemoryType::NVS => Self::Nvs,
+            MemoryType::BADRAM => Self::Unusable,
+            _ => Self::Reserved,
         }
     }
 }
@@ -181,14 +181,14 @@ impl Map {
     /// # Safety
     ///
     /// Runs on the boot CPU only.
-    unsafe fn build(&self, boot_info: &impl BootInfo) {
+    unsafe fn build(&self, boot_info: &Info) {
         // SAFETY: guaranteed by the caller.
         let (entries, len) = unsafe { (&mut *self.entries.get(), &mut *self.len.get()) };
-        let built = boot_info.memory_map().filter_map(|region| {
+        let built = boot_info.mmap().into_iter().flatten().filter_map(|entry| {
             MapEntry {
-                base_addr: PhysAddr(region.address),
-                length: region.length,
-                kind: EntryKind::from(region.kind),
+                base_addr: PhysAddr(entry.base_addr),
+                length: entry.length,
+                kind: EntryKind::from(entry.ty),
             }
             .narrow_to_pages()
         });
@@ -442,7 +442,7 @@ unsafe fn mem_upper_end() -> PhysAddr {
 /// # Safety
 ///
 /// Runs once, on the boot CPU.
-pub unsafe fn bootstrap(boot_info: &impl BootInfo) {
+pub unsafe fn bootstrap(boot_info: &Info) {
     // SAFETY: guaranteed by the caller.
     unsafe {
         MAP.build(boot_info);

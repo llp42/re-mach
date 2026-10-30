@@ -1,5 +1,8 @@
-# Build as a UEFI application: target/x86_64-unknown-uefi/<profile>/kernel.efi.
-# Official prebuilt target; no overrides needed.
+# Build an ELF kernel for a Multiboot2 loader: target/x86_64-unknown-none/<profile>/kernel.
+# Official prebuilt target; static, not position-independent, laid out by the linker script.
 
 [build]
-target = "x86_64-unknown-uefi"
+target = "x86_64-unknown-none"
+
+[target.x86_64-unknown-none]
+rustflags = ["-C", "relocation-model=static", "-C", "link-arg=-Tsrc/arch/x86_64/ldscript"]

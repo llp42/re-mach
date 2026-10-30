@@ -1,0 +1,22 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com> */
+
+/*
+ * `.boot` is loaded and runs at 16 MiB; the rest is loaded right after it
+ * and runs at the kernel map base above it, MIN_KERNEL_ADDRESS.
+ */
+KERNEL_MAP_BASE = 0xffffffff80000000;
+
+ENTRY(boot_start)
+SECTIONS
+{
+  . = 0x1000000;
+  .boot : { *(.boot.text) *(.boot.data) }
+
+  . += KERNEL_MAP_BASE;
+  .text : AT(ADDR(.text) - KERNEL_MAP_BASE) { *(.text .text.*) }
+  .rodata : AT(ADDR(.rodata) - KERNEL_MAP_BASE) { *(.rodata .rodata.*) }
+  .data : AT(ADDR(.data) - KERNEL_MAP_BASE) { *(.data .data.*) }
+  .bss : AT(ADDR(.bss) - KERNEL_MAP_BASE) { *(.bss .bss.*) *(COMMON) }
+  _end = .;
+}

@@ -4,17 +4,13 @@
 
 use core::cell::UnsafeCell;
 
-const SIZE: usize = 16 * 1024;
+/// Its size; `boot_header` starts 16 bytes below its end.
+pub const SIZE: usize = 16 * 1024;
 
 #[repr(C, align(4096))]
-struct Stack(UnsafeCell<[u8; SIZE]>);
+pub struct Stack(UnsafeCell<[u8; SIZE]>);
 
-// SAFETY: only CPU 0 uses it, through raw pointers.
+// SAFETY: only CPU 0 uses it, through `%rsp`.
 unsafe impl Sync for Stack {}
 
-static STACK: Stack = Stack(UnsafeCell::new([0; SIZE]));
-
-/// Initial stack pointer: the end of the stack, less 16 bytes.
-pub fn top() -> *mut u8 {
-    STACK.0.get().cast::<u8>().wrapping_add(SIZE - 16)
-}
+pub static STACK: Stack = Stack(UnsafeCell::new([0; SIZE]));

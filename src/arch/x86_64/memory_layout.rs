@@ -29,9 +29,6 @@ pub const DIRECT_MAP_LIMIT: PhysAddr =
 /// End of the 52-bit physical address space.
 pub const HIGH_MEMORY_LIMIT: PhysAddr = PhysAddr(0x10_0000_0000_0000);
 
-/// Highest address the kernel image may run at: it must lie in the direct map.
-pub const IMAGE_MAX_ADDRESS: u64 = DIRECT_MAP_LIMIT.0 - 1;
-
 /// Physical segments, in address order: the direct map ends below 4 GiB.
 #[derive(Clone, Copy)]
 pub enum Segment {
