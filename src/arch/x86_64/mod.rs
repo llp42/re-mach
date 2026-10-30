@@ -3,10 +3,12 @@
 //! `x86_64` machine-dependent code.
 
 mod acpi;
+mod address;
 mod apic;
 mod boot_memory;
 mod boot_stack;
 mod cpuid;
+mod memory_layout;
 mod per_cpu;
 mod pic;
 mod serial;
@@ -90,6 +92,8 @@ extern "sysv64" fn init_on_boot_stack<B: BootInfo>(boot_info: *const B) -> ! {
     unsafe {
         boot_memory::register_boot_data(start..start + u64::from(size), Retention::Permanent);
     }
+    // SAFETY: the boot CPU, once.
+    unsafe { boot_memory::bootstrap(&boot_info) };
     for region in boot_info.memory_map() {
         let _ = write!(
             Serial,

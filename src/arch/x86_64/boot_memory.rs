@@ -6,6 +6,9 @@
 use core::cell::UnsafeCell;
 use core::ops::Range;
 
+use super::address::PhysAddr;
+use crate::boot::{BootInfo, MemoryKind};
+
 const MAX_BOOT_DATA: usize = 64;
 
 /// How long boot data is kept.
@@ -42,6 +45,101 @@ static BOOT_DATA: BootDataArray = BootDataArray {
             end: 0,
             retention: Retention::Permanent,
         }; MAX_BOOT_DATA],
+    ),
+    len: UnsafeCell::new(0),
+};
+
+/// Entries kept from the boot loader's map; overlap resolution can double them.
+const MAX_MAP_ENTRIES: usize = 128;
+
+/// Memory range kinds; later ones are more restrictive and win overlaps.
+#[derive(Clone, Copy)]
+enum EntryKind {
+    Available,
+    Reserved,
+    Acpi,
+    Nvs,
+    Unusable,
+    #[expect(dead_code, reason = "no boot source reports it")]
+    Disabled,
+}
+
+impl From<MemoryKind> for EntryKind {
+    fn from(kind: MemoryKind) -> Self {
+        match kind {
+            MemoryKind::Available => Self::Available,
+            MemoryKind::Reserved => Self::Reserved,
+            MemoryKind::AcpiReclaimable => Self::Acpi,
+            MemoryKind::Nvs => Self::Nvs,
+            MemoryKind::BadRam => Self::Unusable,
+        }
+    }
+}
+
+/// Memory map entry.
+#[derive(Clone, Copy)]
+struct MapEntry {
+    base_addr: PhysAddr,
+    length: u64,
+    kind: EntryKind,
+}
+
+impl MapEntry {
+    /// Narrows available, NVS and disabled ranges to whole pages; `None` if
+    /// the range wraps around.
+    fn narrow_to_pages(mut self) -> Option<Self> {
+        let end = self.base_addr.checked_add(self.length)?;
+        if matches!(
+            self.kind,
+            EntryKind::Available | EntryKind::Nvs | EntryKind::Disabled
+        ) {
+            self.base_addr = self.base_addr.checked_align_up()?;
+            self.length = end.align_down().checked_sub(self.base_addr)?;
+        }
+        Some(self)
+    }
+}
+
+/// The memory map.
+struct Map {
+    entries: UnsafeCell<[MapEntry; MAX_MAP_ENTRIES * 2]>,
+    len: UnsafeCell<usize>,
+}
+
+// SAFETY: only the boot CPU touches it.
+unsafe impl Sync for Map {}
+
+impl Map {
+    /// Copies the boot loader's memory map, up to `MAX_MAP_ENTRIES` entries.
+    ///
+    /// # Safety
+    ///
+    /// Runs on the boot CPU only.
+    unsafe fn build(&self, boot_info: &impl BootInfo) {
+        // SAFETY: guaranteed by the caller.
+        let (entries, len) = unsafe { (&mut *self.entries.get(), &mut *self.len.get()) };
+        let built = boot_info.memory_map().filter_map(|region| {
+            MapEntry {
+                base_addr: PhysAddr(region.address),
+                length: region.length,
+                kind: EntryKind::from(region.kind),
+            }
+            .narrow_to_pages()
+        });
+        for (slot, entry) in entries[..MAX_MAP_ENTRIES].iter_mut().zip(built) {
+            *slot = entry;
+            *len += 1;
+        }
+    }
+}
+
+static MAP: Map = Map {
+    entries: UnsafeCell::new(
+        [MapEntry {
+            base_addr: PhysAddr(0),
+            length: 0,
+            kind: EntryKind::Available,
+        }; MAX_MAP_ENTRIES * 2],
     ),
     len: UnsafeCell::new(0),
 };
@@ -87,4 +185,14 @@ pub unsafe fn register_boot_data(range: Range<u64>, retention: Retention) {
         retention,
     };
     *len += 1;
+}
+
+/// Sets up boot memory from the boot information.
+///
+/// # Safety
+///
+/// Runs once, on the boot CPU.
+pub unsafe fn bootstrap(boot_info: &impl BootInfo) {
+    // SAFETY: guaranteed by the caller.
+    unsafe { MAP.build(boot_info) };
 }
