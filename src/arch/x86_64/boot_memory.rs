@@ -138,7 +138,7 @@ impl From<MemoryType> for EntryKind {
 #[derive(Clone, Copy)]
 struct MapEntry {
     base_addr: PhysAddr,
-    length: u64,
+    length: usize,
     kind: EntryKind,
 }
 
@@ -185,8 +185,8 @@ impl Map {
         let (entries, len) = unsafe { (&mut *self.entries.get(), &mut *self.len.get()) };
         let built = boot_info.mmap().into_iter().flatten().filter_map(|entry| {
             MapEntry {
-                base_addr: PhysAddr(entry.base_addr),
-                length: entry.length,
+                base_addr: PhysAddr(usize::try_from(entry.base_addr).unwrap()),
+                length: usize::try_from(entry.length).unwrap(),
                 kind: EntryKind::from(entry.ty),
             }
             .narrow_to_pages()
@@ -479,9 +479,8 @@ pub unsafe fn alloc_pages(count: usize) -> PhysAddr {
     assert!(count != 0, "boot_memory: attempt to allocate 0 page");
     // SAFETY: guaranteed by the caller.
     let free = unsafe { &mut *HEAP.free.get() };
-    let addr = u64::try_from(count)
-        .ok()
-        .and_then(|count| count.checked_mul(PAGE_SIZE))
+    let addr = count
+        .checked_mul(PAGE_SIZE)
         .and_then(|size| free.end.0.checked_sub(size))
         .map(PhysAddr)
         .filter(|&addr| addr >= free.start)

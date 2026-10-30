@@ -7,22 +7,21 @@ use core::ptr;
 use super::address::PhysAddr;
 
 /// Bytes per page.
-pub const PAGE_SIZE: u64 = 4096;
+pub const PAGE_SIZE: usize = 4096;
 
 /// Start of the kernel's virtual addresses.
-pub const MIN_KERNEL_ADDRESS: u64 = 0xffff_ffff_8000_0000;
+pub const MIN_KERNEL_ADDRESS: usize = 0xffff_ffff_8000_0000;
 
 /// Last of the kernel's virtual addresses.
-pub const MAX_KERNEL_ADDRESS: u64 = 0xffff_ffff_ffff_ffff;
+pub const MAX_KERNEL_ADDRESS: usize = 0xffff_ffff_ffff_ffff;
 
 /// Kernel map size; the rest of the kernel window maps physical memory directly.
-pub const KERNEL_MAP_SIZE: u64 = 1024 * 1024 * 1024;
+pub const KERNEL_MAP_SIZE: usize = 1024 * 1024 * 1024;
 
 /// Kernel virtual address of the physical `address`, physical memory being
 /// mapped directly from `MIN_KERNEL_ADDRESS`.
-pub fn phys_to_virt<T>(address: PhysAddr) -> *mut T {
-    let virt = address.0 + MIN_KERNEL_ADDRESS;
-    ptr::with_exposed_provenance_mut(usize::try_from(virt).unwrap())
+pub const fn phys_to_virt<T>(address: PhysAddr) -> *mut T {
+    ptr::with_exposed_provenance_mut(address.0 + MIN_KERNEL_ADDRESS)
 }
 
 /// End of the memory ISA DMA reaches.

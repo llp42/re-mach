@@ -22,8 +22,8 @@ const BOOT_CS: u16 = 0x8;
 const BOOT_DS: u16 = 0x10;
 
 /// Top-level entry, and next-level entry, of the kernel map base.
-const KERNEL_P4: u64 = (MIN_KERNEL_ADDRESS >> 39) & 0x1ff;
-const KERNEL_P3: u64 = (MIN_KERNEL_ADDRESS >> 30) & 0x1ff;
+const KERNEL_P4: usize = (MIN_KERNEL_ADDRESS >> 39) & 0x1ff;
+const KERNEL_P3: usize = (MIN_KERNEL_ADDRESS >> 30) & 0x1ff;
 
 /// Page directory or table entry.
 const PTE: u64 = PageTableFlags::PRESENT

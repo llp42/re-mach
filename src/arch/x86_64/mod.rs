@@ -101,18 +101,19 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     let _ = write!(Serial, "cpu {}\r\n", per_cpu::PerCpu::cpu_id());
     // SAFETY: once, on the boot CPU; the first 4 GiB are identity-mapped.
     unsafe { acpi::init(boot_info) };
-    let start = u64::try_from((&raw const boot_start).addr()).unwrap();
-    let end = u64::try_from((&raw const _end).addr()).unwrap() - MIN_KERNEL_ADDRESS;
+    let start = (&raw const boot_start).addr();
+    let end = (&raw const _end).addr() - MIN_KERNEL_ADDRESS;
     // SAFETY: the boot CPU; from `.boot`, which holds the live page tables.
     unsafe {
         boot_memory::register_boot_data(PhysAddr(start)..PhysAddr(end), Retention::Permanent);
     }
     let info = boot_info.range();
-    let start = u64::try_from(info.start).unwrap();
-    let end = u64::try_from(info.end).unwrap();
     // SAFETY: the boot CPU; the boot information, until no longer needed.
     unsafe {
-        boot_memory::register_boot_data(PhysAddr(start)..PhysAddr(end), Retention::Temporary);
+        boot_memory::register_boot_data(
+            PhysAddr(info.start)..PhysAddr(info.end),
+            Retention::Temporary,
+        );
     }
     for tag in boot_info.tags() {
         match tag {
@@ -121,7 +122,8 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
                     matches!(section.ty, ElfSectionType::SYMTAB | ElfSectionType::STRTAB)
                         && section.size != 0
                 }) {
-                    let (start, end) = (section.addr, section.addr + section.size);
+                    let start = usize::try_from(section.addr).unwrap();
+                    let end = start + usize::try_from(section.size).unwrap();
                     // SAFETY: the boot CPU; a symbol or string table, kept.
                     unsafe {
                         boot_memory::register_boot_data(
@@ -134,7 +136,8 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
             Tag::Module {
                 mod_start, mod_end, ..
             } => {
-                let (start, end) = (u64::from(mod_start), u64::from(mod_end));
+                let start = usize::try_from(mod_start).unwrap();
+                let end = usize::try_from(mod_end).unwrap();
                 // SAFETY: the boot CPU; a module, until no longer needed.
                 unsafe {
                     boot_memory::register_boot_data(
@@ -206,7 +209,7 @@ unsafe fn copy_boot_info(boot_info: multiboot2::Info) {
                     string.copy_from_nonoverlapping(bytes.as_ptr(), bytes.len());
                     modules.add(len).write(BootModule {
                         start,
-                        end: start + u64::try_from(size).unwrap(),
+                        end: start + size,
                         command_line: CStr::from_ptr(string.cast()),
                     });
                 }
@@ -249,7 +252,6 @@ pub fn halt() -> ! {
 ///
 /// Runs on the boot CPU only, after boot memory's bootstrap.
 unsafe fn alloc_bytes(size: usize) -> PhysAddr {
-    let page_size = usize::try_from(PAGE_SIZE).unwrap();
     // SAFETY: guaranteed by the caller.
-    unsafe { boot_memory::alloc_pages(size.div_ceil(page_size)) }
+    unsafe { boot_memory::alloc_pages(size.div_ceil(PAGE_SIZE)) }
 }
