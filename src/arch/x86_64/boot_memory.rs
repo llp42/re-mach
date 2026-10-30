@@ -5,7 +5,7 @@
 
 use core::cell::UnsafeCell;
 
-const BIOSMEM_MAX_BOOT_DATA: usize = 64;
+const MAX_BOOT_DATA: usize = 64;
 
 /// Boot data descriptor.
 #[derive(Clone, Copy)]
@@ -17,7 +17,7 @@ struct BootData {
 
 /// Sorted array of boot data descriptors.
 struct BootDataArray {
-    data: UnsafeCell<[BootData; BIOSMEM_MAX_BOOT_DATA]>,
+    data: UnsafeCell<[BootData; MAX_BOOT_DATA]>,
     len: UnsafeCell<usize>,
 }
 
@@ -30,7 +30,7 @@ static BOOT_DATA: BootDataArray = BootDataArray {
             start: 0,
             end: 0,
             temporary: false,
-        }; BIOSMEM_MAX_BOOT_DATA],
+        }; MAX_BOOT_DATA],
     ),
     len: UnsafeCell::new(0),
 };
