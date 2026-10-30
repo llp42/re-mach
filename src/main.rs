@@ -63,7 +63,7 @@ extern "efiapi" fn efi_main(
         };
     // SAFETY: runtime-services data, valid after `ExitBootServices`.
     let system_table = unsafe { &*system_table };
-    arch::init(&uefi::Uefi::new(system_table, memory_map))
+    arch::init(uefi::Uefi::new(system_table, memory_map))
 }
 
 #[panic_handler]

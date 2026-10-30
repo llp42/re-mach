@@ -13,6 +13,7 @@ mod serial;
 
 use core::arch::asm;
 use core::fmt::Write;
+use core::mem::ManuallyDrop;
 
 use x86_64::instructions::interrupts;
 use x86_64::registers::rflags::{self, RFlags};
@@ -28,7 +29,9 @@ unsafe extern "C" {
 }
 
 /// Machine-dependent initialization, once the boot source is done.
-pub fn init<B: BootInfo>(boot_info: &B) -> ! {
+pub fn init<B: BootInfo>(boot_info: B) -> ! {
+    // Moved to the boot stack by `init_on_boot_stack`.
+    let boot_info = ManuallyDrop::new(boot_info);
     interrupts::disable();
     pic::disable();
     apic::enable();
@@ -39,7 +42,7 @@ pub fn init<B: BootInfo>(boot_info: &B) -> ! {
             "callq {entry}",
             top = in(reg) boot_stack::top(),
             entry = sym init_on_boot_stack::<B>,
-            in("rdi") core::ptr::from_ref(boot_info),
+            in("rdi") &raw const *boot_info,
             options(noreturn, att_syntax),
         );
     }
@@ -47,8 +50,9 @@ pub fn init<B: BootInfo>(boot_info: &B) -> ! {
 
 /// Rest of `init`, on the boot stack.
 extern "sysv64" fn init_on_boot_stack<B: BootInfo>(boot_info: *const B) -> ! {
-    // SAFETY: the caller's frame on the abandoned entry stack is intact.
-    let boot_info = unsafe { &*boot_info };
+    // SAFETY: the caller's frame on the abandoned entry stack is intact;
+    // copied here, nothing is read from that stack again.
+    let boot_info = unsafe { boot_info.read() };
     // SAFETY: the boot CPU is CPU 0; nothing read `cpu_id` yet.
     unsafe { per_cpu::init(0) };
     // SAFETY: an empty RFLAGS keeps DF clear.
@@ -72,7 +76,7 @@ extern "sysv64" fn init_on_boot_stack<B: BootInfo>(boot_info: *const B) -> ! {
     );
     let _ = write!(Serial, "cpu {}\r\n", per_cpu::PerCpu::cpu_id());
     // SAFETY: once, on the boot CPU; assumes the first 2 MiB and boot data are identity-mapped.
-    unsafe { acpi::init(boot_info) };
+    unsafe { acpi::init(&boot_info) };
     let image = (&raw const __ImageBase).addr();
     // SAFETY: the loader keeps the PE headers: `e_lfanew` at 0x3c, then
     // the PE32+ `SizeOfImage` 80 bytes past it.
