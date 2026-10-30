@@ -33,6 +33,7 @@ impl TagType {
     pub const END: Self = Self(0);
     pub const MODULE: Self = Self(3);
     pub const MMAP: Self = Self(6);
+    pub const ELF_SECTIONS: Self = Self(9);
     pub const EFI64: Self = Self(12);
     pub const ACPI_OLD: Self = Self(14);
     pub const ACPI_NEW: Self = Self(15);
@@ -48,6 +49,16 @@ impl MemoryType {
     pub const ACPI_RECLAIMABLE: Self = Self(3);
     pub const NVS: Self = Self(4);
     pub const BADRAM: Self = Self(5);
+}
+
+/// ELF section type; only those read here.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct ElfSectionType(pub u32);
+
+impl ElfSectionType {
+    pub const SYMTAB: Self = Self(2);
+    pub const STRTAB: Self = Self(3);
 }
 
 /// Bytes before the first tag: `total_size` and `reserved`.
@@ -77,6 +88,16 @@ struct MmapTag {
     header: TagHeader,
     entry_size: u32,
     _entry_version: u32,
+}
+
+/// Start of the ELF sections tag; the section headers follow, 4-byte
+/// aligned.
+#[repr(C)]
+struct ElfSectionsTag {
+    _header: TagHeader,
+    num: u32,
+    entsize: u32,
+    _shndx: u32,
 }
 
 /// The boot information structure.
@@ -141,6 +162,8 @@ pub enum Tag<'a> {
         mod_end: u32,
     },
     Mmap(Mmap<'a>),
+    /// The kernel's ELF section headers.
+    ElfSections(ElfSections<'a>),
     /// Copy of the ACPI 1.0 RSDP.
     AcpiOld(&'a [u8]),
     /// Copy of the ACPI >= 2.0 RSDP.
@@ -172,6 +195,7 @@ impl Tag<'_> {
                     }
                 }
                 TagType::MMAP => Self::Mmap(Mmap::new(address)),
+                TagType::ELF_SECTIONS => Self::ElfSections(ElfSections::new(address)),
                 TagType::ACPI_OLD => Self::AcpiOld(slice::from_raw_parts(
                     ptr::with_exposed_provenance(body),
                     len,
@@ -236,4 +260,64 @@ pub struct MmapEntry {
     pub length: u64,
     pub ty: MemoryType,
     _reserved: u32,
+}
+
+/// The ELF sections tag's section headers.
+#[derive(Clone)]
+pub struct ElfSections<'a> {
+    next: usize,
+    left: usize,
+    entsize: usize,
+    _info: PhantomData<&'a [u8]>,
+}
+
+impl ElfSections<'_> {
+    /// The section headers in the ELF sections tag at `address`.
+    ///
+    /// # Safety
+    ///
+    /// `address` holds the loader's ELF sections tag, readable and unchanged
+    /// for the result's lifetime.
+    unsafe fn new(address: usize) -> Self {
+        // SAFETY: guaranteed by the caller.
+        let tag = unsafe { ptr::with_exposed_provenance::<ElfSectionsTag>(address).read() };
+        Self {
+            next: address + size_of::<ElfSectionsTag>(),
+            left: usize::try_from(tag.num).unwrap(),
+            entsize: usize::try_from(tag.entsize).unwrap(),
+            _info: PhantomData,
+        }
+    }
+}
+
+impl Iterator for ElfSections<'_> {
+    type Item = ElfSection;
+
+    fn next(&mut self) -> Option<ElfSection> {
+        (self.left > 0).then(|| {
+            // SAFETY: the loader's `num` headers follow the tag, `entsize`
+            // apart.
+            let section =
+                unsafe { ptr::with_exposed_provenance::<ElfSection>(self.next).read_unaligned() };
+            self.next += self.entsize;
+            self.left -= 1;
+            section
+        })
+    }
+}
+
+/// One ELF64 section header.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct ElfSection {
+    _name: u32,
+    pub ty: ElfSectionType,
+    _flags: u64,
+    pub addr: u64,
+    _offset: u64,
+    pub size: u64,
+    _link: u32,
+    _info: u32,
+    _addralign: u64,
+    _entsize: u64,
 }
