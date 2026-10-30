@@ -324,6 +324,58 @@ static SEGMENTS: Segments = Segments(UnsafeCell::new(
     [const { PhysAddr(0)..PhysAddr(0) }; Segment::COUNT],
 ));
 
+/// The boot heap, above low memory.
+struct Heap {
+    /// Its bounds.
+    range: UnsafeCell<Range<PhysAddr>>,
+    /// Its part not allocated yet.
+    free: UnsafeCell<Range<PhysAddr>>,
+}
+
+// SAFETY: only the boot CPU touches it.
+unsafe impl Sync for Heap {}
+
+impl Heap {
+    /// Takes the largest free area between 1 MiB and `mem_upper_end` as the
+    /// boot heap, avoiding all boot data.
+    ///
+    /// # Panics
+    ///
+    /// If there is none.
+    ///
+    /// # Safety
+    ///
+    /// Runs on the boot CPU only.
+    unsafe fn init(&self, mem_upper_end: PhysAddr) {
+        let end = mem_upper_end.align_down().min(DIRECT_MAP_LIMIT);
+        let mut heap = PhysAddr(0)..PhysAddr(0);
+        let mut start = LOW_MEMORY_END;
+        // SAFETY: guaranteed by the caller.
+        while let Some(gap) = unsafe { BOOT_DATA.find_gap(start..end) } {
+            start = gap.end;
+            if gap.end - gap.start > heap.end - heap.start {
+                heap = gap;
+            }
+        }
+        assert!(
+            heap.start < heap.end,
+            "boot_memory: unable to set up the early memory allocator"
+        );
+        // SAFETY: guaranteed by the caller.
+        unsafe {
+            *self.range.get() = heap.clone();
+            *self.free.get() = heap.clone();
+            // Never released to the page allocator.
+            register_boot_data(heap, Retention::Permanent);
+        }
+    }
+}
+
+static HEAP: Heap = Heap {
+    range: UnsafeCell::new(PhysAddr(0)..PhysAddr(0)),
+    free: UnsafeCell::new(PhysAddr(0)..PhysAddr(0)),
+};
+
 /// Keeps `range` from the page allocator; `Temporary` data is released
 /// once no longer needed.
 ///
@@ -367,6 +419,24 @@ pub unsafe fn register_boot_data(range: Range<PhysAddr>, retention: Retention) {
     *len += 1;
 }
 
+/// End of the available range that holds 1 MiB, or 1 MiB if none does.
+///
+/// # Safety
+///
+/// Runs on the boot CPU only.
+unsafe fn mem_upper_end() -> PhysAddr {
+    // SAFETY: guaranteed by the caller.
+    let (entries, len) = unsafe { (&*MAP.entries.get(), *MAP.len.get()) };
+    entries[..len]
+        .iter()
+        .find(|entry| {
+            entry.kind == EntryKind::Available
+                && entry.base_addr <= LOW_MEMORY_END
+                && entry.end() > LOW_MEMORY_END
+        })
+        .map_or(LOW_MEMORY_END, MapEntry::end)
+}
+
 /// Sets up boot memory from the boot information.
 ///
 /// # Safety
@@ -404,4 +474,6 @@ pub unsafe fn bootstrap(boot_info: &impl BootInfo) {
             unsafe { SEGMENTS.set(segment, found) };
         }
     }
+    // SAFETY: guaranteed by the caller.
+    unsafe { HEAP.init(mem_upper_end()) };
 }
