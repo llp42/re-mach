@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! Machine-dependent virtual memory parameters.
 
-use core::ptr;
+use core::{fmt, ptr};
 
 use super::address::PhysAddr;
 
@@ -46,6 +46,9 @@ pub const DIRECT_MAP_LIMIT: PhysAddr =
 /// End of the 52-bit physical address space.
 pub const HIGH_MEMORY_LIMIT: PhysAddr = PhysAddr(0x10_0000_0000_0000);
 
+/// End of the physical memory tested as working.
+pub const TESTED_MEMORY_LIMIT: PhysAddr = PhysAddr(27 << 30);
+
 /// Physical segments, in address order: the direct map ends below 4 GiB.
 #[derive(Clone, Copy)]
 pub enum Segment {
@@ -68,5 +71,16 @@ impl From<Segment> for usize {
             Segment::Dma32 => 2,
             Segment::HighMemory => 3,
         }
+    }
+}
+
+impl fmt::Display for Segment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Dma => "DMA",
+            Self::DirectMap => "DIRECTMAP",
+            Self::Dma32 => "DMA32",
+            Self::HighMemory => "HIGHMEM",
+        })
     }
 }

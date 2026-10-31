@@ -16,6 +16,7 @@ mod per_cpu;
 mod pic;
 mod pmap;
 mod serial;
+mod vm_page;
 
 use core::arch::asm;
 use core::cell::UnsafeCell;

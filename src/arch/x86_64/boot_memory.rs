@@ -12,8 +12,10 @@ use super::address::PhysAddr;
 use super::ap_boot;
 use super::memory_layout::{
     DIRECT_MAP_LIMIT, DMA_LIMIT, DMA32_LIMIT, HIGH_MEMORY_LIMIT, PAGE_SIZE, Segment,
+    TESTED_MEMORY_LIMIT,
 };
 use super::serial::Serial;
+use super::vm_page;
 use crate::boot::multiboot2::{Info, MemoryType};
 use crate::config::MAX_CPUS;
 
@@ -509,7 +511,7 @@ pub unsafe fn bootstrap(boot_info: Info) {
 ///
 /// # Safety
 ///
-/// Runs on the boot CPU only, after `bootstrap`.
+/// Runs on the boot CPU only, after `bootstrap`, before `setup`.
 pub unsafe fn alloc_pages(count: usize) -> PhysAddr {
     assert!(count != 0, "boot_memory: attempt to allocate 0 page");
     // SAFETY: guaranteed by the caller.
@@ -549,12 +551,48 @@ pub unsafe fn heap_end() -> PhysAddr {
     unsafe { (*HEAP.range.get()).end }
 }
 
-/// Shows the physical memory map.
+/// Shows the physical memory map and loads its segments into `vm_page`; the
+/// boot heap is no longer allocated from.
 ///
 /// # Safety
 ///
 /// Runs once, on the boot CPU, after `bootstrap`.
 pub unsafe fn setup() {
     // SAFETY: guaranteed by the caller.
-    unsafe { MAP.show() };
+    let (segments, free) = unsafe {
+        MAP.show();
+        (&*SEGMENTS.0.get(), (*HEAP.free.get()).clone())
+    };
+    for segment in [
+        Segment::Dma,
+        Segment::DirectMap,
+        Segment::Dma32,
+        Segment::HighMemory,
+    ] {
+        let Range { start, mut end } = segments[usize::from(segment)].clone();
+        if start == end {
+            break;
+        }
+        if end > TESTED_MEMORY_LIMIT {
+            if TESTED_MEMORY_LIMIT <= start {
+                let _ = write!(
+                    Serial,
+                    "boot_memory: warning: segment {segment} beyond tested memory size, not loaded\r\n"
+                );
+                continue;
+            }
+            let _ = write!(
+                Serial,
+                "boot_memory: warning: segment {segment} truncated to tested {:#x}\r\n",
+                TESTED_MEMORY_LIMIT.0
+            );
+            end = TESTED_MEMORY_LIMIT;
+        }
+        // SAFETY: guaranteed by the caller.
+        unsafe { vm_page::load(start..end) };
+        if free.start < end && free.end > start {
+            // SAFETY: guaranteed by the caller.
+            unsafe { vm_page::load_heap(free.start.max(start)..free.end.min(end)) };
+        }
+    }
 }
