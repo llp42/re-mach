@@ -29,7 +29,7 @@ use crate::boot::multiboot2::{self, ElfSectionType, Tag};
 use crate::smp::PerCpu as _;
 use address::PhysAddr;
 use boot_memory::Retention;
-use memory_layout::{MIN_KERNEL_ADDRESS, PAGE_SIZE, phys_to_virt};
+use memory_layout::{KERNEL_BASE, PAGE_SIZE, phys_to_virt};
 use serial::Serial;
 
 struct KernelCommandLine(UnsafeCell<&'static CStr>);
@@ -102,7 +102,7 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     // SAFETY: once, on the boot CPU; the first 4 GiB are identity-mapped.
     unsafe { acpi::init(boot_info) };
     let start = (&raw const boot_start).addr();
-    let end = (&raw const _end).addr() - MIN_KERNEL_ADDRESS;
+    let end = (&raw const _end).addr() - KERNEL_BASE;
     // SAFETY: the boot CPU; from `.boot`, which holds the live page tables.
     unsafe {
         boot_memory::register_boot_data(PhysAddr(start)..PhysAddr(end), Retention::Permanent);

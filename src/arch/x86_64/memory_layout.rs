@@ -9,8 +9,8 @@ use super::address::PhysAddr;
 /// Bytes per page.
 pub const PAGE_SIZE: usize = 4096;
 
-/// Start of the kernel's virtual addresses.
-pub const MIN_KERNEL_ADDRESS: usize = 0xffff_ffff_8000_0000;
+/// Base of the kernel window, where the kernel image runs.
+pub const KERNEL_BASE: usize = 0xffff_ffff_8000_0000;
 
 /// Last of the kernel's virtual addresses.
 pub const MAX_KERNEL_ADDRESS: usize = 0xffff_ffff_ffff_ffff;
@@ -19,9 +19,9 @@ pub const MAX_KERNEL_ADDRESS: usize = 0xffff_ffff_ffff_ffff;
 pub const KERNEL_MAP_SIZE: usize = 1024 * 1024 * 1024;
 
 /// Kernel virtual address of the physical `address`, physical memory being
-/// mapped directly from `MIN_KERNEL_ADDRESS`.
+/// mapped directly from `KERNEL_BASE`.
 pub const fn phys_to_virt<T>(address: PhysAddr) -> *mut T {
-    ptr::with_exposed_provenance_mut(address.0 + MIN_KERNEL_ADDRESS)
+    ptr::with_exposed_provenance_mut(address.0 + KERNEL_BASE)
 }
 
 /// End of the memory ISA DMA reaches.
@@ -32,7 +32,7 @@ pub const DMA32_LIMIT: PhysAddr = PhysAddr(0x1_0000_0000);
 
 /// End of the physical memory mapped directly in the kernel's space.
 pub const DIRECT_MAP_LIMIT: PhysAddr =
-    PhysAddr(MAX_KERNEL_ADDRESS - MIN_KERNEL_ADDRESS - KERNEL_MAP_SIZE + 1);
+    PhysAddr(MAX_KERNEL_ADDRESS - KERNEL_BASE - KERNEL_MAP_SIZE + 1);
 
 /// End of the 52-bit physical address space.
 pub const HIGH_MEMORY_LIMIT: PhysAddr = PhysAddr(0x10_0000_0000_0000);

@@ -11,7 +11,7 @@ use x86_64::structures::gdt::DescriptorFlags;
 use x86_64::structures::paging::PageTableFlags;
 
 use super::boot_stack;
-use super::memory_layout::MIN_KERNEL_ADDRESS;
+use super::memory_layout::KERNEL_BASE;
 use crate::boot::multiboot2::{ARCHITECTURE_X86, HEADER_MAGIC, HeaderTagType, TagType};
 
 /// EFER's MSR number.
@@ -22,8 +22,8 @@ const BOOT_CS: u16 = 0x8;
 const BOOT_DS: u16 = 0x10;
 
 /// Top-level entry, and next-level entry, of the kernel map base.
-const KERNEL_P4: usize = (MIN_KERNEL_ADDRESS >> 39) & 0x1ff;
-const KERNEL_P3: usize = (MIN_KERNEL_ADDRESS >> 30) & 0x1ff;
+const KERNEL_P4: usize = (KERNEL_BASE >> 39) & 0x1ff;
+const KERNEL_P3: usize = (KERNEL_BASE >> 30) & 0x1ff;
 
 /// Page directory or table entry.
 const PTE: u64 = PageTableFlags::PRESENT

@@ -3,7 +3,7 @@
 
 /*
  * `.boot` is loaded and runs at 16 MiB; the rest is loaded right after it
- * and runs at the kernel map base above it, MIN_KERNEL_ADDRESS.
+ * and runs at the kernel map base above it, KERNEL_BASE.
  */
 KERNEL_MAP_BASE = 0xffffffff80000000;
 
