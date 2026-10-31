@@ -153,6 +153,8 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe { copy_boot_info(boot_info) };
     // SAFETY: the boot CPU, once, after boot memory's bootstrap.
     unsafe { pmap::bootstrap() };
+    // SAFETY: the boot CPU, once, after boot memory's bootstrap.
+    unsafe { boot_memory::setup() };
     halt();
 }
 

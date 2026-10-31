@@ -4,6 +4,7 @@
 //! Boot-time physical memory.
 
 use core::cell::UnsafeCell;
+use core::fmt::{self, Write};
 use core::ops::Range;
 use core::sync::atomic::Ordering;
 
@@ -12,6 +13,7 @@ use super::ap_boot;
 use super::memory_layout::{
     DIRECT_MAP_LIMIT, DMA_LIMIT, DMA32_LIMIT, HIGH_MEMORY_LIMIT, PAGE_SIZE, Segment,
 };
+use super::serial::Serial;
 use crate::boot::multiboot2::{Info, MemoryType};
 use crate::config::MAX_CPUS;
 
@@ -131,6 +133,19 @@ impl From<MemoryType> for EntryKind {
             MemoryType::BADRAM => Self::Unusable,
             _ => Self::Reserved,
         }
+    }
+}
+
+impl fmt::Display for EntryKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Available => "available",
+            Self::Reserved => "reserved",
+            Self::Acpi => "ACPI",
+            Self::Nvs => "ACPI NVS",
+            Self::Unusable => "unusable",
+            Self::Disabled => "unknown (reserved)",
+        })
     }
 }
 
@@ -280,6 +295,26 @@ impl Map {
         }
         let span = span?;
         Some(span.start.max(range.start)..span.end.min(range.end))
+    }
+
+    /// Prints the map.
+    ///
+    /// # Safety
+    ///
+    /// Runs on the boot CPU only.
+    unsafe fn show(&self) {
+        // SAFETY: guaranteed by the caller.
+        let (entries, len) = unsafe { (&*self.entries.get(), *self.len.get()) };
+        let _ = Serial.write_str("boot_memory: physical memory map:\r\n");
+        for entry in &entries[..len] {
+            let _ = write!(
+                Serial,
+                "boot_memory: {:018x}:{:018x}, {}\r\n",
+                entry.base_addr.0,
+                entry.end().0,
+                entry.kind
+            );
+        }
     }
 }
 
@@ -512,4 +547,14 @@ pub unsafe fn memory_end() -> PhysAddr {
 pub unsafe fn heap_end() -> PhysAddr {
     // SAFETY: guaranteed by the caller.
     unsafe { (*HEAP.range.get()).end }
+}
+
+/// Shows the physical memory map.
+///
+/// # Safety
+///
+/// Runs once, on the boot CPU, after `bootstrap`.
+pub unsafe fn setup() {
+    // SAFETY: guaranteed by the caller.
+    unsafe { MAP.show() };
 }
