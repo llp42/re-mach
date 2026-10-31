@@ -12,7 +12,6 @@ use super::address::PhysAddr;
 use super::ap_boot;
 use super::memory_layout::{
     DIRECT_MAP_LIMIT, DMA_LIMIT, DMA32_LIMIT, HIGH_MEMORY_LIMIT, PAGE_SIZE, Segment,
-    TESTED_MEMORY_LIMIT,
 };
 use super::serial::Serial;
 use super::vm_page;
@@ -569,24 +568,9 @@ pub unsafe fn setup() {
         Segment::Dma32,
         Segment::HighMemory,
     ] {
-        let Range { start, mut end } = segments[usize::from(segment)].clone();
+        let Range { start, end } = segments[usize::from(segment)].clone();
         if start == end {
             break;
-        }
-        if end > TESTED_MEMORY_LIMIT {
-            if TESTED_MEMORY_LIMIT <= start {
-                let _ = write!(
-                    Serial,
-                    "boot_memory: warning: segment {segment} beyond tested memory size, not loaded\r\n"
-                );
-                continue;
-            }
-            let _ = write!(
-                Serial,
-                "boot_memory: warning: segment {segment} truncated to tested {:#x}\r\n",
-                TESTED_MEMORY_LIMIT.0
-            );
-            end = TESTED_MEMORY_LIMIT;
         }
         // SAFETY: guaranteed by the caller.
         unsafe { vm_page::load(start..end) };
