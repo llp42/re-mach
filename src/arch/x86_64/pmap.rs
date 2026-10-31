@@ -8,8 +8,9 @@ use core::ptr;
 use core::slice;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use x86_64::registers::control::{Cr3, Cr3Flags, Cr4, Cr4Flags};
 use x86_64::structures::paging::page_table::PageTableEntry;
-use x86_64::structures::paging::{PageTable, PageTableFlags};
+use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame};
 
 use super::address::PhysAddr;
 use super::boot_memory;
@@ -128,7 +129,7 @@ const unsafe fn entries<'a>(start: PhysAddr, count: usize) -> &'a mut [PageTable
     unsafe { slice::from_raw_parts_mut(phys_to_virt(start), count * ENTRIES) }
 }
 
-/// Builds the kernel's page tables and physical map.
+/// Builds the kernel's page tables and physical map, and switches to them.
 ///
 /// # Panics
 ///
@@ -168,6 +169,13 @@ pub unsafe fn bootstrap() {
         *VIRTUAL_ABOVE_BOOT.0.get() = KERNEL_BASE + boot_end..MAX_KERNEL_ADDRESS - PAGE_SIZE + 1;
     }
     DIRECT_MAP_END.store(DIRECT_MAP_BASE + direct_map_size, Ordering::Relaxed);
+    let pml4_frame = PhysFrame::containing_address(frame(pml4));
+    // SAFETY: the new tables map the kernel window up to `boot_end`, which
+    // holds all the kernel reaches; nothing uses the identity map any more.
+    unsafe {
+        Cr4::update(|flags| flags.insert(Cr4Flags::PAGE_GLOBAL));
+        Cr3::write(pml4_frame, Cr3Flags::empty());
+    }
 }
 
 /// Maps kernel space into `pml4`: all its PDP tables, so its PML4 entries
