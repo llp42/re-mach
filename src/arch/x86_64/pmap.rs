@@ -2,18 +2,22 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! Physical maps.
 
+use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::ops::Range;
 use core::ptr;
 use core::slice;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use x86_64::registers::control::{Cr3, Cr3Flags, Cr4, Cr4Flags};
+use x86_64::instructions::tlb;
+use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr3Flags, Cr4, Cr4Flags};
+use x86_64::registers::model_specific::{Pat, PatMemoryType};
 use x86_64::structures::paging::page_table::PageTableEntry;
 use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame};
 
 use super::address::PhysAddr;
 use super::boot_memory;
+use super::cpuid;
 use super::memory_layout::{
     DIRECT_MAP_BASE, KERNEL_BASE, MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE,
     PAGE_TABLE_BASE, phys_to_virt,
@@ -55,6 +59,20 @@ const LARGE_PAGE: PageTableFlags = TABLE
 const DIRECT_MAP_PAGE: PageTableFlags = LARGE_PAGE
     .union(PageTableFlags::ACCESSED)
     .union(PageTableFlags::DIRTY);
+
+/// The page attribute table: entries 0 to 3 keep their reset types, so a
+/// PTE's PWT and PCD bits keep their meaning; 5 and 6 add write-protect and
+/// write-combining.
+const PAGE_ATTRIBUTES: [PatMemoryType; 8] = [
+    PatMemoryType::WriteBack,
+    PatMemoryType::WriteThrough,
+    PatMemoryType::Uncacheable,
+    PatMemoryType::StrongUncacheable,
+    PatMemoryType::WriteBack,
+    PatMemoryType::WriteProtected,
+    PatMemoryType::WriteCombining,
+    PatMemoryType::StrongUncacheable,
+];
 
 /// One address space's page tables.
 #[expect(dead_code, reason = "the VM reads it")]
@@ -129,7 +147,8 @@ const unsafe fn entries<'a>(start: PhysAddr, count: usize) -> &'a mut [PageTable
     unsafe { slice::from_raw_parts_mut(phys_to_virt(start), count * ENTRIES) }
 }
 
-/// Builds the kernel's page tables and physical map, and switches to them.
+/// Builds the kernel's page tables and physical map, switches to them, and
+/// sets the page attribute table.
 ///
 /// # Panics
 ///
@@ -176,6 +195,39 @@ pub unsafe fn bootstrap() {
         Cr4::update(|flags| flags.insert(Cr4Flags::PAGE_GLOBAL));
         Cr3::write(pml4_frame, Cr3Flags::empty());
     }
+    // SAFETY: guaranteed by the caller; no mapping uses PAT entries 4 to 7.
+    unsafe { set_page_attributes() };
+}
+
+/// Loads `PAGE_ATTRIBUTES` if the CPU has a PAT, with global pages off and
+/// caches disabled and flushed around the write.
+///
+/// # Safety
+///
+/// Runs on the boot CPU only, while no mapping uses entries 4 to 7.
+unsafe fn set_page_attributes() {
+    if !cpuid::features().has_pat() {
+        return;
+    }
+    let (cr0, cr4) = (Cr0::read(), Cr4::read());
+    // SAFETY: guaranteed by the caller; caches and global pages come back
+    // as they were.
+    unsafe {
+        Cr4::write(cr4 - Cr4Flags::PAGE_GLOBAL);
+        Cr0::write((cr0 | Cr0Flags::CACHE_DISABLE) - Cr0Flags::NOT_WRITE_THROUGH);
+        flush_caches();
+        Pat::write(PAGE_ATTRIBUTES);
+        flush_caches();
+        Cr0::write(cr0);
+        Cr4::write(cr4);
+    }
+}
+
+/// Writes back and invalidates the caches, then flushes the TLB.
+fn flush_caches() {
+    // SAFETY: only writes back and drops cached lines.
+    unsafe { asm!("wbinvd", options(att_syntax, nostack, preserves_flags)) };
+    tlb::flush_all();
 }
 
 /// Maps kernel space into `pml4`: all its PDP tables, so its PML4 entries
