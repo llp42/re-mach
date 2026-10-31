@@ -9,6 +9,15 @@ use super::address::PhysAddr;
 /// Bytes per page.
 pub const PAGE_SIZE: usize = 4096;
 
+/// The PML4 maps itself here, showing every page table.
+pub const PAGE_TABLE_BASE: usize = 0xffff_8000_0000_0000;
+
+/// Physical memory is mapped in full from here, across 128 PML4 slots.
+pub const DIRECT_MAP_BASE: usize = 0xffff_b800_0000_0000;
+
+/// Start of kernel virtual space, its last 16 PML4 slots.
+pub const MIN_KERNEL_ADDRESS: usize = 0xffff_f800_0000_0000;
+
 /// Base of the kernel window, where the kernel image runs.
 pub const KERNEL_BASE: usize = 0xffff_ffff_8000_0000;
 

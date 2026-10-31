@@ -14,6 +14,7 @@ mod cpuid;
 mod memory_layout;
 mod per_cpu;
 mod pic;
+mod pmap;
 mod serial;
 
 use core::arch::asm;
@@ -150,6 +151,8 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe { boot_memory::bootstrap(boot_info) };
     // SAFETY: the boot CPU, once, after boot memory's bootstrap.
     unsafe { copy_boot_info(boot_info) };
+    // SAFETY: the boot CPU, once, after boot memory's bootstrap.
+    unsafe { pmap::bootstrap() };
     halt();
 }
 

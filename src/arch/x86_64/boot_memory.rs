@@ -488,3 +488,28 @@ pub unsafe fn alloc_pages(count: usize) -> PhysAddr {
     free.end = addr;
     addr
 }
+
+/// End of the highest available memory.
+///
+/// # Safety
+///
+/// Runs on the boot CPU only, after `bootstrap`.
+pub unsafe fn memory_end() -> PhysAddr {
+    // SAFETY: guaranteed by the caller.
+    let segments = unsafe { &*SEGMENTS.0.get() };
+    segments
+        .iter()
+        .map(|segment| segment.end)
+        .max()
+        .unwrap_or(PhysAddr(0))
+}
+
+/// End of the boot heap.
+///
+/// # Safety
+///
+/// Runs on the boot CPU only, after `bootstrap`.
+pub unsafe fn heap_end() -> PhysAddr {
+    // SAFETY: guaranteed by the caller.
+    unsafe { (*HEAP.range.get()).end }
+}
