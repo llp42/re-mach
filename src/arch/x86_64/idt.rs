@@ -4,21 +4,22 @@
 
 use core::cell::UnsafeCell;
 
-use x86_64::structures::idt::InterruptDescriptorTable;
+use x86_64::structures::idt::{Entry, HandlerFunc, InterruptDescriptorTable};
 use x86_64::{PrivilegeLevel, VirtAddr};
 
 use super::trap;
 
 struct Table(UnsafeCell<InterruptDescriptorTable>);
 
-// SAFETY: written once by `init`, on the boot CPU, before it is loaded.
+// SAFETY: written on the boot CPU, by `init` and `interrupt::init`, with
+// interrupts off.
 unsafe impl Sync for Table {}
 
 /// The boot CPU's.
 static IDT: Table = Table(UnsafeCell::new(InterruptDescriptorTable::new()));
 
 /// Fills the boot CPU's IDT with the exception entries and loads it;
-/// interrupt vectors stay empty.
+/// `interrupt::init` fills the interrupt vectors.
 ///
 /// # Safety
 ///
@@ -94,6 +95,17 @@ pub unsafe fn init() {
             &raw const trap::security_exception_entry,
         ));
     }
-    // SAFETY: filled above, never written again.
+    // SAFETY: no `&mut` is alive; `interrupt::init` takes its own later.
     unsafe { &*IDT.0.get() }.load();
+}
+
+/// The boot CPU's interrupt vectors, 0x20 to 0xff.
+///
+/// # Safety
+///
+/// On the boot CPU, with interrupts off and no other reference to the
+/// table alive.
+pub unsafe fn interrupts() -> &'static mut [Entry<HandlerFunc>] {
+    // SAFETY: guaranteed by the caller.
+    unsafe { &mut *IDT.0.get() }.slice_mut(32..)
 }
