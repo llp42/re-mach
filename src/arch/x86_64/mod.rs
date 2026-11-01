@@ -13,6 +13,7 @@ mod boot_stack;
 mod cpuid;
 mod gdt;
 mod idt;
+mod interrupt;
 mod memory_layout;
 mod per_cpu;
 mod pic;
@@ -170,6 +171,8 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe { gdt::init() };
     // SAFETY: the boot CPU, once, after the GDT.
     unsafe { idt::init() };
+    // SAFETY: the boot CPU, once, after the IDT.
+    unsafe { interrupt::init() };
     halt();
 }
 

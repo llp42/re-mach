@@ -103,7 +103,7 @@ unsafe extern "C" {
 
 /// Registers saved on a trap, from the stack top down.
 #[repr(C)]
-struct TrapFrame {
+pub struct TrapFrame {
     r15: u64,
     r14: u64,
     r13: u64,
@@ -119,10 +119,10 @@ struct TrapFrame {
     rcx: u64,
     rbx: u64,
     rax: u64,
-    vector: u64,
+    pub vector: u64,
     error_code: u64,
     /// Pushed by the CPU.
-    interrupted: InterruptStackFrameValue,
+    pub interrupted: InterruptStackFrameValue,
 }
 
 impl fmt::Display for TrapFrame {
