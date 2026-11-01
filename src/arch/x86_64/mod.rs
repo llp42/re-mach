@@ -11,6 +11,7 @@ mod boot_header;
 mod boot_memory;
 mod boot_stack;
 mod cpuid;
+mod gdt;
 mod memory_layout;
 mod per_cpu;
 mod pic;
@@ -163,6 +164,8 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
             flags.remove(Cr0Flags::CACHE_DISABLE | Cr0Flags::NOT_WRITE_THROUGH);
         });
     }
+    // SAFETY: the boot CPU, once.
+    unsafe { gdt::init() };
     halt();
 }
 
