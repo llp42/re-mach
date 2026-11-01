@@ -4,7 +4,7 @@
 //! Traps: their entry points and the kernel's handler.
 
 use core::arch::global_asm;
-use core::fmt::Write;
+use core::fmt::{self, Write};
 
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::InterruptStackFrameValue;
@@ -125,43 +125,48 @@ struct TrapFrame {
     interrupted: InterruptStackFrameValue,
 }
 
+impl fmt::Display for TrapFrame {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let interrupted = &self.interrupted;
+        write!(
+            f,
+            "rax {:#018x} rbx {:#018x} rcx {:#018x} rdx {:#018x}\r\n\
+             rsi {:#018x} rdi {:#018x} rbp {:#018x} rsp {:#018x}\r\n\
+             r8  {:#018x} r9  {:#018x} r10 {:#018x} r11 {:#018x}\r\n\
+             r12 {:#018x} r13 {:#018x} r14 {:#018x} r15 {:#018x}\r\n\
+             rflags {:#018x} cs {:#06x} ss {:#06x}\r\n",
+            self.rax,
+            self.rbx,
+            self.rcx,
+            self.rdx,
+            self.rsi,
+            self.rdi,
+            self.rbp,
+            interrupted.stack_pointer.as_u64(),
+            self.r8,
+            self.r9,
+            self.r10,
+            self.r11,
+            self.r12,
+            self.r13,
+            self.r14,
+            self.r15,
+            interrupted.cpu_flags.bits(),
+            interrupted.code_segment.0,
+            interrupted.stack_segment.0,
+        )
+    }
+}
+
 /// Reports a kernel trap and panics; none is recoverable yet.
 extern "sysv64" fn kernel_trap(frame: &TrapFrame) -> ! {
     let cr2 = Cr2::read_raw();
-    let interrupted = &frame.interrupted;
     let _ = write!(
         Serial,
-        "Kernel trap {}, rip {:#x}, code {:#x}, cr2 {cr2:#x}\r\n",
+        "Kernel trap {}, rip {:#x}, code {:#x}, cr2 {cr2:#x}\r\n{frame}",
         frame.vector,
-        interrupted.instruction_pointer.as_u64(),
+        frame.interrupted.instruction_pointer.as_u64(),
         frame.error_code,
-    );
-    let _ = write!(
-        Serial,
-        "rax {:#018x} rbx {:#018x} rcx {:#018x} rdx {:#018x}\r\n\
-         rsi {:#018x} rdi {:#018x} rbp {:#018x} rsp {:#018x}\r\n\
-         r8  {:#018x} r9  {:#018x} r10 {:#018x} r11 {:#018x}\r\n\
-         r12 {:#018x} r13 {:#018x} r14 {:#018x} r15 {:#018x}\r\n\
-         rflags {:#018x} cs {:#06x} ss {:#06x}\r\n",
-        frame.rax,
-        frame.rbx,
-        frame.rcx,
-        frame.rdx,
-        frame.rsi,
-        frame.rdi,
-        frame.rbp,
-        interrupted.stack_pointer.as_u64(),
-        frame.r8,
-        frame.r9,
-        frame.r10,
-        frame.r11,
-        frame.r12,
-        frame.r13,
-        frame.r14,
-        frame.r15,
-        interrupted.cpu_flags.bits(),
-        interrupted.code_segment.0,
-        interrupted.stack_segment.0,
     );
     panic!("trap")
 }
