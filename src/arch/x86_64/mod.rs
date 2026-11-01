@@ -12,11 +12,13 @@ mod boot_memory;
 mod boot_stack;
 mod cpuid;
 mod gdt;
+mod idt;
 mod memory_layout;
 mod per_cpu;
 mod pic;
 mod pmap;
 mod serial;
+mod trap;
 mod vm_page;
 
 use core::arch::asm;
@@ -166,6 +168,8 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     }
     // SAFETY: the boot CPU, once.
     unsafe { gdt::init() };
+    // SAFETY: the boot CPU, once, after the GDT.
+    unsafe { idt::init() };
     halt();
 }
 
