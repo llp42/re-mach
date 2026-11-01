@@ -24,6 +24,7 @@ use core::ffi::CStr;
 use core::fmt::Write;
 use core::{ptr, slice};
 
+use x86_64::registers::control::{Cr0, Cr0Flags};
 use x86_64::registers::rflags::{self, RFlags};
 
 use crate::boot;
@@ -156,6 +157,12 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe { pmap::bootstrap() };
     // SAFETY: the boot CPU, once, after boot memory's bootstrap.
     unsafe { boot_memory::setup() };
+    // SAFETY: turns caching on; paging and protection stay as they are.
+    unsafe {
+        Cr0::update(|flags| {
+            flags.remove(Cr0Flags::CACHE_DISABLE | Cr0Flags::NOT_WRITE_THROUGH);
+        });
+    }
     halt();
 }
 
