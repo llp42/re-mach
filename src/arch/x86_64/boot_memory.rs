@@ -191,7 +191,8 @@ struct Map {
 unsafe impl Sync for Map {}
 
 impl Map {
-    /// Copies the boot loader's memory map, up to `MAX_MAP_ENTRIES` entries.
+    /// Copies the boot loader's memory map, up to `MAX_MAP_ENTRIES` entries;
+    /// warns about the rest.
     ///
     /// # Safety
     ///
@@ -199,7 +200,7 @@ impl Map {
     unsafe fn build(&self, boot_info: Info) {
         // SAFETY: guaranteed by the caller.
         let (entries, len) = unsafe { (&mut *self.entries.get(), &mut *self.len.get()) };
-        let built = boot_info.mmap().into_iter().flatten().filter_map(|entry| {
+        let mut built = boot_info.mmap().into_iter().flatten().filter_map(|entry| {
             MapEntry {
                 base_addr: PhysAddr(entry.base_addr),
                 length: entry.length,
@@ -207,9 +208,16 @@ impl Map {
             }
             .narrow_to_pages()
         });
-        for (slot, entry) in entries[..MAX_MAP_ENTRIES].iter_mut().zip(built) {
+        for (slot, entry) in entries[..MAX_MAP_ENTRIES].iter_mut().zip(&mut built) {
             *slot = entry;
             *len += 1;
+        }
+        let dropped = built.count();
+        if dropped != 0 {
+            let _ = write!(
+                Serial,
+                "boot_memory: warning: {dropped} memory map entries past {MAX_MAP_ENTRIES} ignored\r\n"
+            );
         }
     }
 
