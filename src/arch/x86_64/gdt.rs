@@ -5,7 +5,7 @@
 
 use x86_64::PrivilegeLevel;
 use x86_64::instructions::segmentation::{CS, DS, ES, SS, Segment};
-use x86_64::structures::gdt::{DescriptorFlags, GlobalDescriptorTable, SegmentSelector};
+use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 
 /// Entries, in GNU Mach's layout; the user TLS slots, 9 and 10, are the
 /// last its interface shows.
@@ -18,22 +18,12 @@ const KERNEL_CODE: SegmentSelector = SegmentSelector::new(1, PrivilegeLevel::Rin
 const KERNEL_DATA: SegmentSelector = SegmentSelector::new(2, PrivilegeLevel::Ring0);
 
 /// The boot CPU's.
-static GDT: GlobalDescriptorTable<ENTRIES> = GlobalDescriptorTable::from_raw_entries(&[
-    0,
-    DescriptorFlags::KERNEL_CODE64.bits(),
-    DescriptorFlags::KERNEL_DATA.bits(),
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-]);
+static GDT: GlobalDescriptorTable<ENTRIES> = {
+    let mut gdt = GlobalDescriptorTable::from_raw_entries(&[0; ENTRIES]);
+    gdt.set(1, Descriptor::kernel_code_segment());
+    gdt.set(2, Descriptor::kernel_data_segment());
+    gdt
+};
 
 /// Loads the boot CPU's GDT and reloads CS, SS, DS and ES from it; FS and
 /// GS stay null, keeping the per-CPU GS base.

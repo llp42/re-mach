@@ -64,7 +64,7 @@ checksum = "442887c63f2c839b346c192d047a7c87e73d0689c9157b00b53dcc27dd5ea793"
 [[package]]
 name = "x86_64"
 version = "0.16.0-rc.0"
-source = "git+https://github.com/llp42/x86_64?branch=master#ace9a4b8c09bfdc1866711361547cb797a1229fd"
+source = "git+https://github.com/llp42/x86_64?branch=master#495b1ca5efd757296481fd8b3da41fb114030180"
 dependencies = [
  "bit_field",
  "bitflags",
