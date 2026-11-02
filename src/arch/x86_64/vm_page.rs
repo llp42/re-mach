@@ -3,53 +3,40 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Physical pages.
 
-use core::cell::UnsafeCell;
 use core::ops::Range;
 
 use super::address::PhysAddr;
+use crate::sync::BootCell;
 
 /// Physical memory loaded from boot memory.
 struct Loaded {
     /// The memory the page array will cover, holes included.
-    span: UnsafeCell<Range<PhysAddr>>,
+    span: Option<Range<PhysAddr>>,
     /// The boot heap's unused part, free from the start.
-    heap: UnsafeCell<Range<PhysAddr>>,
+    heap: Option<Range<PhysAddr>>,
 }
 
-// SAFETY: only the boot CPU touches it.
-unsafe impl Sync for Loaded {}
-
-static LOADED: Loaded = Loaded {
-    span: UnsafeCell::new(PhysAddr(0)..PhysAddr(0)),
-    heap: UnsafeCell::new(PhysAddr(0)..PhysAddr(0)),
-};
+static LOADED: BootCell<Loaded> = BootCell::new(Loaded {
+    span: None,
+    heap: None,
+});
 
 /// Widens the span to cover `range`.
-///
-/// # Safety
-///
-/// Runs on the boot CPU only.
-pub unsafe fn load(range: Range<PhysAddr>) {
-    // SAFETY: guaranteed by the caller.
-    let span = unsafe { &mut *LOADED.span.get() };
-    *span = if span.is_empty() {
-        range
-    } else {
-        span.start.min(range.start)..span.end.max(range.end)
-    };
+pub fn load(range: Range<PhysAddr>) {
+    let mut loaded = LOADED.borrow_mut();
+    loaded.span = Some(widen(loaded.span.take(), range));
 }
 
 /// Widens the free heap to cover `range`.
-///
-/// # Safety
-///
-/// Runs on the boot CPU only.
-pub unsafe fn load_heap(range: Range<PhysAddr>) {
-    // SAFETY: guaranteed by the caller.
-    let heap = unsafe { &mut *LOADED.heap.get() };
-    *heap = if heap.is_empty() {
-        range
-    } else {
-        heap.start.min(range.start)..heap.end.max(range.end)
-    };
+pub fn load_heap(range: Range<PhysAddr>) {
+    let mut loaded = LOADED.borrow_mut();
+    loaded.heap = Some(widen(loaded.heap.take(), range));
+}
+
+/// `range`, widened to cover `area` if there is one.
+fn widen(area: Option<Range<PhysAddr>>, range: Range<PhysAddr>) -> Range<PhysAddr> {
+    match area {
+        Some(area) => area.start.min(range.start)..area.end.max(range.end),
+        None => range,
+    }
 }

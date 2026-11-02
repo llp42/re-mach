@@ -582,11 +582,9 @@ pub unsafe fn setup() {
         if start == end {
             break;
         }
-        // SAFETY: guaranteed by the caller.
-        unsafe { vm_page::load(start..end) };
+        vm_page::load(start..end);
         if free.start < end && free.end > start {
-            // SAFETY: guaranteed by the caller.
-            unsafe { vm_page::load_heap(free.start.max(start)..free.end.min(end)) };
+            vm_page::load_heap(free.start.max(start)..free.end.min(end));
         }
     }
 }
