@@ -173,6 +173,8 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe { idt::init() };
     // SAFETY: the boot CPU, once, after the IDT.
     unsafe { interrupt::init() };
+    // SAFETY: the boot CPU, once, after the GDT.
+    unsafe { gdt::store_user_segments() };
     halt();
 }
 
