@@ -23,6 +23,10 @@ pub struct PerCpu {
     apic_id: u8,
     /// How deep its interrupt handlers nest.
     pub(super) interrupt_nesting: u32,
+    /// How deep its critical sections nest.
+    pub(super) critical_nesting: u32,
+    /// The interrupts its critical sections held back, a bit per vector.
+    pub(super) pending_interrupts: [u64; 4],
     /// Its GDT, which holds its TSS's descriptor.
     gdt: Option<&'static GlobalDescriptorTable<{ gdt::ENTRIES }>>,
     tss: TaskStateSegment,
@@ -38,6 +42,8 @@ static PER_CPU: [Slot; MAX_CPUS] = [const {
         id: 0,
         apic_id: 0,
         interrupt_nesting: 0,
+        critical_nesting: 0,
+        pending_interrupts: [0; 4],
         gdt: None,
         tss: TaskStateSegment::new(),
     }))
