@@ -8,10 +8,10 @@ use core::mem::offset_of;
 
 use x86_64::VirtAddr;
 
-use super::idt;
 use super::per_cpu::PerCpu;
 use super::serial::Serial;
 use super::trap::TrapFrame;
+use super::{critical, idt};
 
 // Each entry pushes a zero error code and its vector, and adds its address
 // to `entries`; the common path saves the registers as a `TrapFrame`, calls
@@ -85,17 +85,35 @@ unsafe extern "C" {
     pub safe static entries: [u64; 224];
 }
 
-/// Panics on any interrupt but the spurious one; no source is unmasked yet.
+/// Holds the interrupt back inside a critical section, and handles it in
+/// one otherwise.
 extern "sysv64" fn interrupt(frame: &TrapFrame) {
     // The local APIC's spurious vector, which takes no EOI.
     if frame.vector == 0xff {
         return;
     }
-    let _ = write!(
-        Serial,
-        "Unexpected interrupt {}, rip {:#x}\r\n{frame}",
-        frame.vector,
-        frame.interrupted.instruction_pointer.as_u64(),
+    if critical::hold(frame.vector) {
+        return;
+    }
+    critical::crit_enter();
+    handle(frame.vector, Some(frame));
+    critical::crit_exit();
+}
+
+/// Runs `vector`'s handler, in a critical section, with the state it
+/// interrupted unless it was held back; none is set up yet, since no
+/// source is unmasked.
+pub fn handle(vector: u64, frame: Option<&TrapFrame>) {
+    let _ = write!(Serial, "Unexpected interrupt {vector}");
+    let _ = frame.map_or_else(
+        || write!(Serial, ", held back\r\n"),
+        |frame| {
+            write!(
+                Serial,
+                ", rip {:#x}\r\n{frame}",
+                frame.interrupted.instruction_pointer.as_u64(),
+            )
+        },
     );
     panic!("interrupt")
 }

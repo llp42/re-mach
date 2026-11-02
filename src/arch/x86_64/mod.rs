@@ -11,6 +11,7 @@ mod boot_header;
 mod boot_memory;
 mod boot_stack;
 mod cpuid;
+mod critical;
 mod gdt;
 mod idt;
 mod interrupt;
