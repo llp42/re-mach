@@ -3,17 +3,15 @@
 //! Physical maps.
 
 use core::arch::asm;
-use core::cell::UnsafeCell;
 use core::ops::Range;
-use core::ptr;
 use core::slice;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::AtomicUsize;
 
 use x86_64::instructions::tlb;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr3Flags, Cr4, Cr4Flags};
 use x86_64::registers::model_specific::{Pat, PatMemoryType};
 use x86_64::structures::paging::page_table::PageTableEntry;
-use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame};
+use x86_64::structures::paging::{PageTableFlags, PhysFrame};
 
 use super::address::PhysAddr;
 use super::boot_memory;
@@ -22,6 +20,7 @@ use super::memory_layout::{
     DIRECT_MAP_BASE, KERNEL_BASE, MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE,
     PAGE_TABLE_BASE, phys_to_virt,
 };
+use crate::sync::OnceLock;
 
 /// Entries per table.
 const ENTRIES: usize = 512;
@@ -78,40 +77,26 @@ const PAGE_ATTRIBUTES: [PatMemoryType; 8] = [
 #[expect(dead_code, reason = "the VM reads it")]
 pub struct Pmap {
     /// Its PML4 table.
-    pml4: *mut PageTable,
+    pml4: PhysAddr,
     /// References held on it.
     reference_count: AtomicUsize,
     /// The CPUs it is active on, a bit each.
     active_cpus: AtomicUsize,
 }
 
-struct KernelPmap(UnsafeCell<Pmap>);
-
-// SAFETY: written once by `bootstrap`, before any reader.
-unsafe impl Sync for KernelPmap {}
-
-/// The kernel's physical map; empty until `bootstrap`.
-static KERNEL_PMAP: KernelPmap = KernelPmap(UnsafeCell::new(Pmap {
-    pml4: ptr::null_mut(),
-    reference_count: AtomicUsize::new(0),
-    active_cpus: AtomicUsize::new(0),
-}));
+/// The kernel's physical map, once `bootstrap` builds it.
+static KERNEL_PMAP: OnceLock<Pmap> = OnceLock::new();
 
 /// Free kernel virtual space below the kernel window.
 #[expect(dead_code, reason = "the VM takes it")]
 const VIRTUAL_BELOW_KERNEL: Range<usize> = MIN_KERNEL_ADDRESS..KERNEL_BASE;
 
-struct VirtualArea(UnsafeCell<Range<usize>>);
+/// Free kernel virtual space above the boot mapping, once `bootstrap`
+/// sets it.
+static VIRTUAL_ABOVE_BOOT: OnceLock<Range<usize>> = OnceLock::new();
 
-// SAFETY: written once by `bootstrap`, before any reader.
-unsafe impl Sync for VirtualArea {}
-
-/// Free kernel virtual space above the boot mapping; empty until
-/// `bootstrap`.
-static VIRTUAL_ABOVE_BOOT: VirtualArea = VirtualArea(UnsafeCell::new(0..0));
-
-/// End of the direct map; 0 until `bootstrap`.
-static DIRECT_MAP_END: AtomicUsize = AtomicUsize::new(0);
+/// End of the direct map, once `bootstrap` sets it.
+static DIRECT_MAP_END: OnceLock<usize> = OnceLock::new();
 
 /// Index of `address`'s entry in a table whose entries map `size` bytes.
 const fn index(address: usize, size: usize) -> usize {
@@ -152,7 +137,8 @@ const unsafe fn entries<'a>(start: PhysAddr, count: usize) -> &'a mut [PageTable
 ///
 /// # Panics
 ///
-/// If boot memory runs out, or physical memory goes past the direct map.
+/// If boot memory runs out, physical memory goes past the direct map, or
+/// on a second call.
 ///
 /// # Safety
 ///
@@ -178,16 +164,21 @@ pub unsafe fn bootstrap() {
         map_direct(pml4, direct_map_size);
         entries(pml4, 1)[PAGE_TABLE_SLOT].set_addr(frame(pml4), TABLE);
     }
-    // SAFETY: guaranteed by the caller; no reader yet.
-    unsafe {
-        *KERNEL_PMAP.0.get() = Pmap {
-            pml4: phys_to_virt(pml4),
-            reference_count: AtomicUsize::new(1),
-            active_cpus: AtomicUsize::new(usize::MAX),
-        };
-        *VIRTUAL_ABOVE_BOOT.0.get() = KERNEL_BASE + boot_end..MAX_KERNEL_ADDRESS - PAGE_SIZE + 1;
-    }
-    DIRECT_MAP_END.store(DIRECT_MAP_BASE + direct_map_size, Ordering::Relaxed);
+    let kernel_pmap = Pmap {
+        pml4,
+        reference_count: AtomicUsize::new(1),
+        active_cpus: AtomicUsize::new(usize::MAX),
+    };
+    assert!(
+        KERNEL_PMAP.set(kernel_pmap).is_ok()
+            && VIRTUAL_ABOVE_BOOT
+                .set(KERNEL_BASE + boot_end..MAX_KERNEL_ADDRESS - PAGE_SIZE + 1)
+                .is_ok()
+            && DIRECT_MAP_END
+                .set(DIRECT_MAP_BASE + direct_map_size)
+                .is_ok(),
+        "pmap: bootstrapped twice"
+    );
     let pml4_frame = PhysFrame::containing_address(frame(pml4));
     // SAFETY: the new tables map the kernel window up to `boot_end`, which
     // holds all the kernel reaches; nothing uses the identity map any more.
