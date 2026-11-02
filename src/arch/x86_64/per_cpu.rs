@@ -9,7 +9,10 @@ use core::mem::offset_of;
 use raw_cpuid::CpuId;
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{GsBase, KernelGsBase};
+use x86_64::structures::gdt::GlobalDescriptorTable;
+use x86_64::structures::tss::TaskStateSegment;
 
+use super::gdt;
 use crate::config::MAX_CPUS;
 use crate::smp::{self, PerCpu as _};
 
@@ -18,6 +21,9 @@ use crate::smp::{self, PerCpu as _};
 pub struct PerCpu {
     id: usize,
     apic_id: u8,
+    /// Its GDT, which holds its TSS's descriptor.
+    gdt: Option<&'static GlobalDescriptorTable<{ gdt::ENTRIES }>>,
+    tss: TaskStateSegment,
 }
 
 struct Slot(UnsafeCell<PerCpu>);
@@ -25,8 +31,14 @@ struct Slot(UnsafeCell<PerCpu>);
 // SAFETY: each CPU writes only its own slot.
 unsafe impl Sync for Slot {}
 
-static PER_CPU: [Slot; MAX_CPUS] =
-    [const { Slot(UnsafeCell::new(PerCpu { id: 0, apic_id: 0 })) }; MAX_CPUS];
+static PER_CPU: [Slot; MAX_CPUS] = [const {
+    Slot(UnsafeCell::new(PerCpu {
+        id: 0,
+        apic_id: 0,
+        gdt: None,
+        tss: TaskStateSegment::new(),
+    }))
+}; MAX_CPUS];
 
 /// Fills CPU `cpu_id`'s data and points the GS base at it.
 ///
@@ -56,6 +68,24 @@ pub unsafe fn store_apic_id() {
     let per_cpu = PER_CPU[PerCpu::cpu_id()].0.get();
     // SAFETY: only this CPU touches its slot.
     unsafe { (*per_cpu).apic_id = apic_id };
+}
+
+/// Stores the current CPU's GDT in its data.
+///
+/// # Safety
+///
+/// Runs once on each CPU, after `init`.
+pub unsafe fn store_gdt(table: &'static GlobalDescriptorTable<{ gdt::ENTRIES }>) {
+    let per_cpu = PER_CPU[PerCpu::cpu_id()].0.get();
+    // SAFETY: only this CPU touches its slot.
+    unsafe { (*per_cpu).gdt = Some(table) };
+}
+
+/// The current CPU's TSS.
+pub fn tss() -> *mut TaskStateSegment {
+    let per_cpu = PER_CPU[PerCpu::cpu_id()].0.get();
+    // SAFETY: a field of this CPU's slot; no reference is made.
+    unsafe { &raw mut (*per_cpu).tss }
 }
 
 impl smp::PerCpu for PerCpu {

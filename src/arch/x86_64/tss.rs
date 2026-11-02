@@ -6,9 +6,8 @@ use core::cell::UnsafeCell;
 
 use x86_64::VirtAddr;
 use x86_64::instructions::tables::load_tss;
-use x86_64::structures::tss::TaskStateSegment;
 
-use super::gdt;
+use super::{gdt, per_cpu};
 
 /// Each stack's size: two pages.
 const STACK_SIZE: usize = 8 * 1024;
@@ -35,22 +34,14 @@ static DOUBLE_FAULT_STACK: Stack = Stack(UnsafeCell::new([0; STACK_SIZE]));
 /// IST 2: the debug exception's.
 static DEBUG_STACK: Stack = Stack(UnsafeCell::new([0; STACK_SIZE]));
 
-struct Tss(UnsafeCell<TaskStateSegment>);
-
-// SAFETY: written on the boot CPU, by `init`, before it is loaded.
-unsafe impl Sync for Tss {}
-
-/// The boot CPU's.
-static TSS: Tss = Tss(UnsafeCell::new(TaskStateSegment::new()));
-
 /// Fills the boot CPU's TSS with its stacks and loads it; user mode gets no
 /// I/O ports.
 ///
 /// # Safety
 ///
-/// Runs once, on the boot CPU, after `gdt::init`.
+/// Runs once, on the boot CPU, after `gdt::init` and `per_cpu::init`.
 pub unsafe fn init() {
-    let tss = TSS.0.get();
+    let tss = per_cpu::tss();
     // SAFETY: guaranteed by the caller; the CPU has not loaded it yet.
     unsafe {
         (*tss).privilege_stack_table[0] = PRIVILEGE_STACK.top();
