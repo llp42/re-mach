@@ -4,7 +4,6 @@
 
 use core::arch::global_asm;
 use core::fmt::Write;
-use core::mem::offset_of;
 
 use x86_64::VirtAddr;
 
@@ -12,10 +11,11 @@ use super::per_cpu::PerCpu;
 use super::serial::Serial;
 use super::trap::TrapFrame;
 use super::{critical, idt};
+use crate::smp::MachinePerCpu as _;
 
 // Each entry pushes a zero error code and its vector, and adds its address
 // to `entries`; the common path saves the registers as a `TrapFrame`, calls
-// `interrupt` with the CPU's interrupt nesting raised, and returns.
+// `interrupt` and returns.
 global_asm!(
     ".pushsection .text, \"ax\"",
     ".pushsection .rodata, \"a\"",
@@ -52,10 +52,8 @@ global_asm!(
     "pushq %r15",
     // TODO: swap the GS base on interrupts from user mode.
     "cld",
-    "incl %gs:{nesting}",
     "movq %rsp, %rdi",
     "call {interrupt}",
-    "decl %gs:{nesting}",
     // TODO: swap it back on returns to user mode.
     "popq %r15",
     "popq %r14",
@@ -76,7 +74,6 @@ global_asm!(
     "iretq",
     ".popsection",
     interrupt = sym interrupt,
-    nesting = const offset_of!(PerCpu, interrupt_nesting),
     options(att_syntax),
 );
 
@@ -88,11 +85,13 @@ unsafe extern "C" {
 /// Holds the interrupt back inside a critical section, and handles it in
 /// one otherwise.
 extern "sysv64" fn interrupt(frame: &TrapFrame) {
+    let cpu = PerCpu::current();
+    let _interrupt = cpu.common().enter_interrupt();
     // The local APIC's spurious vector, which takes no EOI.
     if frame.vector == 0xff {
         return;
     }
-    if critical::hold(frame.vector) {
+    if cpu.hold(frame.vector) {
         return;
     }
     critical::crit_enter();
@@ -103,7 +102,7 @@ extern "sysv64" fn interrupt(frame: &TrapFrame) {
 /// Runs `vector`'s handler, in a critical section, with the state it
 /// interrupted unless it was held back; none is set up yet, since no
 /// source is unmasked.
-pub fn handle(vector: u64, frame: Option<&TrapFrame>) {
+pub fn handle(vector: usize, frame: Option<&TrapFrame>) {
     let _ = write!(Serial, "Unexpected interrupt {vector}");
     let _ = frame.map_or_else(
         || write!(Serial, ", held back\r\n"),

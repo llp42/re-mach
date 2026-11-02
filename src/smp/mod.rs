@@ -4,4 +4,4 @@
 
 mod per_cpu;
 
-pub use per_cpu::PerCpu;
+pub use per_cpu::{MachinePerCpu, PerCpu, current};

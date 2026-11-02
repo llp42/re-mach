@@ -119,7 +119,7 @@ pub struct TrapFrame {
     rcx: u64,
     rbx: u64,
     rax: u64,
-    pub vector: u64,
+    pub vector: usize,
     error_code: u64,
     /// Pushed by the CPU.
     pub interrupted: InterruptStackFrameValue,
