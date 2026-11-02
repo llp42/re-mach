@@ -21,6 +21,7 @@ use super::memory_layout::{
     PAGE_TABLE_BASE,
 };
 use crate::sync::OnceLock;
+use crate::vm::pmap::MachinePmap;
 
 /// Entries per table.
 const ENTRIES: usize = 512;
@@ -82,6 +83,12 @@ pub struct Pmap {
     reference_count: AtomicUsize,
     /// The CPUs it is active on, a bit each.
     active_cpus: AtomicUsize,
+}
+
+impl MachinePmap for Pmap {
+    fn steal_memory(size: usize) -> *mut u8 {
+        boot_memory::steal_pages(size.div_ceil(PAGE_SIZE)).direct_map_ptr()
+    }
 }
 
 /// The kernel's physical map, once `bootstrap` builds it.

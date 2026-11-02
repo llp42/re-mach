@@ -10,7 +10,7 @@ use crate::boot::BootModule;
 mod x86_64;
 
 #[cfg(target_arch = "x86_64")]
-pub use x86_64::{PerCpu, PhysAddr, X86_64 as Current};
+pub use x86_64::{PAGE_SIZE, PerCpu, PhysAddr, Pmap, X86_64 as Current};
 
 /// What machine-independent code asks of the machine.
 pub trait Machine {

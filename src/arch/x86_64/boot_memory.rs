@@ -303,32 +303,40 @@ impl BootMemory {
         }
     }
 
-    /// Takes the largest free area of available memory between 1 MiB and the
-    /// direct map's end as the boot heap, avoiding all boot data.
-    ///
-    /// # Panics
-    ///
-    /// If there is none.
-    fn init_heap(&mut self) {
-        let mut heap = PhysAddr(0)..PhysAddr(0);
+    /// The largest free area of available memory between 1 MiB and `limit`,
+    /// avoiding all boot data; `None` if there is none.
+    fn largest_gap(&self, limit: PhysAddr) -> Option<Range<PhysAddr>> {
+        let mut largest: Option<Range<PhysAddr>> = None;
         for entry in self
             .map
             .iter()
             .filter(|entry| entry.kind == EntryKind::Available)
         {
             let mut start = entry.range.start.max(LOW_MEMORY_END);
-            let end = entry.range.end.min(DIRECT_MAP_LIMIT);
+            let end = entry.range.end.min(limit);
             while let Some(gap) = self.find_gap(start..end) {
                 start = gap.end;
-                if gap.end - gap.start > heap.end - heap.start {
-                    heap = gap;
+                if largest
+                    .as_ref()
+                    .is_none_or(|area| gap.end - gap.start > area.end - area.start)
+                {
+                    largest = Some(gap);
                 }
             }
         }
-        assert!(
-            heap.start < heap.end,
-            "boot_memory: unable to set up the early memory allocator"
-        );
+        largest
+    }
+
+    /// Takes the largest free area below the kernel window's direct part as
+    /// the boot heap.
+    ///
+    /// # Panics
+    ///
+    /// If there is none.
+    fn init_heap(&mut self) {
+        let heap = self
+            .largest_gap(DIRECT_MAP_LIMIT)
+            .expect("boot_memory: unable to set up the early memory allocator");
         self.heap = Some(heap.clone());
         self.heap_free = Some(heap.clone());
         // Never released to the page allocator.
@@ -429,6 +437,24 @@ pub fn memory_end() -> PhysAddr {
 pub fn heap_end() -> PhysAddr {
     let memory = BOOT_MEMORY.borrow();
     memory.heap.as_ref().expect("boot_memory: no heap yet").end
+}
+
+/// Takes `count` pages from the end of the largest free area of all
+/// memory, for good; the direct map reaches them.
+///
+/// # Panics
+///
+/// If that area is smaller.
+pub fn steal_pages(count: usize) -> PhysAddr {
+    let mut memory = BOOT_MEMORY.borrow_mut();
+    let size = count * PAGE_SIZE;
+    let area = memory
+        .largest_gap(HIGH_MEMORY_LIMIT)
+        .filter(|area| area.end - area.start >= size)
+        .expect("boot_memory: unable to steal memory");
+    let start = PhysAddr(area.end.0 - size);
+    memory.register(start..area.end, Retention::Permanent);
+    start
 }
 
 /// Shows the physical memory map and loads its segments into `vm::page`;
