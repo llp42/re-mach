@@ -2,8 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! Machine-dependent virtual memory parameters.
 
-use core::ptr;
-
 use super::address::PhysAddr;
 
 /// Bytes per page.
@@ -26,12 +24,6 @@ pub const MAX_KERNEL_ADDRESS: usize = 0xffff_ffff_ffff_ffff;
 
 /// Kernel map size; the rest of the kernel window maps physical memory directly.
 pub const KERNEL_MAP_SIZE: usize = 1024 * 1024 * 1024;
-
-/// Kernel virtual address of the physical `address`, physical memory being
-/// mapped directly from `KERNEL_BASE`.
-pub const fn phys_to_virt<T>(address: PhysAddr) -> *mut T {
-    ptr::with_exposed_provenance_mut(address.0 + KERNEL_BASE)
-}
 
 /// End of the memory ISA DMA reaches.
 pub const DMA_LIMIT: PhysAddr = PhysAddr(0x100_0000);

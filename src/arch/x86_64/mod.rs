@@ -42,7 +42,7 @@ use crate::smp::{self, MachinePerCpu as _};
 use crate::sync::OnceLock;
 pub use address::PhysAddr;
 use boot_memory::Retention;
-use memory_layout::{KERNEL_BASE, PAGE_SIZE, phys_to_virt};
+use memory_layout::{KERNEL_BASE, PAGE_SIZE};
 pub use per_cpu::PerCpu;
 use serial::Serial;
 
@@ -194,7 +194,8 @@ unsafe fn copy_boot_info(boot_info: multiboot2::Info) {
                 // SAFETY: the module is identity-mapped, and temporary boot
                 // data, so apart from fresh boot memory.
                 unsafe {
-                    phys_to_virt::<u8>(start)
+                    start
+                        .kernel_window_ptr::<u8>()
                         .copy_from_nonoverlapping(ptr::with_exposed_provenance(mod_start), size);
                 }
                 let module = BootModule {
@@ -223,7 +224,7 @@ unsafe fn copy_boot_info(boot_info: multiboot2::Info) {
 /// A copy of `string` in boot memory.
 fn copy_c_string(string: &CStr) -> &'static CStr {
     let bytes = string.to_bytes_with_nul();
-    let copy = phys_to_virt::<u8>(alloc_bytes(bytes.len()));
+    let copy = alloc_bytes(bytes.len()).kernel_window_ptr::<u8>();
     // SAFETY: fresh boot memory, mapped at the kernel window; then
     // NUL-terminated and never written again.
     unsafe {
@@ -237,7 +238,7 @@ fn boot_slice<T>(len: usize) -> &'static mut [MaybeUninit<T>] {
     if len == 0 {
         return &mut [];
     }
-    let start = phys_to_virt(alloc_bytes(len * size_of::<T>()));
+    let start = alloc_bytes(len * size_of::<T>()).kernel_window_ptr();
     // SAFETY: fresh boot memory, page-aligned and mapped at the kernel
     // window; nothing else refers to it.
     unsafe { slice::from_raw_parts_mut(start, len) }
