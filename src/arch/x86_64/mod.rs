@@ -37,7 +37,7 @@ use x86_64::registers::rflags::{self, RFlags};
 use crate::arch::Machine;
 use crate::boot::multiboot2::{self, ElfSectionType, Tag};
 use crate::boot::{self, BootModule};
-use crate::kernel::machine::{self, CpuSubtype, CpuType, MachineSlot};
+use crate::kernel::machine::{self, CpuSubtype, CpuType, Slot};
 use crate::smp::{self, MachinePerCpu as _};
 use crate::sync::OnceLock;
 pub use address::PhysAddr;
@@ -158,17 +158,13 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe { tss::init() };
     PerCpu::store_apic_id();
     PerCpu::current().store_gdt(&gdt::GDT);
-    // SAFETY: the boot CPU, before any reader.
-    unsafe {
-        machine::store_slot(
-            0,
-            MachineSlot {
-                is_cpu: true,
-                cpu_type: CpuType::X86_64,
-                cpu_subtype: CpuSubtype::AT386,
-            },
-        );
-    }
+    machine::store_slot(
+        0,
+        Slot {
+            ty: CpuType::X86_64,
+            subtype: CpuSubtype::AT386,
+        },
+    );
     halt();
 }
 
