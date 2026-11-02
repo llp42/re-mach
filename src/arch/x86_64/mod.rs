@@ -34,12 +34,13 @@ use core::{ptr, slice};
 use x86_64::registers::control::{Cr0, Cr0Flags};
 use x86_64::registers::rflags::{self, RFlags};
 
-use crate::boot;
+use crate::arch::Machine;
 use crate::boot::multiboot2::{self, ElfSectionType, Tag};
+use crate::boot::{self, BootModule};
 use crate::kernel::machine::{self, CpuSubtype, CpuType, MachineSlot};
 use crate::smp::{self, MachinePerCpu as _};
 use crate::sync::OnceLock;
-use address::PhysAddr;
+pub use address::PhysAddr;
 use boot_memory::Retention;
 use memory_layout::{KERNEL_BASE, PAGE_SIZE, phys_to_virt};
 pub use per_cpu::PerCpu;
@@ -47,15 +48,6 @@ use serial::Serial;
 
 /// The kernel's command line, once `init` copies the loader's.
 static KERNEL_COMMAND_LINE: OnceLock<&'static CStr> = OnceLock::new();
-
-/// A boot module, copied into boot memory.
-#[expect(dead_code, reason = "the bootstrap reads it")]
-pub struct BootModule {
-    /// Its physical range, `end` past its last byte.
-    pub start: PhysAddr,
-    pub end: PhysAddr,
-    pub command_line: &'static CStr,
-}
 
 /// The boot modules, once `init` copies the loader's.
 static BOOT_MODULES: OnceLock<&'static [BootModule]> = OnceLock::new();
@@ -210,8 +202,7 @@ unsafe fn copy_boot_info(boot_info: multiboot2::Info) {
                         .copy_from_nonoverlapping(ptr::with_exposed_provenance(mod_start), size);
                 }
                 let module = BootModule {
-                    start,
-                    end: start + size,
+                    range: start..start + size,
                     command_line: copy_c_string(cmdline),
                 };
                 slots.next().expect("a module not counted").write(module);
@@ -256,16 +247,25 @@ fn boot_slice<T>(len: usize) -> &'static mut [MaybeUninit<T>] {
     unsafe { slice::from_raw_parts_mut(start, len) }
 }
 
-/// The kernel's command line, as the loader gave it; empty if none.
-#[expect(dead_code, reason = "the console and the bootstrap read it")]
-pub fn kernel_command_line() -> &'static CStr {
-    KERNEL_COMMAND_LINE.get().copied().unwrap_or_default()
-}
+/// The `x86_64` machine.
+pub struct X86_64;
 
-/// The boot modules, in the loader's order.
-#[expect(dead_code, reason = "the bootstrap reads them")]
-pub fn boot_modules() -> &'static [BootModule] {
-    BOOT_MODULES.get().copied().unwrap_or_default()
+impl Machine for X86_64 {
+    fn halt() -> ! {
+        halt()
+    }
+
+    fn kernel_command_line() -> &'static CStr {
+        KERNEL_COMMAND_LINE.get().copied().unwrap_or_default()
+    }
+
+    fn boot_modules() -> &'static [BootModule] {
+        BOOT_MODULES.get().copied().unwrap_or_default()
+    }
+
+    fn efi_system_table() -> Option<u64> {
+        acpi::EFI_SYSTEM_TABLE.get().copied()
+    }
 }
 
 pub fn halt() -> ! {
