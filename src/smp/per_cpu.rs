@@ -6,6 +6,8 @@
 use core::sync::atomic::{AtomicU32, Ordering, compiler_fence};
 
 use crate::arch;
+use crate::kernel::sched::{SLEEP_QUEUES, SleepQueue};
+use crate::kernel::thread::SleepQueueAdapter;
 
 /// One CPU's machine-independent data, held in the machine's part.
 pub struct PerCpu {
@@ -14,15 +16,24 @@ pub struct PerCpu {
     interrupt_nesting: AtomicU32,
     /// How deep its critical sections nest, until threads hold the count.
     critical_nesting: AtomicU32,
+    /// Its sleep queues, by event hash; only it touches them, inside a
+    /// critical section.
+    #[expect(dead_code, reason = "assert_wait and thread_wakeup use them")]
+    sleep_queues: [SleepQueue; SLEEP_QUEUES],
 }
 
 impl PerCpu {
     /// CPU `id`'s, before it starts.
+    #[expect(
+        clippy::large_stack_arrays,
+        reason = "only PER_CPU's initializer calls it, at compile time"
+    )]
     pub const fn new(id: usize) -> Self {
         Self {
             id,
             interrupt_nesting: AtomicU32::new(0),
             critical_nesting: AtomicU32::new(0),
+            sleep_queues: [const { SleepQueue::new(SleepQueueAdapter::NEW) }; SLEEP_QUEUES],
         }
     }
 

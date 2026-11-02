@@ -6,4 +6,6 @@ pub mod console;
 pub mod host;
 pub mod machine;
 mod panic;
+pub mod sched;
 pub mod startup;
+pub mod thread;
