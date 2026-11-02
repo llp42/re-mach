@@ -124,8 +124,7 @@ pub fn handle(vector: u64, frame: Option<&TrapFrame>) {
 ///
 /// Runs once, on the boot CPU, after `idt::init`, with interrupts off.
 pub unsafe fn init() {
-    // SAFETY: guaranteed by the caller.
-    let vectors = unsafe { idt::interrupts() };
+    let mut vectors = idt::interrupts();
     for (vector, &address) in vectors.iter_mut().zip(&entries) {
         // SAFETY: the address is the vector's entry, built for the frame
         // the CPU pushes on an interrupt.
