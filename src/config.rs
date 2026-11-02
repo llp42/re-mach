@@ -4,3 +4,6 @@
 
 /// Most CPUs supported.
 pub const MAX_CPUS: usize = 8;
+
+/// Clock ticks per second.
+pub const HZ: u32 = 100;
