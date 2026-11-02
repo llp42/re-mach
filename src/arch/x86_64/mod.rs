@@ -103,18 +103,14 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe { acpi::init(boot_info) };
     let start = (&raw const boot_start).addr();
     let end = (&raw const _end).addr() - KERNEL_BASE;
-    // SAFETY: the boot CPU; from `.boot`, which holds the live page tables.
-    unsafe {
-        boot_memory::register_boot_data(PhysAddr(start)..PhysAddr(end), Retention::Permanent);
-    }
+    // From `.boot`, which holds the live page tables.
+    boot_memory::register_boot_data(PhysAddr(start)..PhysAddr(end), Retention::Permanent);
     let info = boot_info.range();
-    // SAFETY: the boot CPU; the boot information, until no longer needed.
-    unsafe {
-        boot_memory::register_boot_data(
-            PhysAddr(info.start)..PhysAddr(info.end),
-            Retention::Temporary,
-        );
-    }
+    // The boot information, until no longer needed.
+    boot_memory::register_boot_data(
+        PhysAddr(info.start)..PhysAddr(info.end),
+        Retention::Temporary,
+    );
     for tag in boot_info.tags() {
         match tag {
             Tag::ElfSections(sections) => {
@@ -123,37 +119,31 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
                         && section.size != 0
                 }) {
                     let (start, end) = (section.addr, section.addr + section.size);
-                    // SAFETY: the boot CPU; a symbol or string table, kept.
-                    unsafe {
-                        boot_memory::register_boot_data(
-                            PhysAddr(start)..PhysAddr(end),
-                            Retention::Permanent,
-                        );
-                    }
+                    // A symbol or string table, kept.
+                    boot_memory::register_boot_data(
+                        PhysAddr(start)..PhysAddr(end),
+                        Retention::Permanent,
+                    );
                 }
             }
             Tag::Module {
                 mod_start, mod_end, ..
             } => {
-                // SAFETY: the boot CPU; a module, until no longer needed.
-                unsafe {
-                    boot_memory::register_boot_data(
-                        PhysAddr(mod_start)..PhysAddr(mod_end),
-                        Retention::Temporary,
-                    );
-                }
+                // A module, until no longer needed.
+                boot_memory::register_boot_data(
+                    PhysAddr(mod_start)..PhysAddr(mod_end),
+                    Retention::Temporary,
+                );
             }
             _ => {}
         }
     }
-    // SAFETY: the boot CPU, once.
-    unsafe { boot_memory::bootstrap(boot_info) };
+    boot_memory::bootstrap(boot_info);
     // SAFETY: the boot CPU, once, after boot memory's bootstrap.
     unsafe { copy_boot_info(boot_info) };
     // SAFETY: the boot CPU, once, after boot memory's bootstrap.
     unsafe { pmap::bootstrap() };
-    // SAFETY: the boot CPU, once, after boot memory's bootstrap.
-    unsafe { boot_memory::setup() };
+    boot_memory::setup();
     // SAFETY: turns caching on; paging and protection stay as they are.
     unsafe {
         Cr0::update(|flags| {
