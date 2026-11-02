@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! State only the boot CPU touches.
 
-use core::cell::{RefCell, RefMut};
+use core::cell::{Ref, RefCell, RefMut};
 
 /// State only the boot CPU touches, before other CPUs start: a `RefCell` a
 /// static can hold, so overlapping borrows panic, interrupts included.
@@ -15,6 +15,15 @@ unsafe impl<T: Send> Sync for BootCell<T> {}
 impl<T> BootCell<T> {
     pub const fn new(value: T) -> Self {
         Self(RefCell::new(value))
+    }
+
+    /// Borrows the state.
+    ///
+    /// # Panics
+    ///
+    /// If it is borrowed mutably.
+    pub fn borrow(&self) -> Ref<'_, T> {
+        self.0.borrow()
     }
 
     /// Borrows the state mutably.

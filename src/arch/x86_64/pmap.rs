@@ -145,8 +145,7 @@ const unsafe fn entries<'a>(start: PhysAddr, count: usize) -> &'a mut [PageTable
 /// Runs once, on the boot CPU, after boot memory's bootstrap.
 pub unsafe fn bootstrap() {
     let image_end = PhysAddr((&raw const super::_end).addr() - KERNEL_BASE);
-    // SAFETY: guaranteed by the caller.
-    let (heap_end, memory_end) = unsafe { (boot_memory::heap_end(), boot_memory::memory_end()) };
+    let (heap_end, memory_end) = (boot_memory::heap_end(), boot_memory::memory_end());
     let boot_end = image_end.max(heap_end).0.next_multiple_of(LARGE_PAGE_SIZE);
     let direct_map_size = memory_end
         .0
