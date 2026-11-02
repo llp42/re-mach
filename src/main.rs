@@ -12,12 +12,3 @@ mod config;
 mod kernel;
 mod smp;
 mod sync;
-
-use core::panic::PanicInfo;
-
-use arch::Machine as _;
-
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    arch::Current::halt()
-}
