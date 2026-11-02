@@ -194,16 +194,14 @@ unsafe fn copy_boot_info(boot_info: multiboot2::Info) {
     let modules = if count == 0 {
         ptr::NonNull::dangling().as_ptr()
     } else {
-        // SAFETY: guaranteed by the caller.
-        phys_to_virt::<BootModule>(unsafe { alloc_bytes(count * size_of::<BootModule>()) })
+        phys_to_virt::<BootModule>(alloc_bytes(count * size_of::<BootModule>()))
     };
     let (mut command_line, mut len) = (None, 0);
     for tag in boot_info.tags() {
         match tag {
             Tag::Cmdline(cmdline) => {
                 let bytes = cmdline.to_bytes_with_nul();
-                // SAFETY: guaranteed by the caller.
-                let copy = phys_to_virt::<u8>(unsafe { alloc_bytes(bytes.len()) });
+                let copy = phys_to_virt::<u8>(alloc_bytes(bytes.len()));
                 // SAFETY: fresh boot memory, mapped at the kernel map base;
                 // then NUL-terminated and never written again.
                 command_line = Some(unsafe {
@@ -217,13 +215,11 @@ unsafe fn copy_boot_info(boot_info: multiboot2::Info) {
                 cmdline,
             } => {
                 let size = mod_end - mod_start;
-                // SAFETY: guaranteed by the caller.
-                let start = unsafe { alloc_bytes(size) };
+                let start = alloc_bytes(size);
                 let copy = phys_to_virt::<u8>(start);
                 let module = ptr::with_exposed_provenance::<u8>(mod_start);
                 let bytes = cmdline.to_bytes_with_nul();
-                // SAFETY: guaranteed by the caller.
-                let string = phys_to_virt::<u8>(unsafe { alloc_bytes(bytes.len()) });
+                let string = phys_to_virt::<u8>(alloc_bytes(bytes.len()));
                 // SAFETY: the module is below 4 GiB, identity-mapped, and
                 // temporary boot data, so apart from fresh boot memory; the
                 // copies are then never written again.
@@ -278,11 +274,6 @@ pub fn halt() -> ! {
 /// # Panics
 ///
 /// If `size` is 0 or more than the boot heap has left.
-///
-/// # Safety
-///
-/// Runs on the boot CPU only, after boot memory's bootstrap.
-unsafe fn alloc_bytes(size: usize) -> PhysAddr {
-    // SAFETY: guaranteed by the caller.
-    unsafe { boot_memory::alloc_pages(size.div_ceil(PAGE_SIZE)) }
+fn alloc_bytes(size: usize) -> PhysAddr {
+    boot_memory::alloc_pages(size.div_ceil(PAGE_SIZE))
 }

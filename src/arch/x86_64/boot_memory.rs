@@ -37,10 +37,8 @@ pub enum Retention {
 }
 
 /// Boot data descriptor.
-#[derive(Clone, Copy)]
 struct BootData {
-    start: PhysAddr,
-    end: PhysAddr,
+    range: Range<PhysAddr>,
     retention: Retention,
 }
 
@@ -52,8 +50,9 @@ impl BootData {
     ///
     /// If rounding the end of this boot data overflows.
     fn clip(&self, area: Range<PhysAddr>) -> Option<Range<PhysAddr>> {
-        let start = self.start.align_down();
+        let start = self.range.start.align_down();
         let end = self
+            .range
             .end
             .checked_align_up()
             .expect("boot_memory: invalid boot data");
@@ -110,31 +109,29 @@ impl fmt::Display for EntryKind {
 }
 
 /// Memory map entry.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct MapEntry {
-    base_addr: PhysAddr,
-    length: usize,
+    range: Range<PhysAddr>,
     kind: EntryKind,
 }
 
 impl MapEntry {
-    /// End of the range, past its last byte.
-    fn end(&self) -> PhysAddr {
-        self.base_addr + self.length
-    }
-
-    /// Narrows available, NVS and disabled ranges to whole pages; `None` if
-    /// the range wraps around.
-    fn narrow_to_pages(mut self) -> Option<Self> {
-        let end = self.base_addr.checked_add(self.length)?;
-        if matches!(
-            self.kind,
+    /// The entry for `length` bytes at `base`, narrowed to whole pages if
+    /// available, NVS or disabled; `None` if it wraps around.
+    fn new(base: PhysAddr, length: usize, kind: EntryKind) -> Option<Self> {
+        let end = base.checked_add(length)?;
+        let range = if matches!(
+            kind,
             EntryKind::Available | EntryKind::Nvs | EntryKind::Disabled
         ) {
-            self.base_addr = self.base_addr.checked_align_up()?;
-            self.length = end.align_down().checked_sub(self.base_addr)?;
-        }
-        Some(self)
+            let start = base.checked_align_up()?;
+            let end = end.align_down();
+            end.checked_sub(start)?;
+            start..end
+        } else {
+            base..end
+        };
+        Some(Self { range, kind })
     }
 }
 
@@ -146,21 +143,22 @@ struct BootMemory {
     map: ArrayVec<MapEntry, { MAX_MAP_ENTRIES * 2 }>,
     /// Input of `normalize_map`.
     map_copy: ArrayVec<MapEntry, MAX_MAP_ENTRIES>,
-    /// Physical segments, from the memory map.
-    segments: [Range<PhysAddr>; Segment::COUNT],
-    /// The boot heap's bounds, above low memory.
-    heap: Range<PhysAddr>,
-    /// Its part not allocated yet.
-    heap_free: Range<PhysAddr>,
+    /// Physical segments, from the memory map; those after the first
+    /// missing one are missing too.
+    segments: [Option<Range<PhysAddr>>; Segment::COUNT],
+    /// The boot heap's bounds, above low memory, once found.
+    heap: Option<Range<PhysAddr>>,
+    /// Its part not allocated yet, until `setup` closes it.
+    heap_free: Option<Range<PhysAddr>>,
 }
 
 static BOOT_MEMORY: BootCell<BootMemory> = BootCell::new(BootMemory {
     boot_data: ArrayVec::new(),
     map: ArrayVec::new(),
     map_copy: ArrayVec::new(),
-    segments: [const { PhysAddr(0)..PhysAddr(0) }; Segment::COUNT],
-    heap: PhysAddr(0)..PhysAddr(0),
-    heap_free: PhysAddr(0)..PhysAddr(0),
+    segments: [const { None }; Segment::COUNT],
+    heap: None,
+    heap_free: None,
 });
 
 impl BootMemory {
@@ -186,13 +184,13 @@ impl BootMemory {
         // The first entry not wholly below `range`.
         let index = data
             .iter()
-            .position(|entry| start < entry.end)
+            .position(|entry| start < entry.range.end)
             .unwrap_or(data.len());
         if let Some(entry) = data.get_mut(index)
-            && end > entry.start
+            && end > entry.range.start
         {
             assert!(
-                start >= entry.start && end <= entry.end,
+                start >= entry.range.start && end <= entry.range.end,
                 "boot_memory: invalid boot data"
             );
             // Included: a permanent range stays permanent.
@@ -202,8 +200,7 @@ impl BootMemory {
         data.insert(
             index,
             BootData {
-                start,
-                end,
+                range: start..end,
                 retention,
             },
         );
@@ -213,12 +210,11 @@ impl BootMemory {
     /// warns about the rest.
     fn build_map(&mut self, boot_info: Info) {
         let mut built = boot_info.mmap().into_iter().flatten().filter_map(|entry| {
-            MapEntry {
-                base_addr: PhysAddr(entry.base_addr),
-                length: entry.length,
-                kind: EntryKind::from(entry.ty),
-            }
-            .narrow_to_pages()
+            MapEntry::new(
+                PhysAddr(entry.base_addr),
+                entry.length,
+                EntryKind::from(entry.ty),
+            )
         });
         for entry in built.by_ref().take(MAX_MAP_ENTRIES) {
             self.map.push(entry);
@@ -237,33 +233,32 @@ impl BootMemory {
     fn normalize_map(&mut self) {
         let (entries, copy) = (&mut self.map, &mut self.map_copy);
         copy.clear();
-        for &entry in entries.iter().filter(|entry| entry.length != 0) {
-            copy.push(entry);
+        for entry in entries.iter().filter(|entry| !entry.range.is_empty()) {
+            copy.push(entry.clone());
         }
         entries.clear();
         // Walks from boundary to boundary of the ranges.
-        let Some(mut start) = copy.iter().map(|entry| entry.base_addr).min() else {
+        let Some(mut start) = copy.iter().map(|entry| entry.range.start).min() else {
             return;
         };
         while let Some(end) = copy
             .iter()
-            .flat_map(|entry| [entry.base_addr, entry.end()])
+            .flat_map(|entry| [entry.range.start, entry.range.end])
             .filter(|&point| point > start)
             .min()
         {
             let covering = copy
                 .iter()
-                .filter(|entry| entry.base_addr <= start && end <= entry.end());
+                .filter(|entry| entry.range.start <= start && end <= entry.range.end);
             if let Some(kind) = covering.map(|entry| entry.kind).max() {
                 if let Some(last) = entries.last_mut()
-                    && last.end() == start
+                    && last.range.end == start
                     && last.kind == kind
                 {
-                    last.length += end - start;
+                    last.range.end = end;
                 } else {
                     entries.push(MapEntry {
-                        base_addr: start,
-                        length: end - start,
+                        range: start..end,
                         kind,
                     });
                 }
@@ -281,13 +276,13 @@ impl BootMemory {
             .iter()
             .filter(|entry| entry.kind == EntryKind::Available)
         {
-            let Some(start) = entry.base_addr.checked_align_up() else {
+            let Some(start) = entry.range.start.checked_align_up() else {
                 break;
             };
             if start >= range.end {
                 break;
             }
-            let end = entry.end().align_down();
+            let end = entry.range.end.align_down();
             if start < end && end > range.start {
                 span = Some(span.map_or(start, |span| span.start)..end);
             }
@@ -303,9 +298,7 @@ impl BootMemory {
             let _ = write!(
                 Serial,
                 "boot_memory: {:018x}:{:018x}, {}\r\n",
-                entry.base_addr.0,
-                entry.end().0,
-                entry.kind
+                entry.range.start.0, entry.range.end.0, entry.kind
             );
         }
     }
@@ -323,8 +316,8 @@ impl BootMemory {
             .iter()
             .filter(|entry| entry.kind == EntryKind::Available)
         {
-            let mut start = entry.base_addr.max(LOW_MEMORY_END);
-            let end = entry.end().min(DIRECT_MAP_LIMIT);
+            let mut start = entry.range.start.max(LOW_MEMORY_END);
+            let end = entry.range.end.min(DIRECT_MAP_LIMIT);
             while let Some(gap) = self.find_gap(start..end) {
                 start = gap.end;
                 if gap.end - gap.start > heap.end - heap.start {
@@ -336,8 +329,8 @@ impl BootMemory {
             heap.start < heap.end,
             "boot_memory: unable to set up the early memory allocator"
         );
-        self.heap = heap.clone();
-        self.heap_free = heap.clone();
+        self.heap = Some(heap.clone());
+        self.heap_free = Some(heap.clone());
         // Never released to the page allocator.
         self.register(heap, Retention::Permanent);
     }
@@ -378,15 +371,13 @@ pub fn bootstrap(boot_info: Info) {
         );
         memory.register(gap.start..gap.start + PAGE_SIZE, Retention::Permanent);
     }
-    memory.segments[usize::from(Segment::Dma)] = dma;
+    memory.segments[usize::from(Segment::Dma)] = Some(dma);
     for (segment, range) in [
         (Segment::DirectMap, DMA_LIMIT..DIRECT_MAP_LIMIT),
         (Segment::Dma32, DIRECT_MAP_LIMIT..DMA32_LIMIT),
         (Segment::HighMemory, DMA32_LIMIT..HIGH_MEMORY_LIMIT),
     ] {
-        if let Some(found) = memory.available_span(range) {
-            memory.segments[usize::from(segment)] = found;
-        }
+        memory.segments[usize::from(segment)] = memory.available_span(range);
     }
     memory.init_heap();
 }
@@ -395,15 +386,15 @@ pub fn bootstrap(boot_info: Info) {
 ///
 /// # Panics
 ///
-/// If `count` is 0 or more than the heap has left.
-///
-/// # Safety
-///
-/// Runs before `setup`, which gives the heap's free part to `vm_page`.
-pub unsafe fn alloc_pages(count: usize) -> PhysAddr {
+/// If `count` is 0 or more than the heap has left, or the heap is not open:
+/// before `bootstrap` or after `setup`.
+pub fn alloc_pages(count: usize) -> PhysAddr {
     assert!(count != 0, "boot_memory: attempt to allocate 0 page");
     let mut memory = BOOT_MEMORY.borrow_mut();
-    let free = &mut memory.heap_free;
+    let free = memory
+        .heap_free
+        .as_mut()
+        .expect("boot_memory: the boot heap is not open");
     let addr = count
         .checked_mul(PAGE_SIZE)
         .and_then(|size| free.end.0.checked_sub(size))
@@ -415,37 +406,45 @@ pub unsafe fn alloc_pages(count: usize) -> PhysAddr {
 }
 
 /// End of the highest available memory.
+///
+/// # Panics
+///
+/// Before `bootstrap`.
 pub fn memory_end() -> PhysAddr {
     BOOT_MEMORY
         .borrow()
         .segments
         .iter()
+        .flatten()
         .map(|segment| segment.end)
         .max()
-        .unwrap_or(PhysAddr(0))
+        .expect("boot_memory: no segment yet")
 }
 
 /// End of the boot heap.
+///
+/// # Panics
+///
+/// Before `bootstrap`.
 pub fn heap_end() -> PhysAddr {
-    BOOT_MEMORY.borrow().heap.end
+    let memory = BOOT_MEMORY.borrow();
+    memory.heap.as_ref().expect("boot_memory: no heap yet").end
 }
 
-/// Shows the physical memory map and loads its segments into `vm_page`; the
-/// boot heap is no longer allocated from.
+/// Shows the physical memory map and loads its segments into `vm_page`;
+/// closes the boot heap, whose free part `vm_page` takes.
+///
+/// # Panics
+///
+/// Before `bootstrap`, or on a second call.
 pub fn setup() {
-    let memory = BOOT_MEMORY.borrow();
+    let mut memory = BOOT_MEMORY.borrow_mut();
     memory.show_map();
-    let free = memory.heap_free.clone();
-    for segment in [
-        Segment::Dma,
-        Segment::DirectMap,
-        Segment::Dma32,
-        Segment::HighMemory,
-    ] {
-        let Range { start, end } = memory.segments[usize::from(segment)].clone();
-        if start == end {
-            break;
-        }
+    let free = memory
+        .heap_free
+        .take()
+        .expect("boot_memory: the boot heap is not open");
+    for Range { start, end } in memory.segments.iter().map_while(Clone::clone) {
         vm_page::load(start..end);
         if free.start < end && free.end > start {
             vm_page::load_heap(free.start.max(start)..free.end.min(end));

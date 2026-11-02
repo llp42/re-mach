@@ -4,15 +4,15 @@
 
 use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
-use core::slice;
+use core::{ptr, slice};
 
 /// A vector of up to `N` items, held in place.
-pub struct ArrayVec<T: Copy, const N: usize> {
+pub struct ArrayVec<T, const N: usize> {
     items: [MaybeUninit<T>; N],
     len: usize,
 }
 
-impl<T: Copy, const N: usize> ArrayVec<T, N> {
+impl<T, const N: usize> ArrayVec<T, N> {
     pub const fn new() -> Self {
         Self {
             items: [const { MaybeUninit::uninit() }; N],
@@ -44,24 +44,36 @@ impl<T: Copy, const N: usize> ArrayVec<T, N> {
     pub fn insert(&mut self, index: usize, item: T) {
         assert!(!self.is_full(), "ArrayVec: full");
         assert!(index <= self.len, "ArrayVec: index past the end");
-        self.items.copy_within(index..self.len, index + 1);
+        let at = self.items[index..].as_mut_ptr();
+        // SAFETY: the items from `index` are written, and one more place
+        // follows them since it is not full.
+        unsafe { ptr::copy(at, at.add(1), self.len - index) };
         self.items[index].write(item);
         self.len += 1;
     }
 
     /// Removes every item.
-    pub const fn clear(&mut self) {
+    pub fn clear(&mut self) {
+        let items: *mut [T] = &raw mut **self;
         self.len = 0;
+        // SAFETY: the items were written, and are no longer reachable.
+        unsafe { ptr::drop_in_place(items) };
     }
 }
 
-impl<T: Copy, const N: usize> Default for ArrayVec<T, N> {
+impl<T, const N: usize> Default for ArrayVec<T, N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: Copy, const N: usize> Deref for ArrayVec<T, N> {
+impl<T, const N: usize> Drop for ArrayVec<T, N> {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+impl<T, const N: usize> Deref for ArrayVec<T, N> {
     type Target = [T];
 
     fn deref(&self) -> &[T] {
@@ -70,7 +82,7 @@ impl<T: Copy, const N: usize> Deref for ArrayVec<T, N> {
     }
 }
 
-impl<T: Copy, const N: usize> DerefMut for ArrayVec<T, N> {
+impl<T, const N: usize> DerefMut for ArrayVec<T, N> {
     fn deref_mut(&mut self) -> &mut [T] {
         // SAFETY: the first `len` items are written.
         unsafe { slice::from_raw_parts_mut(self.items.as_mut_ptr().cast(), self.len) }

@@ -109,13 +109,8 @@ fn frame(address: PhysAddr) -> x86_64::PhysAddr {
 }
 
 /// `count` zeroed tables from boot memory, contiguous.
-///
-/// # Safety
-///
-/// Runs on the boot CPU only, after boot memory's bootstrap.
-unsafe fn alloc_tables(count: usize) -> PhysAddr {
-    // SAFETY: guaranteed by the caller.
-    let start = unsafe { boot_memory::alloc_pages(count) };
+fn alloc_tables(count: usize) -> PhysAddr {
+    let start = boot_memory::alloc_pages(count);
     // SAFETY: fresh boot memory, mapped at the kernel window.
     unsafe { phys_to_virt::<u8>(start).write_bytes(0, count * PAGE_SIZE) };
     start
@@ -155,8 +150,7 @@ pub unsafe fn bootstrap() {
         direct_map_size <= (KERNEL_SLOT - DIRECT_MAP_SLOT) * SLOT_SIZE,
         "pmap: physical memory past the direct map"
     );
-    // SAFETY: guaranteed by the caller.
-    let pml4 = unsafe { alloc_tables(1) };
+    let pml4 = alloc_tables(1);
     // SAFETY: guaranteed by the caller; the PML4 was just allocated.
     unsafe {
         map_kernel_space(pml4, PhysAddr(boot_end));
@@ -230,8 +224,7 @@ fn flush_caches() {
 /// from `alloc_tables`.
 unsafe fn map_kernel_space(pml4: PhysAddr, boot_end: PhysAddr) {
     let slots = ENTRIES - KERNEL_SLOT;
-    // SAFETY: guaranteed by the caller.
-    let pdps = unsafe { alloc_tables(slots) };
+    let pdps = alloc_tables(slots);
     // SAFETY: guaranteed by the caller.
     for (slot, entry) in unsafe { entries(pml4, 1) }
         .iter_mut()
@@ -241,8 +234,7 @@ unsafe fn map_kernel_space(pml4: PhysAddr, boot_end: PhysAddr) {
         entry.set_addr(frame(pdps + slot * PAGE_SIZE), TABLE);
     }
     let pdp = |address| pdps + (index(address, SLOT_SIZE) - KERNEL_SLOT) * PAGE_SIZE;
-    // SAFETY: guaranteed by the caller.
-    let (directory, tables) = unsafe { (alloc_tables(1), alloc_tables(EARLY_PAGE_TABLES)) };
+    let (directory, tables) = (alloc_tables(1), alloc_tables(EARLY_PAGE_TABLES));
     // SAFETY: guaranteed by the caller; fresh tables.
     unsafe {
         entries(pdp(MIN_KERNEL_ADDRESS), 1)[index(MIN_KERNEL_ADDRESS, DIRECTORY_SIZE)]
@@ -259,8 +251,7 @@ unsafe fn map_kernel_space(pml4: PhysAddr, boot_end: PhysAddr) {
     let count = window_size / DIRECTORY_SIZE;
     let large = boot_end.0 / LARGE_PAGE_SIZE;
     let small = window_size / LARGE_PAGE_SIZE - large;
-    // SAFETY: guaranteed by the caller.
-    let (directories, tables) = unsafe { (alloc_tables(count), alloc_tables(small)) };
+    let (directories, tables) = (alloc_tables(count), alloc_tables(small));
     // SAFETY: guaranteed by the caller; fresh tables.
     unsafe {
         for (directory, entry) in entries(pdp(KERNEL_BASE), 1)
@@ -290,8 +281,7 @@ unsafe fn map_kernel_space(pml4: PhysAddr, boot_end: PhysAddr) {
 unsafe fn map_direct(pml4: PhysAddr, size: usize) {
     let count = size / DIRECTORY_SIZE;
     let slots = count.div_ceil(ENTRIES);
-    // SAFETY: guaranteed by the caller.
-    let (pdps, directories) = unsafe { (alloc_tables(slots), alloc_tables(count)) };
+    let (pdps, directories) = (alloc_tables(slots), alloc_tables(count));
     // SAFETY: guaranteed by the caller; fresh tables.
     unsafe {
         for (page, entry) in entries(directories, count).iter_mut().enumerate() {
