@@ -19,6 +19,7 @@ mod per_cpu;
 mod pic;
 mod pmap;
 mod serial;
+mod syscall;
 mod trap;
 mod vm_page;
 
@@ -175,6 +176,8 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe { interrupt::init() };
     // SAFETY: the boot CPU, once, after the GDT.
     unsafe { gdt::store_user_segments() };
+    // SAFETY: the boot CPU, once, after the user segments.
+    unsafe { syscall::init() };
     halt();
 }
 
