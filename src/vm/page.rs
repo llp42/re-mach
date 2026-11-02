@@ -68,6 +68,14 @@ struct PageQueues {
     active: [PageQueue; COLORS],
 }
 
+/// Most low memory kept for DMA.
+const DMA_RESERVE_LIMIT: usize = 256 << 20;
+
+/// Free frames kept for DMA, below `DMA_RESERVE_LIMIT`: a bit per frame
+/// from 0, set when it is free.
+static DMA_RESERVE: Spinlock<[u64; DMA_RESERVE_LIMIT / PAGE_SIZE / 64]> =
+    Spinlock::new([0; DMA_RESERVE_LIMIT / PAGE_SIZE / 64]);
+
 static QUEUES: PageQueues = PageQueues {
     free: [const { PageQueue::new(LinkedList::new(PageQueueAdapter::NEW)) }; COLORS],
     inactive: [const { PageQueue::new(LinkedList::new(PageQueueAdapter::NEW)) }; COLORS],
@@ -108,7 +116,8 @@ fn widen(area: Option<Range<PhysAddr>>, range: Range<PhysAddr>) -> Range<PhysAdd
 }
 
 /// Builds the page array over the loaded span and frees the boot heap's
-/// unused pages, on the boot CPU.
+/// unused pages, on the boot CPU: those below a quarter of the span, up to
+/// `DMA_RESERVE_LIMIT`, are kept for DMA.
 ///
 /// # Panics
 ///
@@ -147,9 +156,15 @@ pub fn setup() {
     );
     if let Some(heap) = heap {
         let first = span.start.0 / PAGE_SIZE;
+        let reserved = DMA_RESERVE_LIMIT.min((span.end - span.start) / 4) / PAGE_SIZE;
         let range = (heap.start - span.start) / PAGE_SIZE..(heap.end - span.start) / PAGE_SIZE;
         for (page, index) in pages[range.clone()].iter().zip(range) {
-            QUEUES.free[(first + index) % COLORS].lock().push_back(page);
+            let frame = first + index;
+            if frame < reserved {
+                DMA_RESERVE.lock()[frame / 64] |= 1 << (frame % 64);
+            } else {
+                QUEUES.free[frame % COLORS].lock().push_back(page);
+            }
         }
     }
 }
