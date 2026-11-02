@@ -28,6 +28,7 @@ mod vm_page;
 use core::arch::asm;
 use core::ffi::CStr;
 use core::fmt::Write;
+use core::mem::MaybeUninit;
 use core::{ptr, slice};
 
 use x86_64::registers::control::{Cr0, Cr0Flags};
@@ -139,7 +140,7 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
         }
     }
     boot_memory::bootstrap(boot_info);
-    // SAFETY: the boot CPU, once, after boot memory's bootstrap.
+    // SAFETY: the modules lie below 4 GiB, which is identity-mapped.
     unsafe { copy_boot_info(boot_info) };
     // SAFETY: the boot CPU, once, after boot memory's bootstrap.
     unsafe { pmap::bootstrap() };
@@ -185,30 +186,17 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
 ///
 /// # Safety
 ///
-/// Runs once, on the boot CPU, after boot memory's bootstrap.
+/// The modules are identity-mapped and readable.
 unsafe fn copy_boot_info(boot_info: multiboot2::Info) {
     let count = boot_info
         .tags()
         .filter(|tag| matches!(tag, Tag::Module { .. }))
         .count();
-    let modules = if count == 0 {
-        ptr::NonNull::dangling().as_ptr()
-    } else {
-        phys_to_virt::<BootModule>(alloc_bytes(count * size_of::<BootModule>()))
-    };
-    let (mut command_line, mut len) = (None, 0);
+    let modules = boot_slice::<BootModule>(count);
+    let (mut command_line, mut slots) = (None, modules.iter_mut());
     for tag in boot_info.tags() {
         match tag {
-            Tag::Cmdline(cmdline) => {
-                let bytes = cmdline.to_bytes_with_nul();
-                let copy = phys_to_virt::<u8>(alloc_bytes(bytes.len()));
-                // SAFETY: fresh boot memory, mapped at the kernel map base;
-                // then NUL-terminated and never written again.
-                command_line = Some(unsafe {
-                    copy.copy_from_nonoverlapping(bytes.as_ptr(), bytes.len());
-                    CStr::from_ptr(copy.cast())
-                });
-            }
+            Tag::Cmdline(cmdline) => command_line = Some(copy_c_string(cmdline)),
             Tag::Module {
                 mod_start,
                 mod_end,
@@ -216,23 +204,18 @@ unsafe fn copy_boot_info(boot_info: multiboot2::Info) {
             } => {
                 let size = mod_end - mod_start;
                 let start = alloc_bytes(size);
-                let copy = phys_to_virt::<u8>(start);
-                let module = ptr::with_exposed_provenance::<u8>(mod_start);
-                let bytes = cmdline.to_bytes_with_nul();
-                let string = phys_to_virt::<u8>(alloc_bytes(bytes.len()));
-                // SAFETY: the module is below 4 GiB, identity-mapped, and
-                // temporary boot data, so apart from fresh boot memory; the
-                // copies are then never written again.
+                // SAFETY: the module is identity-mapped, and temporary boot
+                // data, so apart from fresh boot memory.
                 unsafe {
-                    copy.copy_from_nonoverlapping(module, size);
-                    string.copy_from_nonoverlapping(bytes.as_ptr(), bytes.len());
-                    modules.add(len).write(BootModule {
-                        start,
-                        end: start + size,
-                        command_line: CStr::from_ptr(string.cast()),
-                    });
+                    phys_to_virt::<u8>(start)
+                        .copy_from_nonoverlapping(ptr::with_exposed_provenance(mod_start), size);
                 }
-                len += 1;
+                let module = BootModule {
+                    start,
+                    end: start + size,
+                    command_line: copy_c_string(cmdline),
+                };
+                slots.next().expect("a module not counted").write(module);
             }
             _ => {}
         }
@@ -243,12 +226,35 @@ unsafe fn copy_boot_info(boot_info: multiboot2::Info) {
             "kernel command line copied twice"
         );
     }
-    // SAFETY: `len` modules written, in boot memory never written again.
-    let modules = unsafe { slice::from_raw_parts(modules, len) };
+    // SAFETY: one slot was written for each module counted.
+    let modules = unsafe { slice::from_raw_parts(modules.as_ptr().cast(), modules.len()) };
     assert!(
         BOOT_MODULES.set(modules).is_ok(),
         "boot modules copied twice"
     );
+}
+
+/// A copy of `string` in boot memory.
+fn copy_c_string(string: &CStr) -> &'static CStr {
+    let bytes = string.to_bytes_with_nul();
+    let copy = phys_to_virt::<u8>(alloc_bytes(bytes.len()));
+    // SAFETY: fresh boot memory, mapped at the kernel window; then
+    // NUL-terminated and never written again.
+    unsafe {
+        copy.copy_from_nonoverlapping(bytes.as_ptr(), bytes.len());
+        CStr::from_ptr(copy.cast())
+    }
+}
+
+/// Room for `len` items in boot memory.
+fn boot_slice<T>(len: usize) -> &'static mut [MaybeUninit<T>] {
+    if len == 0 {
+        return &mut [];
+    }
+    let start = phys_to_virt(alloc_bytes(len * size_of::<T>()));
+    // SAFETY: fresh boot memory, page-aligned and mapped at the kernel
+    // window; nothing else refers to it.
+    unsafe { slice::from_raw_parts_mut(start, len) }
 }
 
 /// The kernel's command line, as the loader gave it; empty if none.
