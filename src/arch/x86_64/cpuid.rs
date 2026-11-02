@@ -2,31 +2,28 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! CPU identification.
 
-use core::cell::UnsafeCell;
-use core::mem::MaybeUninit;
-
 use raw_cpuid::{CpuId, FeatureInfo};
 
-struct Features(UnsafeCell<MaybeUninit<FeatureInfo>>);
+use crate::sync::OnceLock;
 
-// SAFETY: written once by `discover`, before any reader.
-unsafe impl Sync for Features {}
-
-static FEATURES: Features = Features(UnsafeCell::new(MaybeUninit::uninit()));
+/// The boot CPU's CPUID leaf 1, once discovered.
+static FEATURES: OnceLock<FeatureInfo> = OnceLock::new();
 
 /// Saves the boot CPU's CPUID leaf 1.
 ///
-/// # Safety
+/// # Panics
 ///
-/// Runs once, on the boot CPU, before any `features` call.
-pub unsafe fn discover() {
+/// If the CPU has no leaf 1, or on a second call.
+pub fn discover() {
     let info = CpuId::new().get_feature_info().expect("CPUID leaf 1");
-    // SAFETY: no reader yet.
-    unsafe { (*FEATURES.0.get()).write(info) };
+    assert!(FEATURES.set(info).is_ok(), "cpuid: discovered twice");
 }
 
 /// The boot CPU's CPUID leaf 1.
+///
+/// # Panics
+///
+/// Before `discover`.
 pub fn features() -> &'static FeatureInfo {
-    // SAFETY: `discover` ran first.
-    unsafe { (*FEATURES.0.get()).assume_init_ref() }
+    FEATURES.get().expect("cpuid: not discovered yet")
 }

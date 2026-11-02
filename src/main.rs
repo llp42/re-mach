@@ -10,6 +10,7 @@ mod boot;
 mod config;
 mod kernel;
 mod smp;
+mod sync;
 
 use core::panic::PanicInfo;
 
