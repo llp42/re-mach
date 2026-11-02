@@ -5,6 +5,7 @@
 
 use intrusive_collections::LinkedList;
 
+use super::processor;
 use super::thread::{RunQueueAdapter, SleepQueueAdapter};
 use crate::config::HZ;
 
@@ -36,4 +37,9 @@ bitflags::bitflags! {
         /// Priorities decay with use.
         const TIMESHARE = 1;
     }
+}
+
+/// Sets up the scheduler, on the boot CPU.
+pub fn init() {
+    processor::bootstrap();
 }

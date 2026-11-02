@@ -5,6 +5,8 @@
 
 use super::sched::{LOAD_SCALE, MIN_QUANTUM, Policies, RUN_QUEUES, RunQueue, SYSTEM_PRIORITY};
 use super::thread::RunQueueAdapter;
+use crate::smp;
+use crate::sync::OnceLock;
 
 /// A processor: one per CPU, in that CPU's data.
 #[expect(dead_code, reason = "the dispatcher and processor_info read them")]
@@ -62,3 +64,18 @@ static DEFAULT_SET: ProcessorSet = ProcessorSet {
     quantum: MIN_QUANTUM,
     load: LOAD_SCALE,
 };
+
+/// The boot CPU's processor.
+static BOOT_PROCESSOR: OnceLock<&'static Processor> = OnceLock::new();
+
+/// Records the boot CPU's processor, on the boot CPU.
+///
+/// # Panics
+///
+/// On a second call.
+pub fn bootstrap() {
+    assert!(
+        BOOT_PROCESSOR.set(smp::current().processor()).is_ok(),
+        "processor: bootstrapped twice"
+    );
+}

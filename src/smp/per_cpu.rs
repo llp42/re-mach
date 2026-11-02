@@ -22,7 +22,6 @@ pub struct PerCpu {
     #[expect(dead_code, reason = "assert_wait and thread_wakeup use them")]
     sleep_queues: [SleepQueue; SLEEP_QUEUES],
     /// Its processor.
-    #[expect(dead_code, reason = "sched_init reads it")]
     processor: Processor,
 }
 
@@ -45,6 +44,11 @@ impl PerCpu {
     /// Its number.
     pub const fn id(&self) -> usize {
         self.id
+    }
+
+    /// Its processor.
+    pub const fn processor(&self) -> &Processor {
+        &self.processor
     }
 
     /// Enters an interrupt handler on this CPU; dropping the guard leaves it.
