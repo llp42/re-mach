@@ -3,3 +3,4 @@
 //! Machine-independent kernel code.
 
 pub mod host;
+pub mod machine;
