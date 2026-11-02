@@ -181,6 +181,8 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe { syscall::init() };
     // SAFETY: the boot CPU, once, after the GDT.
     unsafe { tss::init() };
+    // SAFETY: the boot CPU, once, after its per-CPU data.
+    unsafe { per_cpu::store_apic_id() };
     halt();
 }
 
