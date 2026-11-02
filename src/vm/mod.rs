@@ -10,4 +10,5 @@ pub mod pmap;
 /// Sets up virtual memory, on the boot CPU.
 pub fn init() {
     page::setup();
+    object::bootstrap();
 }
