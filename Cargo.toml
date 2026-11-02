@@ -21,6 +21,9 @@ lock_api = { version = "0.4", default-features = false }
 raw-cpuid = "11"
 x86_64 = { git = "https://github.com/llp42/x86_64", branch = "master" }
 
+[lints.rust]
+warnings = "deny"
+
 [lints.clippy]
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }

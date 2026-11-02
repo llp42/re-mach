@@ -1,0 +1,11 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
+# Refuses the commit unless the tree is formatted, builds in both profiles and
+# passes clippy; Cargo.toml turns every warning into an error.
+
+set -e
+cargo fmt --check
+cargo build
+cargo build --release
+cargo clippy
