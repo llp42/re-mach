@@ -5,7 +5,7 @@
 
 use core::ops::Range;
 
-use super::address::PhysAddr;
+use crate::arch::PhysAddr;
 use crate::sync::BootCell;
 
 /// Physical memory loaded from boot memory.
