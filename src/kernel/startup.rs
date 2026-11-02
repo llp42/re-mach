@@ -5,10 +5,12 @@
 
 use super::sched;
 use crate::arch::{self, Machine as _};
+use crate::vm;
 
 /// Starts the machine-independent kernel, on the boot CPU, once the
 /// machine is set up.
 pub fn start() -> ! {
     sched::init();
+    vm::init();
     arch::Current::halt()
 }

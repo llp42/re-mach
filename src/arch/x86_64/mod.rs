@@ -42,8 +42,10 @@ use crate::smp::{self, MachinePerCpu as _};
 use crate::sync::OnceLock;
 pub use address::PhysAddr;
 use boot_memory::Retention;
-use memory_layout::{KERNEL_BASE, PAGE_SIZE};
+use memory_layout::KERNEL_BASE;
+pub use memory_layout::PAGE_SIZE;
 pub use per_cpu::PerCpu;
+pub use pmap::Pmap;
 use serial::Serial;
 
 /// The kernel's command line, once `init` copies the loader's.

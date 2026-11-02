@@ -5,7 +5,7 @@
 use core::ops::{Add, Sub};
 use core::ptr;
 
-use super::memory_layout::{KERNEL_BASE, PAGE_SIZE};
+use super::memory_layout::{DIRECT_MAP_BASE, KERNEL_BASE, PAGE_SIZE};
 
 /// Physical address, for page arithmetic.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -36,6 +36,12 @@ impl PhysAddr {
     /// `KERNEL_BASE`.
     pub const fn kernel_window_ptr<T>(self) -> *mut T {
         ptr::with_exposed_provenance_mut(self.0 + KERNEL_BASE)
+    }
+
+    /// Its address in the direct map, which maps all physical memory from
+    /// `DIRECT_MAP_BASE`.
+    pub const fn direct_map_ptr<T>(self) -> *mut T {
+        ptr::with_exposed_provenance_mut(self.0 + DIRECT_MAP_BASE)
     }
 }
 
