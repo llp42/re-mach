@@ -5,7 +5,7 @@
 
 use intrusive_collections::LinkedList;
 
-use super::thread::SleepQueueAdapter;
+use super::thread::{RunQueueAdapter, SleepQueueAdapter};
 use crate::config::HZ;
 
 /// The threads sleeping on the events that hash to one slot.
@@ -13,6 +13,12 @@ pub type SleepQueue = LinkedList<SleepQueueAdapter>;
 
 /// How many sleep queues each CPU has.
 pub const SLEEP_QUEUES: usize = 1031;
+
+/// The runnable threads of one priority.
+pub type RunQueue = LinkedList<RunQueueAdapter>;
+
+/// How many run queues each processor has, one per priority.
+pub const RUN_QUEUES: usize = 65;
 
 /// The priority of system threads, and the default set's highest.
 pub const SYSTEM_PRIORITY: u32 = 6;

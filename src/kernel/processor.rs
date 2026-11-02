@@ -3,7 +3,34 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Processors and processor sets.
 
-use super::sched::{LOAD_SCALE, MIN_QUANTUM, Policies, SYSTEM_PRIORITY};
+use super::sched::{LOAD_SCALE, MIN_QUANTUM, Policies, RUN_QUEUES, RunQueue, SYSTEM_PRIORITY};
+use super::thread::RunQueueAdapter;
+
+/// A processor: one per CPU, in that CPU's data.
+#[expect(dead_code, reason = "the dispatcher and processor_info read them")]
+pub struct Processor {
+    /// What it is doing.
+    state: State,
+    /// Its runnable threads, by priority; only its CPU touches them, inside
+    /// a critical section.
+    run_queues: [RunQueue; RUN_QUEUES],
+}
+
+/// What a processor is doing; only the states used here.
+enum State {
+    /// Not in the system.
+    Offline,
+}
+
+impl Processor {
+    /// One not yet in the system.
+    pub const fn new() -> Self {
+        Self {
+            state: State::Offline,
+            run_queues: [const { RunQueue::new(RunQueueAdapter::NEW) }; RUN_QUEUES],
+        }
+    }
+}
 
 /// A set of processors, and the threads that run on them.
 #[expect(dead_code, reason = "processor_set_info and thread_create read them")]
