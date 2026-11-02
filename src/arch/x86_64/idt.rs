@@ -2,21 +2,16 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! The interrupt descriptor table.
 
-use core::cell::UnsafeCell;
+use core::cell::RefMut;
 
 use x86_64::structures::idt::{Entry, HandlerFunc, InterruptDescriptorTable};
 use x86_64::{PrivilegeLevel, VirtAddr};
 
 use super::trap;
-
-struct Table(UnsafeCell<InterruptDescriptorTable>);
-
-// SAFETY: written on the boot CPU, by `init` and `interrupt::init`, with
-// interrupts off.
-unsafe impl Sync for Table {}
+use crate::sync::BootCell;
 
 /// The boot CPU's.
-static IDT: Table = Table(UnsafeCell::new(InterruptDescriptorTable::new()));
+static IDT: BootCell<InterruptDescriptorTable> = BootCell::new(InterruptDescriptorTable::new());
 
 /// Fills the boot CPU's IDT with the exception entries and loads it;
 /// `interrupt::init` fills the interrupt vectors.
@@ -25,8 +20,7 @@ static IDT: Table = Table(UnsafeCell::new(InterruptDescriptorTable::new()));
 ///
 /// Runs once, on the boot CPU, after `gdt::init`.
 pub unsafe fn init() {
-    // SAFETY: guaranteed by the caller; the table is not loaded yet.
-    let idt = unsafe { &mut *IDT.0.get() };
+    let mut idt = IDT.borrow_mut();
     // SAFETY: each address is its vector's entry, built for the frame the
     // CPU pushes there. IST 1 is the double fault's, which never returns,
     // and the NMI's; IST 2 the debug exception's.
@@ -95,17 +89,11 @@ pub unsafe fn init() {
             &raw const trap::security_exception_entry,
         ));
     }
-    // SAFETY: no `&mut` is alive; `interrupt::init` takes its own later.
-    unsafe { &*IDT.0.get() }.load();
+    // SAFETY: the table is static, so it stays where it is loaded.
+    unsafe { idt.load_unsafe() };
 }
 
 /// The boot CPU's interrupt vectors, 0x20 to 0xff.
-///
-/// # Safety
-///
-/// On the boot CPU, with interrupts off and no other reference to the
-/// table alive.
-pub unsafe fn interrupts() -> &'static mut [Entry<HandlerFunc>] {
-    // SAFETY: guaranteed by the caller.
-    unsafe { &mut *IDT.0.get() }.slice_mut(32..)
+pub fn interrupts() -> RefMut<'static, [Entry<HandlerFunc>]> {
+    RefMut::map(IDT.borrow_mut(), |idt| idt.slice_mut(32..))
 }
