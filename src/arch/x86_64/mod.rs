@@ -179,10 +179,12 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe { gdt::store_user_segments() };
     // SAFETY: the boot CPU, once, after the user segments.
     unsafe { syscall::init() };
-    // SAFETY: the boot CPU, once, after the GDT.
+    // SAFETY: the boot CPU, once, after the GDT and its per-CPU data.
     unsafe { tss::init() };
     // SAFETY: the boot CPU, once, after its per-CPU data.
     unsafe { per_cpu::store_apic_id() };
+    // SAFETY: the boot CPU, once, after its per-CPU data.
+    unsafe { per_cpu::store_gdt(&gdt::GDT) };
     halt();
 }
 

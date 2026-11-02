@@ -11,7 +11,7 @@ use x86_64::structures::tss::TaskStateSegment;
 /// Entries, in GNU Mach's layout with the user segments and the TSS in its
 /// LDTs' slots; the user TLS slots, 9 and 10, are the last its interface
 /// shows.
-const ENTRIES: usize = 14;
+pub const ENTRIES: usize = 14;
 
 /// Kernel code selector.
 pub const KERNEL_CODE: SegmentSelector = SegmentSelector::new(1, PrivilegeLevel::Ring0);
@@ -29,7 +29,7 @@ pub const USER_CODE: SegmentSelector = SegmentSelector::new(4, PrivilegeLevel::R
 const KERNEL_TSS: SegmentSelector = SegmentSelector::new(5, PrivilegeLevel::Ring0);
 
 /// The boot CPU's.
-static GDT: GlobalDescriptorTable<ENTRIES> = {
+pub static GDT: GlobalDescriptorTable<ENTRIES> = {
     let mut gdt = GlobalDescriptorTable::from_raw_entries(&[0; ENTRIES]);
     gdt.set(1, Descriptor::kernel_code_segment());
     gdt.set(2, Descriptor::kernel_data_segment());
@@ -77,8 +77,8 @@ pub unsafe fn store_user_segments() {
 ///
 /// # Safety
 ///
-/// Runs once, on the boot CPU, after `init`; `tss` is the boot CPU's
-/// static TSS.
+/// Runs once, on the boot CPU, after `init`; `tss` is the boot CPU's, in
+/// its per-CPU data.
 pub unsafe fn store_tss(tss: *const TaskStateSegment) -> SegmentSelector {
     // SAFETY: guaranteed by the caller; TR was never loaded from these
     // slots.
