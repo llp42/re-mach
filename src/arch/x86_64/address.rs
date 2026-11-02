@@ -3,8 +3,9 @@
 //! Page arithmetic.
 
 use core::ops::{Add, Sub};
+use core::ptr;
 
-use super::memory_layout::PAGE_SIZE;
+use super::memory_layout::{KERNEL_BASE, PAGE_SIZE};
 
 /// Physical address, for page arithmetic.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -29,6 +30,12 @@ impl PhysAddr {
     /// Bytes from `other` up to `self`; `None` if `other` is above `self`.
     pub const fn checked_sub(self, other: Self) -> Option<usize> {
         self.0.checked_sub(other.0)
+    }
+
+    /// Its address in the kernel window, which maps physical memory from
+    /// `KERNEL_BASE`.
+    pub const fn kernel_window_ptr<T>(self) -> *mut T {
+        ptr::with_exposed_provenance_mut(self.0 + KERNEL_BASE)
     }
 }
 

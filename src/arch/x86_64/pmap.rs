@@ -18,7 +18,7 @@ use super::boot_memory;
 use super::cpuid;
 use super::memory_layout::{
     DIRECT_MAP_BASE, KERNEL_BASE, MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE,
-    PAGE_TABLE_BASE, phys_to_virt,
+    PAGE_TABLE_BASE,
 };
 use crate::sync::OnceLock;
 
@@ -112,7 +112,11 @@ fn frame(address: PhysAddr) -> x86_64::PhysAddr {
 fn alloc_tables(count: usize) -> PhysAddr {
     let start = boot_memory::alloc_pages(count);
     // SAFETY: fresh boot memory, mapped at the kernel window.
-    unsafe { phys_to_virt::<u8>(start).write_bytes(0, count * PAGE_SIZE) };
+    unsafe {
+        start
+            .kernel_window_ptr::<u8>()
+            .write_bytes(0, count * PAGE_SIZE);
+    }
     start
 }
 
@@ -124,7 +128,7 @@ fn alloc_tables(count: usize) -> PhysAddr {
 const unsafe fn entries<'a>(start: PhysAddr, count: usize) -> &'a mut [PageTableEntry] {
     // SAFETY: guaranteed by the caller; an entry is a `u64`, and tables are
     // arrays of entries.
-    unsafe { slice::from_raw_parts_mut(phys_to_virt(start), count * ENTRIES) }
+    unsafe { slice::from_raw_parts_mut(start.kernel_window_ptr(), count * ENTRIES) }
 }
 
 /// Builds the kernel's page tables and physical map, switches to them, and
