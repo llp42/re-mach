@@ -26,7 +26,6 @@ mod tss;
 mod vm_page;
 
 use core::arch::asm;
-use core::cell::UnsafeCell;
 use core::ffi::CStr;
 use core::fmt::Write;
 use core::{ptr, slice};
@@ -38,18 +37,14 @@ use crate::boot;
 use crate::boot::multiboot2::{self, ElfSectionType, Tag};
 use crate::kernel::machine::{self, CpuSubtype, CpuType, MachineSlot};
 use crate::smp::PerCpu as _;
+use crate::sync::OnceLock;
 use address::PhysAddr;
 use boot_memory::Retention;
 use memory_layout::{KERNEL_BASE, PAGE_SIZE, phys_to_virt};
 use serial::Serial;
 
-struct KernelCommandLine(UnsafeCell<&'static CStr>);
-
-// SAFETY: written once by `init`, before any reader.
-unsafe impl Sync for KernelCommandLine {}
-
-/// The kernel's command line; empty until `init` copies the loader's.
-static KERNEL_COMMAND_LINE: KernelCommandLine = KernelCommandLine(UnsafeCell::new(c""));
+/// The kernel's command line, once `init` copies the loader's.
+static KERNEL_COMMAND_LINE: OnceLock<&'static CStr> = OnceLock::new();
 
 /// A boot module, copied into boot memory.
 #[expect(dead_code, reason = "the bootstrap reads it")]
@@ -60,13 +55,8 @@ pub struct BootModule {
     pub command_line: &'static CStr,
 }
 
-struct BootModules(UnsafeCell<&'static [BootModule]>);
-
-// SAFETY: written once by `init`, before any reader.
-unsafe impl Sync for BootModules {}
-
-/// The boot modules; empty until `init` copies the loader's.
-static BOOT_MODULES: BootModules = BootModules(UnsafeCell::new(&[]));
+/// The boot modules, once `init` copies the loader's.
+static BOOT_MODULES: OnceLock<&'static [BootModule]> = OnceLock::new();
 
 unsafe extern "C" {
     /// The image's first byte, in `.boot`, which runs where it is loaded.
@@ -217,7 +207,7 @@ unsafe fn copy_boot_info(boot_info: multiboot2::Info) {
         // SAFETY: guaranteed by the caller.
         phys_to_virt::<BootModule>(unsafe { alloc_bytes(count * size_of::<BootModule>()) })
     };
-    let mut len = 0;
+    let (mut command_line, mut len) = (None, 0);
     for tag in boot_info.tags() {
         match tag {
             Tag::Cmdline(cmdline) => {
@@ -226,10 +216,10 @@ unsafe fn copy_boot_info(boot_info: multiboot2::Info) {
                 let copy = phys_to_virt::<u8>(unsafe { alloc_bytes(bytes.len()) });
                 // SAFETY: fresh boot memory, mapped at the kernel map base;
                 // then NUL-terminated and never written again.
-                unsafe {
+                command_line = Some(unsafe {
                     copy.copy_from_nonoverlapping(bytes.as_ptr(), bytes.len());
-                    *KERNEL_COMMAND_LINE.0.get() = CStr::from_ptr(copy.cast());
-                }
+                    CStr::from_ptr(copy.cast())
+                });
             }
             Tag::Module {
                 mod_start,
@@ -261,22 +251,30 @@ unsafe fn copy_boot_info(boot_info: multiboot2::Info) {
             _ => {}
         }
     }
+    if let Some(command_line) = command_line {
+        assert!(
+            KERNEL_COMMAND_LINE.set(command_line).is_ok(),
+            "kernel command line copied twice"
+        );
+    }
     // SAFETY: `len` modules written, in boot memory never written again.
-    unsafe { *BOOT_MODULES.0.get() = slice::from_raw_parts(modules, len) };
+    let modules = unsafe { slice::from_raw_parts(modules, len) };
+    assert!(
+        BOOT_MODULES.set(modules).is_ok(),
+        "boot modules copied twice"
+    );
 }
 
 /// The kernel's command line, as the loader gave it; empty if none.
 #[expect(dead_code, reason = "the console and the bootstrap read it")]
 pub fn kernel_command_line() -> &'static CStr {
-    // SAFETY: written only by `init`, before any reader.
-    unsafe { *KERNEL_COMMAND_LINE.0.get() }
+    KERNEL_COMMAND_LINE.get().copied().unwrap_or_default()
 }
 
 /// The boot modules, in the loader's order.
 #[expect(dead_code, reason = "the bootstrap reads them")]
 pub fn boot_modules() -> &'static [BootModule] {
-    // SAFETY: written only by `init`, before any reader.
-    unsafe { *BOOT_MODULES.0.get() }
+    BOOT_MODULES.get().copied().unwrap_or_default()
 }
 
 pub fn halt() -> ! {
