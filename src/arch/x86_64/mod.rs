@@ -20,6 +20,7 @@ mod per_cpu;
 mod pic;
 mod pmap;
 mod serial;
+mod stack;
 mod syscall;
 mod trap;
 mod tss;
