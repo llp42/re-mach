@@ -8,5 +8,6 @@ pub mod machine;
 mod panic;
 pub mod processor;
 pub mod sched;
+pub mod slab;
 pub mod startup;
 pub mod thread;
