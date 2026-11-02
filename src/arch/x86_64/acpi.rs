@@ -3,7 +3,6 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! ACPI root system description pointer (RSDP).
 
-use core::cell::UnsafeCell;
 use core::fmt::Write;
 use core::sync::atomic::Ordering;
 use core::{ptr, slice};
@@ -11,6 +10,7 @@ use core::{ptr, slice};
 use super::serial::Serial;
 use crate::boot::multiboot2::{Info, Tag};
 use crate::kernel::host::EFI_SYSTEM_TABLE_ADDRESS;
+use crate::sync::OnceLock;
 
 const RSDP_SIGNATURE: &[u8; 8] = b"RSD PTR ";
 const RSDP_ALIGN: usize = 16;
@@ -21,13 +21,8 @@ const RSDP_V1_SIZE: usize = 20;
 /// ACPI >= 2.0 RSDP size.
 const RSDP_V2_SIZE: usize = 36;
 
-struct Rsdp(UnsafeCell<Option<[u8; RSDP_V2_SIZE]>>);
-
-// SAFETY: written once by `init`, before any reader.
-unsafe impl Sync for Rsdp {}
-
-/// Copy of the verified RSDP; `None` if none was found.
-static RSDP: Rsdp = Rsdp(UnsafeCell::new(None));
+/// Copy of the verified RSDP, once found.
+static RSDP: OnceLock<[u8; RSDP_V2_SIZE]> = OnceLock::new();
 
 /// Saves the EFI system table address and a copy of the verified RSDP:
 /// the boot information's newest, or else the BIOS's.
@@ -51,8 +46,9 @@ pub unsafe fn init(boot_info: Info) {
         .and_then(parse_rsdp)
         // SAFETY: guaranteed by the caller.
         .or_else(|| unsafe { search_bios() });
-    // SAFETY: no reader yet.
-    unsafe { *RSDP.0.get() = rsdp };
+    if let Some(rsdp) = rsdp {
+        assert!(RSDP.set(rsdp).is_ok(), "acpi: RSDP saved twice");
+    }
 }
 
 /// A copy of the RSDP at the start of `bytes`, if its signature, revision
