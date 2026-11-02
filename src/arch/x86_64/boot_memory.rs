@@ -6,7 +6,6 @@
 use core::cell::UnsafeCell;
 use core::fmt::{self, Write};
 use core::ops::Range;
-use core::sync::atomic::Ordering;
 
 use super::address::PhysAddr;
 use super::ap_boot;
@@ -489,7 +488,10 @@ pub unsafe fn bootstrap(boot_info: Info) {
         let gap = unsafe { BOOT_DATA.find_gap(dma.clone()) }
             .filter(|gap| gap.end - gap.start >= PAGE_SIZE && gap.start < LOW_MEMORY_END)
             .expect("No memory for AP boot code.");
-        ap_boot::ADDRESS.store(gap.start.0, Ordering::Relaxed);
+        assert!(
+            ap_boot::ADDRESS.set(gap.start).is_ok(),
+            "boot_memory: AP boot page set aside twice"
+        );
         // SAFETY: guaranteed by the caller.
         unsafe { register_boot_data(gap.start..gap.start + PAGE_SIZE, Retention::Permanent) };
     }
