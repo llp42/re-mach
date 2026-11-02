@@ -94,8 +94,7 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe { rflags::write(RFlags::empty()) };
     serial::init();
     boot::banner(&mut Serial);
-    // SAFETY: the boot CPU, before any `features` call.
-    unsafe { cpuid::discover() };
+    cpuid::discover();
     let features = cpuid::features();
     let _ = write!(
         Serial,
