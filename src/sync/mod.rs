@@ -3,7 +3,9 @@
 //! Cells statics can hold.
 
 mod boot_cell;
+mod critical_section;
 mod once_lock;
 
 pub use boot_cell::BootCell;
+pub use critical_section::CriticalSection;
 pub use once_lock::OnceLock;
