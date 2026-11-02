@@ -2,5 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! Machine-independent kernel code.
 
+pub mod console;
 pub mod host;
 pub mod machine;
