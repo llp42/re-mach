@@ -4,7 +4,19 @@
 
 pub mod multiboot2;
 
+use core::ffi::CStr;
 use core::fmt::Write;
+use core::ops::Range;
+
+use crate::arch::PhysAddr;
+
+/// A boot module, copied into boot memory.
+#[expect(dead_code, reason = "the bootstrap reads it")]
+pub struct BootModule {
+    /// Its physical range.
+    pub range: Range<PhysAddr>,
+    pub command_line: &'static CStr,
+}
 
 /// Prints the kernel's name and version.
 pub fn banner(out: &mut impl Write) {

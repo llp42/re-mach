@@ -4,12 +4,10 @@
 //! ACPI root system description pointer (RSDP).
 
 use core::fmt::Write;
-use core::sync::atomic::Ordering;
 use core::{ptr, slice};
 
 use super::serial::Serial;
 use crate::boot::multiboot2::{Info, Tag};
-use crate::kernel::host::EFI_SYSTEM_TABLE_ADDRESS;
 use crate::sync::OnceLock;
 
 const RSDP_SIGNATURE: &[u8; 8] = b"RSD PTR ";
@@ -24,6 +22,9 @@ const RSDP_V2_SIZE: usize = 36;
 /// Copy of the verified RSDP, once found.
 static RSDP: OnceLock<[u8; RSDP_V2_SIZE]> = OnceLock::new();
 
+/// The EFI system table's physical address, when booted through UEFI.
+pub static EFI_SYSTEM_TABLE: OnceLock<u64> = OnceLock::new();
+
 /// Saves the EFI system table address and a copy of the verified RSDP:
 /// the boot information's newest, or else the BIOS's.
 ///
@@ -37,7 +38,12 @@ pub unsafe fn init(boot_info: Info) {
         match tag {
             Tag::AcpiOld(copy) => old = Some(copy),
             Tag::AcpiNew(copy) => new = Some(copy),
-            Tag::Efi64(address) => EFI_SYSTEM_TABLE_ADDRESS.store(address, Ordering::Relaxed),
+            Tag::Efi64(address) => {
+                assert!(
+                    EFI_SYSTEM_TABLE.set(address).is_ok(),
+                    "acpi: two EFI system tables"
+                );
+            }
             _ => {}
         }
     }

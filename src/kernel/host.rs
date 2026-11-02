@@ -3,10 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Host information.
 
-use core::sync::atomic::AtomicU64;
-
-/// EFI system table address when UEFI is not available.
+/// The EFI system table address `host_info` reports when UEFI is not
+/// available.
+#[expect(dead_code, reason = "host_info reports it")]
 pub const HOST_NO_UEFI: u64 = u64::MAX;
-
-/// Physical address of the EFI system table, or `HOST_NO_UEFI`.
-pub static EFI_SYSTEM_TABLE_ADDRESS: AtomicU64 = AtomicU64::new(HOST_NO_UEFI);

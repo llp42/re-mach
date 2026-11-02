@@ -15,7 +15,9 @@ mod sync;
 
 use core::panic::PanicInfo;
 
+use arch::Machine as _;
+
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    arch::halt()
+    arch::Current::halt()
 }
