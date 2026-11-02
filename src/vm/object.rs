@@ -6,6 +6,7 @@
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use crate::arch::{MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS};
+use crate::kernel::slab::Cache;
 
 /// The kernel's side of a memory object; so far only its first values and
 /// its place in the list of persisting objects.
@@ -58,3 +59,11 @@ static KERNEL_OBJECT: Object = Object::new(MAX_KERNEL_ADDRESS - MIN_KERNEL_ADDRE
 /// runs low.
 #[expect(dead_code, reason = "vm_object_deallocate and vm_object_lookup use it")]
 static PERSISTING: LinkedList<PersistingAdapter> = LinkedList::new(PersistingAdapter::NEW);
+
+/// The cache objects come from.
+static CACHE: Cache<Object> = Cache::new("vm_object");
+
+/// Sets up memory objects, on the boot CPU.
+pub fn bootstrap() {
+    CACHE.register();
+}
