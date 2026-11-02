@@ -21,6 +21,8 @@ use crate::smp::{self, PerCpu as _};
 pub struct PerCpu {
     id: usize,
     apic_id: u8,
+    /// How deep its interrupt handlers nest.
+    pub(super) interrupt_nesting: u32,
     /// Its GDT, which holds its TSS's descriptor.
     gdt: Option<&'static GlobalDescriptorTable<{ gdt::ENTRIES }>>,
     tss: TaskStateSegment,
@@ -35,6 +37,7 @@ static PER_CPU: [Slot; MAX_CPUS] = [const {
     Slot(UnsafeCell::new(PerCpu {
         id: 0,
         apic_id: 0,
+        interrupt_nesting: 0,
         gdt: None,
         tss: TaskStateSegment::new(),
     }))
