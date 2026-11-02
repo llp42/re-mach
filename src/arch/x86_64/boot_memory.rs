@@ -12,11 +12,11 @@ use super::memory_layout::{
     DIRECT_MAP_LIMIT, DMA_LIMIT, DMA32_LIMIT, HIGH_MEMORY_LIMIT, PAGE_SIZE, Segment,
 };
 use super::serial::Serial;
-use super::vm_page;
 use crate::boot::multiboot2::{Info, MemoryType};
 use crate::collections::ArrayVec;
 use crate::config::MAX_CPUS;
 use crate::sync::BootCell;
+use crate::vm::page;
 
 /// Start of usable low memory; the first 64 KiB are left to BIOS data and
 /// to buggy hardware.
@@ -431,8 +431,8 @@ pub fn heap_end() -> PhysAddr {
     memory.heap.as_ref().expect("boot_memory: no heap yet").end
 }
 
-/// Shows the physical memory map and loads its segments into `vm_page`;
-/// closes the boot heap, whose free part `vm_page` takes.
+/// Shows the physical memory map and loads its segments into `vm::page`;
+/// closes the boot heap, whose free part `vm::page` takes.
 ///
 /// # Panics
 ///
@@ -445,9 +445,9 @@ pub fn setup() {
         .take()
         .expect("boot_memory: the boot heap is not open");
     for Range { start, end } in memory.segments.iter().map_while(Clone::clone) {
-        vm_page::load(start..end);
+        page::load(start..end);
         if free.start < end && free.end > start {
-            vm_page::load_heap(free.start.max(start)..free.end.min(end));
+            page::load_heap(free.start.max(start)..free.end.min(end));
         }
     }
 }

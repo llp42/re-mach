@@ -12,3 +12,4 @@ mod config;
 mod kernel;
 mod smp;
 mod sync;
+mod vm;

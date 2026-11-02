@@ -23,7 +23,6 @@ mod stack;
 mod syscall;
 mod trap;
 mod tss;
-mod vm_page;
 
 use core::arch::asm;
 use core::ffi::CStr;
