@@ -3,6 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Virtual memory.
 
+pub mod object;
 pub mod page;
 pub mod pmap;
 
