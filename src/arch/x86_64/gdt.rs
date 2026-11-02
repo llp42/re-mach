@@ -12,16 +12,16 @@ use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector
 const ENTRIES: usize = 14;
 
 /// Kernel code selector.
-const KERNEL_CODE: SegmentSelector = SegmentSelector::new(1, PrivilegeLevel::Ring0);
+pub const KERNEL_CODE: SegmentSelector = SegmentSelector::new(1, PrivilegeLevel::Ring0);
 
 /// Kernel data selector.
-const KERNEL_DATA: SegmentSelector = SegmentSelector::new(2, PrivilegeLevel::Ring0);
+pub const KERNEL_DATA: SegmentSelector = SegmentSelector::new(2, PrivilegeLevel::Ring0);
 
 /// User data selector.
-const USER_DATA: SegmentSelector = SegmentSelector::new(3, PrivilegeLevel::Ring3);
+pub const USER_DATA: SegmentSelector = SegmentSelector::new(3, PrivilegeLevel::Ring3);
 
 /// User code selector.
-const USER_CODE: SegmentSelector = SegmentSelector::new(4, PrivilegeLevel::Ring3);
+pub const USER_CODE: SegmentSelector = SegmentSelector::new(4, PrivilegeLevel::Ring3);
 
 /// The boot CPU's.
 static GDT: GlobalDescriptorTable<ENTRIES> = {
