@@ -38,6 +38,7 @@ use crate::arch::Machine;
 use crate::boot::multiboot2::{self, ElfSectionType, Tag};
 use crate::boot::{self, BootModule};
 use crate::kernel::machine::{self, CpuSubtype, CpuType, Slot};
+use crate::kernel::startup;
 use crate::smp::{self, MachinePerCpu as _};
 use crate::sync::OnceLock;
 pub use address::PhysAddr;
@@ -165,7 +166,7 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
             subtype: CpuSubtype::AT386,
         },
     );
-    halt();
+    startup::start()
 }
 
 /// Copies into boot memory what outlives the boot information: the
