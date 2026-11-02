@@ -5,3 +5,4 @@
 pub mod console;
 pub mod host;
 pub mod machine;
+pub mod startup;
