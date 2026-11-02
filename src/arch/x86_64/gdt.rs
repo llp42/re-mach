@@ -7,8 +7,8 @@ use x86_64::PrivilegeLevel;
 use x86_64::instructions::segmentation::{CS, DS, ES, SS, Segment};
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 
-/// Entries, in GNU Mach's layout; the user TLS slots, 9 and 10, are the
-/// last its interface shows.
+/// Entries, in GNU Mach's layout with the user segments in its LDT's slots;
+/// the user TLS slots, 9 and 10, are the last its interface shows.
 const ENTRIES: usize = 14;
 
 /// Kernel code selector.
@@ -16,6 +16,12 @@ const KERNEL_CODE: SegmentSelector = SegmentSelector::new(1, PrivilegeLevel::Rin
 
 /// Kernel data selector.
 const KERNEL_DATA: SegmentSelector = SegmentSelector::new(2, PrivilegeLevel::Ring0);
+
+/// User data selector.
+const USER_DATA: SegmentSelector = SegmentSelector::new(3, PrivilegeLevel::Ring3);
+
+/// User code selector.
+const USER_CODE: SegmentSelector = SegmentSelector::new(4, PrivilegeLevel::Ring3);
 
 /// The boot CPU's.
 static GDT: GlobalDescriptorTable<ENTRIES> = {
@@ -39,5 +45,24 @@ pub unsafe fn init() {
         SS::set_reg(KERNEL_DATA);
         DS::set_reg(KERNEL_DATA);
         ES::set_reg(KERNEL_DATA);
+    }
+}
+
+/// Writes the user data and code segments into the boot CPU's GDT.
+///
+/// # Safety
+///
+/// Runs once, on the boot CPU, after `init`.
+pub unsafe fn store_user_segments() {
+    // SAFETY: no segment register was loaded from these slots.
+    unsafe {
+        GDT.store(
+            usize::from(USER_DATA.index()),
+            Descriptor::user_data_segment(),
+        );
+        GDT.store(
+            usize::from(USER_CODE.index()),
+            Descriptor::user_code_segment(),
+        );
     }
 }
