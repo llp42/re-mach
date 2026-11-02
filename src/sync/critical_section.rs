@@ -31,12 +31,12 @@ impl Drop for CriticalSection {
 }
 
 /// Raises the current CPU's critical nesting.
-fn crit_enter() {
+pub(super) fn crit_enter() {
     smp::current().enter_critical();
 }
 
 /// Lowers it; leaving the outermost runs the interrupts held back.
-fn crit_exit() {
+pub(super) fn crit_exit() {
     let cpu = arch::PerCpu::current();
     if cpu.common().leave_critical() {
         cpu.run_pending_interrupts();

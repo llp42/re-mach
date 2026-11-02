@@ -7,15 +7,14 @@ use core::mem::MaybeUninit;
 use core::ops::Range;
 use core::{ptr, slice};
 
-use intrusive_collections::LinkedListAtomicLink;
+use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
 
 use super::pmap::MachinePmap as _;
 use crate::arch::{self, PAGE_SIZE, PhysAddr};
 use crate::println;
-use crate::sync::{BootCell, OnceLock};
+use crate::sync::{BootCell, OnceLock, Spinlock};
 
 /// A physical page.
-#[expect(dead_code, reason = "the page queues link it")]
 pub struct Page {
     /// Its place in the page queue it is on.
     queue_link: LinkedListAtomicLink,
@@ -41,6 +40,39 @@ struct PageArray {
 
 /// The page array, once `setup` builds it.
 static PAGES: OnceLock<PageArray> = OnceLock::new();
+
+/// How many colours each page queue has; a page's colour is its frame
+/// number's lowest bits.
+const COLORS: usize = 1024;
+
+intrusive_adapter!(
+    #[expect(
+        clippy::expl_impl_clone_on_copy,
+        reason = "intrusive_adapter! writes Clone by hand"
+    )]
+    PageQueueAdapter = &'static Page: Page { queue_link => LinkedListAtomicLink }
+);
+
+/// The pages of one colour on one queue.
+type PageQueue = Spinlock<LinkedList<PageQueueAdapter>>;
+
+/// The page queues, a list per colour each.
+struct PageQueues {
+    /// Free pages.
+    free: [PageQueue; COLORS],
+    /// Pages in use, not referenced lately.
+    #[expect(dead_code, reason = "pageout moves pages through it")]
+    inactive: [PageQueue; COLORS],
+    /// Pages in use, referenced lately.
+    #[expect(dead_code, reason = "pageout moves pages through it")]
+    active: [PageQueue; COLORS],
+}
+
+static QUEUES: PageQueues = PageQueues {
+    free: [const { PageQueue::new(LinkedList::new(PageQueueAdapter::NEW)) }; COLORS],
+    inactive: [const { PageQueue::new(LinkedList::new(PageQueueAdapter::NEW)) }; COLORS],
+    active: [const { PageQueue::new(LinkedList::new(PageQueueAdapter::NEW)) }; COLORS],
+};
 
 /// Physical memory loaded from boot memory.
 struct Loaded {
@@ -75,17 +107,18 @@ fn widen(area: Option<Range<PhysAddr>>, range: Range<PhysAddr>) -> Range<PhysAdd
     }
 }
 
-/// Builds the page array over the loaded span, on the boot CPU.
+/// Builds the page array over the loaded span and frees the boot heap's
+/// unused pages, on the boot CPU.
 ///
 /// # Panics
 ///
 /// If no memory is loaded, or on a second call.
 pub fn setup() {
-    let span = LOADED
-        .borrow()
-        .span
-        .clone()
-        .expect("vm_page: no physical memory loaded");
+    let (span, heap) = {
+        let loaded = LOADED.borrow();
+        (loaded.span.clone(), loaded.heap.clone())
+    };
+    let span = span.expect("vm_page: no physical memory loaded");
     let count = (span.end - span.start) / PAGE_SIZE;
     let size = (count * size_of::<Page>()).next_multiple_of(PAGE_SIZE);
     println!(
@@ -112,4 +145,11 @@ pub fn setup() {
             .is_ok(),
         "vm_page: set up twice"
     );
+    if let Some(heap) = heap {
+        let first = span.start.0 / PAGE_SIZE;
+        let range = (heap.start - span.start) / PAGE_SIZE..(heap.end - span.start) / PAGE_SIZE;
+        for (page, index) in pages[range.clone()].iter().zip(range) {
+            QUEUES.free[(first + index) % COLORS].lock().push_back(page);
+        }
+    }
 }
