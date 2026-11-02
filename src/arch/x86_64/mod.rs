@@ -63,6 +63,8 @@ unsafe extern "C" {
 /// Machine-dependent initialization, from `boot_header` on the boot stack;
 /// `info_address` is the boot information's physical address.
 extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
+    // SAFETY: the boot CPU is CPU 0; nothing read `cpu_id` yet.
+    unsafe { per_cpu::init(0) };
     assert_eq!(
         magic,
         multiboot2::BOOTLOADER_MAGIC,
@@ -73,8 +75,6 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     let boot_info = unsafe { multiboot2::Info::from_address(info_address) };
     pic::disable();
     apic::enable();
-    // SAFETY: the boot CPU is CPU 0; nothing read `cpu_id` yet.
-    unsafe { per_cpu::init(0) };
     // SAFETY: an empty RFLAGS keeps DF clear.
     unsafe { rflags::write(RFlags::empty()) };
     Serial::init();
