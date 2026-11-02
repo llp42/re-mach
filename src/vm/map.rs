@@ -40,14 +40,39 @@ intrusive_adapter!(
     EntryAdapter = UnsafeRef<Entry>: Entry { tree_link => RBTreeAtomicLink }
 );
 
+/// Memory copied out of a map while in transit, such as out-of-line data; so
+/// far only its kind and size.
+#[expect(dead_code, reason = "vm_map_copyin and vm_map_copyout use them")]
+pub struct MapCopy {
+    /// How it holds the memory.
+    kind: CopyKind,
+    /// Its size, in bytes.
+    size: usize,
+}
+
+/// How a copy holds its memory.
+#[expect(dead_code, reason = "vm_map_copyin and vm_map_copyout use them")]
+enum CopyKind {
+    /// As map entries, like a map.
+    Entries,
+    /// As one object, mostly on the pageout path.
+    Object,
+    /// As a list of pages.
+    Pages,
+}
+
 /// The cache maps come from.
 static MAP_CACHE: Cache<Map> = Cache::new("vm_map");
 
 /// The cache entries come from.
 static ENTRY_CACHE: Cache<Entry> = Cache::new("vm_map_entry");
 
+/// The cache copies come from.
+static COPY_CACHE: Cache<MapCopy> = Cache::new("vm_map_copy");
+
 /// Sets up address maps, on the boot CPU.
 pub fn init() {
     MAP_CACHE.register();
     ENTRY_CACHE.register();
+    COPY_CACHE.register();
 }
