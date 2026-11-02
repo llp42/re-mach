@@ -7,11 +7,12 @@ use core::fmt::Write;
 
 use x86_64::VirtAddr;
 
+use super::idt;
 use super::per_cpu::PerCpu;
 use super::serial::Serial;
 use super::trap::TrapFrame;
-use super::{critical, idt};
 use crate::smp::MachinePerCpu as _;
+use crate::sync::CriticalSection;
 
 // Each entry pushes a zero error code and its vector, and adds its address
 // to `entries`; the common path saves the registers as a `TrapFrame`, calls
@@ -94,9 +95,8 @@ extern "sysv64" fn interrupt(frame: &TrapFrame) {
     if cpu.hold(frame.vector) {
         return;
     }
-    critical::crit_enter();
+    let _section = CriticalSection::enter();
     handle(frame.vector, Some(frame));
-    critical::crit_exit();
 }
 
 /// Runs `vector`'s handler, in a critical section, with the state it
