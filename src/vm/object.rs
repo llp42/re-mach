@@ -3,10 +3,12 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Memory objects' kernel side.
 
+use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
+
 use crate::arch::{MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS};
 
-/// The kernel's side of a memory object; so far only what the kernel object
-/// sets.
+/// The kernel's side of a memory object; so far only its first values and
+/// its place in the list of persisting objects.
 #[expect(
     dead_code,
     reason = "vm_object_reference, vm_object_deallocate and the pager calls read them"
@@ -22,7 +24,17 @@ pub struct Object {
     temporary: bool,
     /// Whether it is not yet terminated.
     alive: bool,
+    /// Its place in the list of persisting objects.
+    persisting_link: LinkedListAtomicLink,
 }
+
+intrusive_adapter!(
+    #[expect(
+        clippy::expl_impl_clone_on_copy,
+        reason = "intrusive_adapter! writes Clone by hand"
+    )]
+    PersistingAdapter = UnsafeRef<Object>: Object { persisting_link => LinkedListAtomicLink }
+);
 
 impl Object {
     /// A new object of `size` bytes, with one reference.
@@ -33,6 +45,7 @@ impl Object {
             internal: true,
             temporary: true,
             alive: true,
+            persisting_link: LinkedListAtomicLink::new(),
         }
     }
 }
@@ -40,3 +53,8 @@ impl Object {
 /// The object all wired kernel memory belongs to.
 #[expect(dead_code, reason = "kmem_alloc and the kernel's pages use it")]
 static KERNEL_OBJECT: Object = Object::new(MAX_KERNEL_ADDRESS - MIN_KERNEL_ADDRESS + 1);
+
+/// The unreferenced objects kept in case they are used again, until memory
+/// runs low.
+#[expect(dead_code, reason = "vm_object_deallocate and vm_object_lookup use it")]
+static PERSISTING: LinkedList<PersistingAdapter> = LinkedList::new(PersistingAdapter::NEW);
