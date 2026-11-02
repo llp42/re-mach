@@ -3,6 +3,8 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Processors and processor sets.
 
+use intrusive_collections::{LinkedListAtomicLink, intrusive_adapter};
+
 use super::sched::{LOAD_SCALE, MIN_QUANTUM, Policies, RUN_QUEUES, RunQueue, SYSTEM_PRIORITY};
 use super::thread::RunQueueAdapter;
 use crate::smp;
@@ -16,7 +18,17 @@ pub struct Processor {
     /// Its runnable threads, by priority; only its CPU touches them, inside
     /// a critical section.
     run_queues: [RunQueue; RUN_QUEUES],
+    /// Its place in the action queue.
+    action_link: LinkedListAtomicLink,
 }
+
+intrusive_adapter!(
+    #[expect(
+        clippy::expl_impl_clone_on_copy,
+        reason = "intrusive_adapter! writes Clone by hand"
+    )]
+    pub ActionQueueAdapter = &'static Processor: Processor { action_link => LinkedListAtomicLink }
+);
 
 /// What a processor is doing; only the states used here.
 enum State {
@@ -30,6 +42,7 @@ impl Processor {
         Self {
             state: State::Offline,
             run_queues: [const { RunQueue::new(RunQueueAdapter::NEW) }; RUN_QUEUES],
+            action_link: LinkedListAtomicLink::new(),
         }
     }
 }

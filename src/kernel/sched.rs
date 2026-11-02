@@ -5,7 +5,7 @@
 
 use intrusive_collections::LinkedList;
 
-use super::processor;
+use super::processor::{self, ActionQueueAdapter};
 use super::thread::{RunQueueAdapter, SleepQueueAdapter};
 use crate::config::HZ;
 
@@ -20,6 +20,11 @@ pub type RunQueue = LinkedList<RunQueueAdapter>;
 
 /// How many run queues each processor has, one per priority.
 pub const RUN_QUEUES: usize = 65;
+
+/// The processors waiting for the action thread to shut them down or move
+/// them to another set.
+#[expect(dead_code, reason = "processor_shutdown and the action thread use it")]
+static ACTION_QUEUE: LinkedList<ActionQueueAdapter> = LinkedList::new(ActionQueueAdapter::NEW);
 
 /// The priority of system threads, and the default set's highest.
 pub const SYSTEM_PRIORITY: u32 = 6;
