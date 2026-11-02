@@ -5,7 +5,6 @@
 pub mod multiboot2;
 
 use core::ffi::CStr;
-use core::fmt::Write;
 use core::ops::Range;
 
 use crate::arch::PhysAddr;
@@ -19,11 +18,6 @@ pub struct BootModule {
 }
 
 /// Prints the kernel's name and version.
-pub fn banner(out: &mut impl Write) {
-    let _ = write!(
-        out,
-        "{} {}\r\n",
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_VERSION")
-    );
+pub fn banner() {
+    crate::println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 }

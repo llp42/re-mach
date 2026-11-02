@@ -77,7 +77,7 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     // SAFETY: an empty RFLAGS keeps DF clear.
     unsafe { rflags::write(RFlags::empty()) };
     Serial::init();
-    boot::banner(&mut Serial);
+    boot::banner();
     cpuid::discover();
     let features = cpuid::features();
     let _ = write!(
@@ -250,6 +250,16 @@ pub struct X86_64;
 impl Machine for X86_64 {
     fn halt() -> ! {
         halt()
+    }
+
+    fn write_console(text: &str) {
+        // A serial terminal needs a carriage return before each line feed.
+        for (index, line) in text.split('\n').enumerate() {
+            if index > 0 {
+                let _ = Serial.write_str("\r\n");
+            }
+            let _ = Serial.write_str(line);
+        }
     }
 
     fn kernel_command_line() -> &'static CStr {

@@ -17,6 +17,9 @@ pub trait Machine {
     /// Stops the current CPU for good.
     fn halt() -> !;
 
+    /// Writes `text` to the console, where `\n` ends a line.
+    fn write_console(text: &str);
+
     /// The kernel's command line, as the loader gave it; empty if none.
     #[expect(dead_code, reason = "the console and the bootstrap read it")]
     fn kernel_command_line() -> &'static CStr;
