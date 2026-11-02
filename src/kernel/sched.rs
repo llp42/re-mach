@@ -3,6 +3,8 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The scheduler.
 
+use core::sync::atomic::AtomicU32;
+
 use intrusive_collections::LinkedList;
 
 use super::processor::{self, ActionQueueAdapter};
@@ -25,6 +27,10 @@ pub const RUN_QUEUES: usize = 65;
 /// them to another set.
 #[expect(dead_code, reason = "processor_shutdown and the action thread use it")]
 static ACTION_QUEUE: LinkedList<ActionQueueAdapter> = LinkedList::new(ActionQueueAdapter::NEW);
+
+/// How many times threads' priorities have been recomputed, once a second.
+#[expect(dead_code, reason = "recompute_priorities advances it")]
+static SCHEDULER_TICK: AtomicU32 = AtomicU32::new(0);
 
 /// The priority of system threads, and the default set's highest.
 pub const SYSTEM_PRIORITY: u32 = 6;
