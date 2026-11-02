@@ -76,7 +76,7 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe { per_cpu::init(0) };
     // SAFETY: an empty RFLAGS keeps DF clear.
     unsafe { rflags::write(RFlags::empty()) };
-    serial::init();
+    Serial::init();
     boot::banner(&mut Serial);
     cpuid::discover();
     let features = cpuid::features();
