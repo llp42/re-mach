@@ -6,6 +6,7 @@
 use core::sync::atomic::{AtomicU32, Ordering, compiler_fence};
 
 use crate::arch;
+use crate::kernel::processor::Processor;
 use crate::kernel::sched::{SLEEP_QUEUES, SleepQueue};
 use crate::kernel::thread::SleepQueueAdapter;
 
@@ -20,6 +21,9 @@ pub struct PerCpu {
     /// critical section.
     #[expect(dead_code, reason = "assert_wait and thread_wakeup use them")]
     sleep_queues: [SleepQueue; SLEEP_QUEUES],
+    /// Its processor.
+    #[expect(dead_code, reason = "sched_init reads it")]
+    processor: Processor,
 }
 
 impl PerCpu {
@@ -34,6 +38,7 @@ impl PerCpu {
             interrupt_nesting: AtomicU32::new(0),
             critical_nesting: AtomicU32::new(0),
             sleep_queues: [const { SleepQueue::new(SleepQueueAdapter::NEW) }; SLEEP_QUEUES],
+            processor: Processor::new(),
         }
     }
 
