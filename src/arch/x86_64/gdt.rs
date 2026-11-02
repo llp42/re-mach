@@ -6,9 +6,11 @@
 use x86_64::PrivilegeLevel;
 use x86_64::instructions::segmentation::{CS, DS, ES, SS, Segment};
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
+use x86_64::structures::tss::TaskStateSegment;
 
-/// Entries, in GNU Mach's layout with the user segments in its LDT's slots;
-/// the user TLS slots, 9 and 10, are the last its interface shows.
+/// Entries, in GNU Mach's layout with the user segments and the TSS in its
+/// LDTs' slots; the user TLS slots, 9 and 10, are the last its interface
+/// shows.
 const ENTRIES: usize = 14;
 
 /// Kernel code selector.
@@ -22,6 +24,9 @@ pub const USER_DATA: SegmentSelector = SegmentSelector::new(3, PrivilegeLevel::R
 
 /// User code selector.
 pub const USER_CODE: SegmentSelector = SegmentSelector::new(4, PrivilegeLevel::Ring3);
+
+/// The TSS's selector; its descriptor takes two entries.
+const KERNEL_TSS: SegmentSelector = SegmentSelector::new(5, PrivilegeLevel::Ring0);
 
 /// The boot CPU's.
 static GDT: GlobalDescriptorTable<ENTRIES> = {
@@ -64,5 +69,23 @@ pub unsafe fn store_user_segments() {
             usize::from(USER_CODE.index()),
             Descriptor::user_code_segment(),
         );
+    }
+}
+
+/// Writes `tss`'s descriptor into the boot CPU's GDT, returning its
+/// selector.
+///
+/// # Safety
+///
+/// Runs once, on the boot CPU, after `init`; `tss` is the boot CPU's
+/// static TSS.
+pub unsafe fn store_tss(tss: *const TaskStateSegment) -> SegmentSelector {
+    // SAFETY: guaranteed by the caller; TR was never loaded from these
+    // slots.
+    unsafe {
+        GDT.store(
+            usize::from(KERNEL_TSS.index()),
+            Descriptor::tss_segment_unchecked(tss),
+        )
     }
 }

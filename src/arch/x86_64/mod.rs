@@ -21,6 +21,7 @@ mod pmap;
 mod serial;
 mod syscall;
 mod trap;
+mod tss;
 mod vm_page;
 
 use core::arch::asm;
@@ -178,6 +179,8 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe { gdt::store_user_segments() };
     // SAFETY: the boot CPU, once, after the user segments.
     unsafe { syscall::init() };
+    // SAFETY: the boot CPU, once, after the GDT.
+    unsafe { tss::init() };
     halt();
 }
 
