@@ -7,6 +7,7 @@
 
 mod arch;
 mod boot;
+mod collections;
 mod config;
 mod kernel;
 mod smp;

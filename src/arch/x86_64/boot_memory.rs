@@ -15,6 +15,7 @@ use super::memory_layout::{
 use super::serial::Serial;
 use super::vm_page;
 use crate::boot::multiboot2::{Info, MemoryType};
+use crate::collections::ArrayVec;
 use crate::config::MAX_CPUS;
 
 /// Start of usable low memory; the first 64 KiB are left to BIOS data and
@@ -68,11 +69,8 @@ impl BootData {
     }
 }
 
-/// Sorted array of boot data descriptors.
-struct BootDataArray {
-    data: UnsafeCell<[BootData; MAX_BOOT_DATA]>,
-    len: UnsafeCell<usize>,
-}
+/// Boot data descriptors, sorted.
+struct BootDataArray(UnsafeCell<ArrayVec<BootData, MAX_BOOT_DATA>>);
 
 // SAFETY: only the boot CPU touches it.
 unsafe impl Sync for BootDataArray {}
@@ -91,23 +89,13 @@ impl BootDataArray {
             return None;
         }
         // SAFETY: guaranteed by the caller.
-        let (data, len) = unsafe { (&*self.data.get(), *self.len.get()) };
-        data[..len]
-            .iter()
+        let data = unsafe { &*self.0.get() };
+        data.iter()
             .try_fold(start..end, |area, boot_data| boot_data.clip(area))
     }
 }
 
-static BOOT_DATA: BootDataArray = BootDataArray {
-    data: UnsafeCell::new(
-        [BootData {
-            start: PhysAddr(0),
-            end: PhysAddr(0),
-            retention: Retention::Permanent,
-        }; MAX_BOOT_DATA],
-    ),
-    len: UnsafeCell::new(0),
-};
+static BOOT_DATA: BootDataArray = BootDataArray(UnsafeCell::new(ArrayVec::new()));
 
 /// Entries kept from the boot loader's map; overlap resolution can double them.
 const MAX_MAP_ENTRIES: usize = 128;
@@ -180,10 +168,9 @@ impl MapEntry {
 
 /// The memory map.
 struct Map {
-    entries: UnsafeCell<[MapEntry; MAX_MAP_ENTRIES * 2]>,
-    len: UnsafeCell<usize>,
+    entries: UnsafeCell<ArrayVec<MapEntry, { MAX_MAP_ENTRIES * 2 }>>,
     /// Input of `normalize`.
-    copy: UnsafeCell<[MapEntry; MAX_MAP_ENTRIES]>,
+    copy: UnsafeCell<ArrayVec<MapEntry, MAX_MAP_ENTRIES>>,
 }
 
 // SAFETY: only the boot CPU touches it.
@@ -198,7 +185,7 @@ impl Map {
     /// Runs on the boot CPU only.
     unsafe fn build(&self, boot_info: Info) {
         // SAFETY: guaranteed by the caller.
-        let (entries, len) = unsafe { (&mut *self.entries.get(), &mut *self.len.get()) };
+        let entries = unsafe { &mut *self.entries.get() };
         let mut built = boot_info.mmap().into_iter().flatten().filter_map(|entry| {
             MapEntry {
                 base_addr: PhysAddr(entry.base_addr),
@@ -207,9 +194,8 @@ impl Map {
             }
             .narrow_to_pages()
         });
-        for (slot, entry) in entries[..MAX_MAP_ENTRIES].iter_mut().zip(&mut built) {
-            *slot = entry;
-            *len += 1;
+        for entry in built.by_ref().take(MAX_MAP_ENTRIES) {
+            entries.push(entry);
         }
         let dropped = built.count();
         if dropped != 0 {
@@ -228,22 +214,12 @@ impl Map {
     /// Runs on the boot CPU only.
     unsafe fn normalize(&self) {
         // SAFETY: guaranteed by the caller.
-        let (entries, len, copy) = unsafe {
-            (
-                &mut *self.entries.get(),
-                &mut *self.len.get(),
-                &mut *self.copy.get(),
-            )
-        };
-        let mut n = 0;
-        for entry in &entries[..*len] {
-            if entry.length != 0 {
-                copy[n] = *entry;
-                n += 1;
-            }
+        let (entries, copy) = unsafe { (&mut *self.entries.get(), &mut *self.copy.get()) };
+        copy.clear();
+        for &entry in entries.iter().filter(|entry| entry.length != 0) {
+            copy.push(entry);
         }
-        let copy = &copy[..n];
-        *len = 0;
+        entries.clear();
         // Walks from boundary to boundary of the ranges.
         let Some(mut start) = copy.iter().map(|entry| entry.base_addr).min() else {
             return;
@@ -258,18 +234,17 @@ impl Map {
                 .iter()
                 .filter(|entry| entry.base_addr <= start && end <= entry.end());
             if let Some(kind) = covering.map(|entry| entry.kind).max() {
-                if let Some(last) = entries[..*len].last_mut()
+                if let Some(last) = entries.last_mut()
                     && last.end() == start
                     && last.kind == kind
                 {
                     last.length += end - start;
                 } else {
-                    entries[*len] = MapEntry {
+                    entries.push(MapEntry {
                         base_addr: start,
                         length: end - start,
                         kind,
-                    };
-                    *len += 1;
+                    });
                 }
             }
             start = end;
@@ -284,9 +259,9 @@ impl Map {
     /// Runs on the boot CPU only.
     unsafe fn available_span(&self, range: Range<PhysAddr>) -> Option<Range<PhysAddr>> {
         // SAFETY: guaranteed by the caller.
-        let (entries, len) = unsafe { (&*self.entries.get(), *self.len.get()) };
+        let entries = unsafe { &*self.entries.get() };
         let mut span: Option<Range<PhysAddr>> = None;
-        for entry in entries[..len]
+        for entry in entries
             .iter()
             .filter(|entry| entry.kind == EntryKind::Available)
         {
@@ -312,9 +287,9 @@ impl Map {
     /// Runs on the boot CPU only.
     unsafe fn show(&self) {
         // SAFETY: guaranteed by the caller.
-        let (entries, len) = unsafe { (&*self.entries.get(), *self.len.get()) };
+        let entries = unsafe { &*self.entries.get() };
         let _ = Serial.write_str("boot_memory: physical memory map:\r\n");
-        for entry in &entries[..len] {
+        for entry in entries.iter() {
             let _ = write!(
                 Serial,
                 "boot_memory: {:018x}:{:018x}, {}\r\n",
@@ -327,21 +302,8 @@ impl Map {
 }
 
 static MAP: Map = Map {
-    entries: UnsafeCell::new(
-        [MapEntry {
-            base_addr: PhysAddr(0),
-            length: 0,
-            kind: EntryKind::Available,
-        }; MAX_MAP_ENTRIES * 2],
-    ),
-    len: UnsafeCell::new(0),
-    copy: UnsafeCell::new(
-        [MapEntry {
-            base_addr: PhysAddr(0),
-            length: 0,
-            kind: EntryKind::Available,
-        }; MAX_MAP_ENTRIES],
-    ),
+    entries: UnsafeCell::new(ArrayVec::new()),
+    copy: UnsafeCell::new(ArrayVec::new()),
 };
 
 /// Physical segments, from the memory map.
@@ -390,9 +352,9 @@ impl Heap {
     /// Runs on the boot CPU only.
     unsafe fn init(&self) {
         // SAFETY: guaranteed by the caller.
-        let (entries, len) = unsafe { (&*MAP.entries.get(), *MAP.len.get()) };
+        let entries = unsafe { &*MAP.entries.get() };
         let mut heap = PhysAddr(0)..PhysAddr(0);
-        for entry in entries[..len]
+        for entry in entries
             .iter()
             .filter(|entry| entry.kind == EntryKind::Available)
         {
@@ -440,32 +402,32 @@ pub unsafe fn register_boot_data(range: Range<PhysAddr>, retention: Retention) {
     let Range { start, end } = range;
     assert!(start < end, "boot_memory: invalid boot data");
     // SAFETY: guaranteed by the caller.
-    let (data, len) = unsafe { (&mut *BOOT_DATA.data.get(), &mut *BOOT_DATA.len.get()) };
-    assert!(*len < data.len(), "boot_memory: too many boot data ranges");
-    let mut i = 0;
-    while i < *len {
-        let entry = &mut data[i];
-        if end > entry.start && start < entry.end {
-            assert!(
-                start >= entry.start && end <= entry.end,
-                "boot_memory: invalid boot data"
-            );
-            // Included: a permanent range stays permanent.
-            entry.retention = entry.retention.max(retention);
-            return;
-        }
-        if end <= entry.start {
-            break;
-        }
-        i += 1;
+    let data = unsafe { &mut *BOOT_DATA.0.get() };
+    assert!(!data.is_full(), "boot_memory: too many boot data ranges");
+    // The first entry not wholly below `range`.
+    let index = data
+        .iter()
+        .position(|entry| start < entry.end)
+        .unwrap_or(data.len());
+    if let Some(entry) = data.get_mut(index)
+        && end > entry.start
+    {
+        assert!(
+            start >= entry.start && end <= entry.end,
+            "boot_memory: invalid boot data"
+        );
+        // Included: a permanent range stays permanent.
+        entry.retention = entry.retention.max(retention);
+        return;
     }
-    data.copy_within(i..*len, i + 1);
-    data[i] = BootData {
-        start,
-        end,
-        retention,
-    };
-    *len += 1;
+    data.insert(
+        index,
+        BootData {
+            start,
+            end,
+            retention,
+        },
+    );
 }
 
 /// Sets up boot memory from the boot information.
