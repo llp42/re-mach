@@ -14,24 +14,24 @@ use super::boot_stack;
 use super::memory_layout::KERNEL_BASE;
 use crate::boot::multiboot2::{ARCHITECTURE_X86, HEADER_MAGIC, HeaderTagType, TagType};
 
-/// EFER's MSR number.
-const MSR_EFER: u32 = 0xc000_0080;
+/// The EFER's MSR number.
+const IA32_EFER: u32 = 0xc000_0080;
 
 /// Boot GDT selectors.
-const BOOT_CS: u16 = 0x8;
-const BOOT_DS: u16 = 0x10;
+const BOOT_CODE_SELECTOR: u16 = 0x8;
+const BOOT_DATA_SELECTOR: u16 = 0x10;
 
-/// Top-level entry, and next-level entry, of the kernel map base.
-const KERNEL_P4: usize = (KERNEL_BASE >> 39) & 0x1ff;
-const KERNEL_P3: usize = (KERNEL_BASE >> 30) & 0x1ff;
+/// The kernel map base's PML4 and PDPT indexes.
+const KERNEL_PML4_INDEX: usize = (KERNEL_BASE >> 39) & 0x1ff;
+const KERNEL_PDPT_INDEX: usize = (KERNEL_BASE >> 30) & 0x1ff;
 
-/// Page directory or table entry.
-const PTE: u64 = PageTableFlags::PRESENT
+/// Flags of an entry pointing at a lower table.
+const TABLE_ENTRY: u64 = PageTableFlags::PRESENT
     .union(PageTableFlags::WRITABLE)
     .bits();
 
-/// 2 MiB page entry.
-const PTE_2M: u64 = PTE | PageTableFlags::HUGE_PAGE.bits();
+/// Flags of a 2 MiB page entry.
+const LARGE_PAGE_ENTRY: u64 = TABLE_ENTRY | PageTableFlags::HUGE_PAGE.bits();
 
 // A Multiboot2 loader enters `boot_start` in 32-bit protected mode, `%eax`
 // holding its magic and `%ebx` the boot information's physical address. The
@@ -62,44 +62,44 @@ global_asm!(
     "movl %eax, %edi",
     // Identity map: four directories of 2 MiB pages.
     "movl $p3table, %eax",
-    "orl ${pte}, %eax",
+    "orl ${table_entry}, %eax",
     "movl %eax, p4table",
     "movl $p2table, %eax",
-    "orl ${pte}, %eax",
+    "orl ${table_entry}, %eax",
     "movl %eax, p3table",
     "movl $p2table1, %eax",
-    "orl ${pte}, %eax",
+    "orl ${table_entry}, %eax",
     "movl %eax, p3table + 8",
     "movl $p2table2, %eax",
-    "orl ${pte}, %eax",
+    "orl ${table_entry}, %eax",
     "movl %eax, p3table + 16",
     "movl $p2table3, %eax",
-    "orl ${pte}, %eax",
+    "orl ${table_entry}, %eax",
     "movl %eax, p3table + 24",
     "xorl %ecx, %ecx",
     "1:",
     "movl $0x200000, %eax",
     "mull %ecx",
-    "orl ${pte_2m}, %eax",
+    "orl ${large_page_entry}, %eax",
     "movl %eax, p2table(, %ecx, 8)",
     "incl %ecx",
     "cmpl $2048, %ecx",
     "jne 1b",
     // Kernel map: two directories at the kernel map base.
     "movl $p3ktable, %eax",
-    "orl ${pte}, %eax",
-    "movl %eax, p4table + 8 * {kernel_p4}",
+    "orl ${table_entry}, %eax",
+    "movl %eax, p4table + 8 * {kernel_pml4_index}",
     "movl $p2ktable1, %eax",
-    "orl ${pte}, %eax",
-    "movl %eax, p3ktable + 8 * {kernel_p3}",
+    "orl ${table_entry}, %eax",
+    "movl %eax, p3ktable + 8 * {kernel_pdpt_index}",
     "movl $p2ktable2, %eax",
-    "orl ${pte}, %eax",
-    "movl %eax, p3ktable + 8 * ({kernel_p3} + 1)",
+    "orl ${table_entry}, %eax",
+    "movl %eax, p3ktable + 8 * ({kernel_pdpt_index} + 1)",
     "xorl %ecx, %ecx",
     "2:",
     "movl $0x200000, %eax",
     "mull %ecx",
-    "orl ${pte_2m}, %eax",
+    "orl ${large_page_entry}, %eax",
     "movl %eax, p2ktable1(, %ecx, 8)",
     "incl %ecx",
     "cmpl $1024, %ecx",
@@ -108,7 +108,7 @@ global_asm!(
     "movl %cr4, %eax",
     "orl ${cr4_pae}, %eax",
     "movl %eax, %cr4",
-    "movl ${msr_efer}, %ecx",
+    "movl ${ia32_efer}, %ecx",
     "rdmsr",
     "orl ${efer_lme}, %eax",
     "wrmsr",
@@ -118,7 +118,7 @@ global_asm!(
     "orl ${cr0_pg_wp}, %eax",
     "movl %eax, %cr0",
     "lgdt gdt64pointer",
-    "ljmp ${boot_cs}, $boot_entry64",
+    "ljmp ${boot_code_selector}, $boot_entry64",
     ".code64",
     "boot_entry64:",
     "xorl %eax, %eax",
@@ -127,7 +127,7 @@ global_asm!(
     "movw %ax, %ss",
     "movw %ax, %fs",
     "movw %ax, %gs",
-    "movw ${boot_ds}, %ax",
+    "movw ${boot_data_selector}, %ax",
     "movw %ax, %ds",
     "movw %ax, %es",
     "movw %ax, %ss",
@@ -161,16 +161,16 @@ global_asm!(
     information_request = const HeaderTagType::INFORMATION_REQUEST.0,
     mmap = const TagType::MMAP.0,
     end = const HeaderTagType::END.0,
-    pte = const PTE,
-    pte_2m = const PTE_2M,
-    kernel_p4 = const KERNEL_P4,
-    kernel_p3 = const KERNEL_P3,
+    table_entry = const TABLE_ENTRY,
+    large_page_entry = const LARGE_PAGE_ENTRY,
+    kernel_pml4_index = const KERNEL_PML4_INDEX,
+    kernel_pdpt_index = const KERNEL_PDPT_INDEX,
     cr4_pae = const Cr4Flags::PHYSICAL_ADDRESS_EXTENSION.bits(),
-    msr_efer = const MSR_EFER,
+    ia32_efer = const IA32_EFER,
     efer_lme = const EferFlags::LONG_MODE_ENABLE.bits(),
     cr0_pg_wp = const Cr0Flags::PAGING.union(Cr0Flags::WRITE_PROTECT).bits(),
-    boot_cs = const BOOT_CS,
-    boot_ds = const BOOT_DS,
+    boot_code_selector = const BOOT_CODE_SELECTOR,
+    boot_data_selector = const BOOT_DATA_SELECTOR,
     stack = sym boot_stack::STACK,
     stack_top = const boot_stack::SIZE - 16,
     init = sym super::init,
