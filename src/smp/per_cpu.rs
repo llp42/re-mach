@@ -23,6 +23,9 @@ pub struct PerCpu {
     sleep_queues: [SleepQueue; SLEEP_QUEUES],
     /// Its processor.
     processor: Processor,
+    /// The ASTs pending on it, a bit per reason.
+    #[expect(dead_code, reason = "the first AST posts them")]
+    pending_asts: AtomicU32,
 }
 
 impl PerCpu {
@@ -38,6 +41,7 @@ impl PerCpu {
             critical_nesting: AtomicU32::new(0),
             sleep_queues: [const { SleepQueue::new(SleepQueueAdapter::NEW) }; SLEEP_QUEUES],
             processor: Processor::new(),
+            pending_asts: AtomicU32::new(0),
         }
     }
 
