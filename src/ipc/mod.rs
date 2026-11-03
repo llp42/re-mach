@@ -10,8 +10,8 @@ pub mod port_set;
 pub mod space;
 
 use crate::sync::OnceLock;
-use crate::vm;
 use crate::vm::map::Map;
+use crate::{kernel, vm};
 
 /// The kernel's map for IPC buffers, such as out-of-line data in its
 /// replies.
@@ -29,10 +29,12 @@ pub fn bootstrap() {
 }
 
 /// Finishes setting up IPC, on the boot CPU: the kernel's IPC map gets an
-/// eighth of memory, and at least `MIN_KERNEL_MAP_SIZE`.
+/// eighth of memory, and at least `MIN_KERNEL_MAP_SIZE`; then the host's
+/// ports.
 pub fn init() {
     vm::kernel::submap(
         &KERNEL_MAP,
         MIN_KERNEL_MAP_SIZE.max(vm::page::span_size() / 8),
     );
+    kernel::ipc_host::init();
 }
