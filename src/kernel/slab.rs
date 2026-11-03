@@ -135,7 +135,8 @@ intrusive_adapter!(
 /// A cache of objects of type `T`.
 pub struct Cache<T> {
     raw: RawCache,
-    marker: PhantomData<T>,
+    /// The cache holds no `T`, so it is shared whatever `T` is.
+    marker: PhantomData<fn() -> T>,
 }
 
 impl<T> Cache<T> {

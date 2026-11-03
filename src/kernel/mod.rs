@@ -9,6 +9,7 @@ pub mod kalloc;
 pub mod machine;
 mod panic;
 pub mod processor;
+pub mod radix_tree;
 pub mod sched;
 pub mod slab;
 pub mod startup;
