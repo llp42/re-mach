@@ -8,7 +8,7 @@ use core::ptr::NonNull;
 use super::space::{self, Space};
 use crate::kernel::Error;
 use crate::kernel::host::Host;
-use crate::kernel::processor::ProcessorSet;
+use crate::kernel::processor::{Processor, ProcessorSet};
 use crate::kernel::slab::{Cache, CacheBox};
 use crate::vm::object::Object;
 
@@ -51,6 +51,12 @@ pub enum KernelObject {
     ProcessorSetName(
         #[expect(dead_code, reason = "convert_port_to_pset_name reads it")] NonNull<ProcessorSet>,
     ),
+    /// A processor's port.
+    Processor(
+        #[expect(dead_code, reason = "convert_port_to_processor reads it")] &'static Processor,
+    ),
+    /// A processor's name port.
+    ProcessorName(#[expect(dead_code, reason = "processor_info reads it")] &'static Processor),
 }
 
 /// The cache ports come from.
