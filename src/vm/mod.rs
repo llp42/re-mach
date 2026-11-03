@@ -39,4 +39,5 @@ pub fn init() {
     map::init();
     kernel::init();
     arch::Pmap::init();
+    crate::kernel::kalloc::init();
 }
