@@ -3,6 +3,7 @@
 //! Machine-independent kernel code.
 
 pub mod console;
+mod error;
 pub mod host;
 pub mod machine;
 mod panic;
@@ -11,3 +12,5 @@ pub mod sched;
 pub mod slab;
 pub mod startup;
 pub mod thread;
+
+pub use error::Error;

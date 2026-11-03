@@ -28,10 +28,20 @@ impl Page {
             queue_link: LinkedListAtomicLink::new(),
         }
     }
+
+    /// Where the page is.
+    ///
+    /// # Panics
+    ///
+    /// If the page array is not set up.
+    pub fn address(&'static self) -> PhysAddr {
+        let array = PAGES.get().expect("vm_page: not set up");
+        let index = (ptr::from_ref(self).addr() - array.pages.as_ptr().addr()) / size_of::<Self>();
+        array.start + index * PAGE_SIZE
+    }
 }
 
 /// Every page of the loaded span, holes included.
-#[expect(dead_code, reason = "the page allocator reads them")]
 struct PageArray {
     /// Where the first page is: the span's start.
     start: PhysAddr,

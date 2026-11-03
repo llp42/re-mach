@@ -4,11 +4,15 @@
 //! The slab allocator: caches of objects of one size.
 
 use core::marker::PhantomData;
+use core::ops::{Deref, DerefMut};
+use core::ptr::NonNull;
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
 
+use super::Error;
 use crate::arch::PAGE_SIZE;
-use crate::sync::Spinlock;
+use crate::sync::{CpuLocal, Spinlock};
+use crate::vm::page::{self, Page};
 
 /// The smallest alignment of a cache's objects: a free one holds a link to
 /// the next.
@@ -29,6 +33,8 @@ pub struct RawCache {
     buffer_size: usize,
     /// How many objects a slab of one page holds.
     buffers_per_slab: usize,
+    /// Each CPU's slabs.
+    cpus: CpuLocal<CpuSlabs>,
 }
 
 impl RawCache {
@@ -46,8 +52,57 @@ impl RawCache {
             align,
             buffer_size,
             buffers_per_slab: PAGE_SIZE / buffer_size,
+            cpus: CpuLocal::new(CpuSlabs {
+                active: None,
+                slabs: 0,
+                objects: 0,
+            }),
         }
     }
+
+    /// Hands out a buffer from this CPU's slab, taking a new slab when it is
+    /// used up.
+    fn allocate(&self) -> Result<NonNull<u8>, Error> {
+        let (page, offset) = {
+            let mut cpu = self.cpus.lock();
+            let slab = match cpu.active {
+                Some(slab) if slab.carved < self.buffers_per_slab => slab,
+                _ => {
+                    let page = page::allocate().ok_or(Error::ResourceShortage)?;
+                    cpu.slabs += 1;
+                    Slab { page, carved: 0 }
+                }
+            };
+            cpu.active = Some(Slab {
+                carved: slab.carved + 1,
+                ..slab
+            });
+            cpu.objects += 1;
+            drop(cpu);
+            (slab.page, slab.carved * self.buffer_size)
+        };
+        Ok(NonNull::new((page.address() + offset).direct_map_ptr()).expect("slab: buffer at null"))
+    }
+}
+
+/// One CPU's share of a cache.
+#[derive(Clone, Copy)]
+struct CpuSlabs {
+    /// The slab it hands objects out from.
+    active: Option<Slab>,
+    /// How many of the cache's slabs it made.
+    slabs: usize,
+    /// How many of the cache's objects it handed out.
+    objects: usize,
+}
+
+/// A page of a cache's objects.
+#[derive(Clone, Copy)]
+struct Slab {
+    /// The page.
+    page: &'static Page,
+    /// How many of its objects were handed out first, from its start.
+    carved: usize,
 }
 
 intrusive_adapter!(
@@ -76,6 +131,41 @@ impl<T> Cache<T> {
     /// Adds the cache to the list of caches.
     pub fn register(&'static self) {
         CACHES.lock().push_back(&self.raw);
+    }
+
+    /// Puts `value` in a new object from the cache.
+    ///
+    /// # Errors
+    ///
+    /// `ResourceShortage` if the cache needs a new slab and no page is free.
+    #[expect(dead_code, reason = "vm_map_enter allocates its entries with it")]
+    pub fn allocate(&'static self, value: T) -> Result<CacheBox<T>, Error> {
+        let object = self.raw.allocate()?.cast::<T>();
+        // SAFETY: the buffer is this object's alone, and aligned and large
+        // enough for a `T`.
+        unsafe { object.write(value) };
+        Ok(CacheBox { object })
+    }
+}
+
+/// An object from a cache, which it owns.
+pub struct CacheBox<T> {
+    object: NonNull<T>,
+}
+
+impl<T> Deref for CacheBox<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        // SAFETY: the object is initialized and this box owns it.
+        unsafe { self.object.as_ref() }
+    }
+}
+
+impl<T> DerefMut for CacheBox<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: the object is initialized and this box owns it.
+        unsafe { self.object.as_mut() }
     }
 }
 
