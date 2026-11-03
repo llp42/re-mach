@@ -4,6 +4,7 @@
 //! The slab allocator: caches of objects of one size.
 
 use core::marker::PhantomData;
+use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
@@ -19,7 +20,7 @@ use crate::vm::page::{self, Page};
 const MIN_ALIGN: usize = 8;
 
 /// A cache's untyped state.
-#[expect(dead_code, reason = "host_slab_info and kmem_cache_alloc read them")]
+#[expect(dead_code, reason = "host_slab_info reads them")]
 pub struct RawCache {
     /// Its place in the list of caches.
     list_link: LinkedListAtomicLink,
@@ -138,7 +139,6 @@ impl<T> Cache<T> {
     /// # Errors
     ///
     /// `ResourceShortage` if the cache needs a new slab and no page is free.
-    #[expect(dead_code, reason = "vm_map_enter allocates its entries with it")]
     pub fn allocate(&'static self, value: T) -> Result<CacheBox<T>, Error> {
         let object = self.raw.allocate()?.cast::<T>();
         // SAFETY: the buffer is this object's alone, and aligned and large
@@ -151,6 +151,14 @@ impl<T> Cache<T> {
 /// An object from a cache, which it owns.
 pub struct CacheBox<T> {
     object: NonNull<T>,
+}
+
+impl<T> CacheBox<T> {
+    /// Gives the object up for good, to a structure that holds objects by
+    /// pointer.
+    pub fn into_raw(this: Self) -> NonNull<T> {
+        ManuallyDrop::new(this).object
+    }
 }
 
 impl<T> Deref for CacheBox<T> {

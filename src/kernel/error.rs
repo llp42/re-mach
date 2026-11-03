@@ -6,6 +6,10 @@
 /// Why a kernel call failed, numbered as Mach's return codes.
 #[derive(Debug)]
 pub enum Error {
+    /// The address is not valid for it.
+    InvalidAddress = 1,
+    /// The range is in use, or no free range is large enough.
+    NoSpace = 3,
     /// A resource it needed could not be allocated, perhaps for now only.
     ResourceShortage = 6,
 }

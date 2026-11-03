@@ -17,8 +17,7 @@ use super::address::PhysAddr;
 use super::boot_memory;
 use super::cpuid;
 use super::memory_layout::{
-    DIRECT_MAP_BASE, KERNEL_BASE, MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE,
-    PAGE_TABLE_BASE,
+    DIRECT_MAP_BASE, KERNEL_BASE, MIN_KERNEL_ADDRESS, PAGE_SIZE, PAGE_TABLE_BASE,
 };
 use crate::sync::OnceLock;
 use crate::vm::pmap::MachinePmap;
@@ -93,14 +92,17 @@ impl MachinePmap for Pmap {
     fn kernel() -> &'static Self {
         KERNEL_PMAP.get().expect("pmap: not bootstrapped")
     }
+
+    fn boot_space() -> Range<usize> {
+        BOOT_SPACE.get().expect("pmap: not bootstrapped").clone()
+    }
 }
 
 /// The kernel's physical map, once `bootstrap` builds it.
 static KERNEL_PMAP: OnceLock<Pmap> = OnceLock::new();
 
-/// Free kernel virtual space above the boot mapping, once `bootstrap`
-/// sets it.
-static VIRTUAL_ABOVE_BOOT: OnceLock<Range<usize>> = OnceLock::new();
+/// The kernel addresses the boot mappings use, once `bootstrap` maps them.
+static BOOT_SPACE: OnceLock<Range<usize>> = OnceLock::new();
 
 /// End of the direct map, once `bootstrap` sets it.
 static DIRECT_MAP_END: OnceLock<usize> = OnceLock::new();
@@ -175,9 +177,7 @@ pub unsafe fn bootstrap() {
     };
     assert!(
         KERNEL_PMAP.set(kernel_pmap).is_ok()
-            && VIRTUAL_ABOVE_BOOT
-                .set(KERNEL_BASE + boot_end..MAX_KERNEL_ADDRESS - PAGE_SIZE + 1)
-                .is_ok()
+            && BOOT_SPACE.set(KERNEL_BASE..KERNEL_BASE + boot_end).is_ok()
             && DIRECT_MAP_END
                 .set(DIRECT_MAP_BASE + direct_map_size)
                 .is_ok(),
