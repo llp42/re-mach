@@ -7,15 +7,16 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use super::host::HOST;
-use super::processor::{DEFAULT_SET, ProcessorSet};
+use super::processor::{BOOT_PROCESSOR, DEFAULT_SET, Processor, ProcessorSet};
 use super::slab::CacheBox;
 use crate::ipc::port::{self, KernelObject, Port};
 
-/// Gives the host and the default set their ports, on the boot CPU.
+/// Gives the host, the default set and the boot processor their ports, on
+/// the boot CPU.
 ///
 /// # Panics
 ///
-/// If a port can't be allocated.
+/// If a port can't be allocated, or before the boot processor is recorded.
 pub fn init() {
     store_port(&HOST.port, Some(KernelObject::Host(&HOST)));
     store_port(
@@ -23,6 +24,24 @@ pub fn init() {
         Some(KernelObject::HostPrivileged(&HOST)),
     );
     init_set(&DEFAULT_SET);
+    init_processor(
+        BOOT_PROCESSOR
+            .get()
+            .expect("ipc_host_init: no boot processor"),
+    );
+}
+
+/// Gives `processor` its ports, standing for it.
+///
+/// # Panics
+///
+/// If a port can't be allocated.
+fn init_processor(processor: &'static Processor) {
+    store_port(&processor.port, Some(KernelObject::Processor(processor)));
+    store_port(
+        &processor.name_port,
+        Some(KernelObject::ProcessorName(processor)),
+    );
 }
 
 /// Gives `set` its ports, standing for it while it is active; no one else

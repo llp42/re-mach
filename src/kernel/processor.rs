@@ -24,6 +24,10 @@ pub struct Processor {
     run_queues: [RunQueue; RUN_QUEUES],
     /// Its place in the action queue.
     action_link: LinkedListAtomicLink,
+    /// Its port, for controlling it.
+    pub(super) port: AtomicPtr<Port>,
+    /// Its name port, for information about it.
+    pub(super) name_port: AtomicPtr<Port>,
 }
 
 intrusive_adapter!(
@@ -47,6 +51,8 @@ impl Processor {
             state: State::Offline,
             run_queues: [const { RunQueue::new(RunQueueAdapter::NEW) }; RUN_QUEUES],
             action_link: LinkedListAtomicLink::new(),
+            port: AtomicPtr::new(ptr::null_mut()),
+            name_port: AtomicPtr::new(ptr::null_mut()),
         }
     }
 }
@@ -88,7 +94,7 @@ pub(super) static DEFAULT_SET: ProcessorSet = ProcessorSet {
 };
 
 /// The boot CPU's processor.
-static BOOT_PROCESSOR: OnceLock<&'static Processor> = OnceLock::new();
+pub(super) static BOOT_PROCESSOR: OnceLock<&'static Processor> = OnceLock::new();
 
 /// Records the boot CPU's processor, on the boot CPU.
 ///
