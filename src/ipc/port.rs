@@ -7,6 +7,7 @@ use core::ptr::NonNull;
 
 use super::space::{self, Space};
 use crate::kernel::Error;
+use crate::kernel::host::Host;
 use crate::kernel::slab::{Cache, CacheBox};
 use crate::vm::object::Object;
 
@@ -35,6 +36,12 @@ impl Port {
 pub enum KernelObject {
     /// A memory object's name port, which names it to `vm_region`.
     PagerName(#[expect(dead_code, reason = "vm_object_lookup_name reads it")] NonNull<Object>),
+    /// The host's port.
+    Host(#[expect(dead_code, reason = "convert_port_to_host reads it")] &'static Host),
+    /// The host's privileged port.
+    HostPrivileged(
+        #[expect(dead_code, reason = "convert_port_to_host_priv reads it")] &'static Host,
+    ),
 }
 
 /// The cache ports come from.

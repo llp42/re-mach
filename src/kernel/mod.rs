@@ -5,6 +5,7 @@
 pub mod console;
 mod error;
 pub mod host;
+pub mod ipc_host;
 pub mod kalloc;
 pub mod machine;
 mod panic;
