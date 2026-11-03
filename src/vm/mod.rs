@@ -48,4 +48,5 @@ pub fn bootstrap() {
 pub fn init() {
     object::init();
     proxy::init();
+    page::print_pools();
 }

@@ -124,6 +124,11 @@ struct PageQueues {
 /// Most low memory kept for DMA.
 const DMA_RESERVE_LIMIT: usize = 256 << 20;
 
+/// The frame the DMA reserve ends before, for a span of `size` bytes.
+fn reserve_end(size: usize) -> usize {
+    DMA_RESERVE_LIMIT.min(size / 4) / PAGE_SIZE
+}
+
 /// Free frames kept for DMA, below `DMA_RESERVE_LIMIT`: a bit per frame
 /// from 0, set when it is free.
 static DMA_RESERVE: Spinlock<[u64; DMA_RESERVE_LIMIT / PAGE_SIZE / 64]> =
@@ -219,7 +224,7 @@ pub fn setup() {
     );
     if let Some(heap) = heap {
         let first = span.start.0 / PAGE_SIZE;
-        let reserved = DMA_RESERVE_LIMIT.min((span.end - span.start) / 4) / PAGE_SIZE;
+        let reserved = reserve_end(span.end - span.start);
         let range = (heap.start - span.start) / PAGE_SIZE..(heap.end - span.start) / PAGE_SIZE;
         for (page, index) in pages[range.clone()].iter().zip(range) {
             let frame = first + index;
@@ -229,6 +234,39 @@ pub fn setup() {
                 QUEUES.free[frame % COLORS].push(page);
             }
         }
+    }
+}
+
+/// Prints each pool's pages and free pages: the DMA reserve, then the rest,
+/// on the boot CPU.
+///
+/// # Panics
+///
+/// If the page array is not set up.
+pub fn print_pools() {
+    let array = PAGES.get().expect("vm_page: not set up");
+    let count = array.pages.len();
+    let dma = reserve_end(count * PAGE_SIZE)
+        .saturating_sub(array.start.0 / PAGE_SIZE)
+        .min(count);
+    let dma_free = {
+        let reserve = DMA_RESERVE.lock();
+        reserve.iter().map(|word| word.count_ones()).sum::<u32>()
+    };
+    let free = QUEUES
+        .free
+        .iter()
+        .map(|queue| queue.pages.load(Ordering::Relaxed))
+        .sum();
+    for (name, pages, free) in [
+        ("DMA", dma, usize::try_from(dma_free).unwrap()),
+        ("DIRECTMAP", count - dma, free),
+    ] {
+        println!(
+            "vm_page: {name}: pages: {pages} ({}M), free: {free} ({}M)",
+            (pages * PAGE_SIZE) >> 20,
+            (free * PAGE_SIZE) >> 20
+        );
     }
 }
 
