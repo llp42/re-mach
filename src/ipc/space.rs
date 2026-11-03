@@ -28,7 +28,6 @@ impl Space {
 pub(super) static CACHE: Cache<Space> = Cache::new("ipc_space");
 
 /// The space of the ports the kernel receives; never in use.
-#[expect(dead_code, reason = "ipc_port_alloc_kernel receives in it")]
 pub static KERNEL_SPACE: Space = Space::special();
 
 /// The space that marks ports receiving kernel replies; never in use.

@@ -42,3 +42,8 @@ pub fn bootstrap() {
     crate::kernel::kalloc::init();
     page::init();
 }
+
+/// Finishes setting up virtual memory once IPC is up, on the boot CPU.
+pub fn init() {
+    object::init();
+}
