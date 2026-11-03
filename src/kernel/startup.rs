@@ -11,7 +11,7 @@ use crate::{ipc, vm};
 /// machine is set up.
 pub fn start() -> ! {
     sched::init();
-    vm::init();
+    vm::bootstrap();
     radix_tree::init();
     ipc::bootstrap();
     arch::Current::halt()

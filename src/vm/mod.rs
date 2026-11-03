@@ -32,8 +32,8 @@ pub enum Inheritance {
     Copy = 1,
 }
 
-/// Sets up virtual memory, on the boot CPU.
-pub fn init() {
+/// Sets up virtual memory before IPC, on the boot CPU.
+pub fn bootstrap() {
     page::setup();
     object::bootstrap();
     map::init();
