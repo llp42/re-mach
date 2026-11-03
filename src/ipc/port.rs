@@ -8,6 +8,7 @@ use core::ptr::NonNull;
 use super::space::{self, Space};
 use crate::kernel::Error;
 use crate::kernel::host::Host;
+use crate::kernel::processor::ProcessorSet;
 use crate::kernel::slab::{Cache, CacheBox};
 use crate::vm::object::Object;
 
@@ -41,6 +42,14 @@ pub enum KernelObject {
     /// The host's privileged port.
     HostPrivileged(
         #[expect(dead_code, reason = "convert_port_to_host_priv reads it")] &'static Host,
+    ),
+    /// A processor set's port.
+    ProcessorSet(
+        #[expect(dead_code, reason = "convert_port_to_pset reads it")] NonNull<ProcessorSet>,
+    ),
+    /// A processor set's name port.
+    ProcessorSetName(
+        #[expect(dead_code, reason = "convert_port_to_pset_name reads it")] NonNull<ProcessorSet>,
     ),
 }
 

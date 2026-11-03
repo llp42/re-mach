@@ -29,8 +29,8 @@ pub fn bootstrap() {
 }
 
 /// Finishes setting up IPC, on the boot CPU: the kernel's IPC map gets an
-/// eighth of memory, and at least `MIN_KERNEL_MAP_SIZE`; then the host's
-/// ports.
+/// eighth of memory, and at least `MIN_KERNEL_MAP_SIZE`; then the ports of
+/// the host and the default set.
 pub fn init() {
     vm::kernel::submap(
         &KERNEL_MAP,
