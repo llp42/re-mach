@@ -40,4 +40,5 @@ pub fn init() {
     kernel::init();
     arch::Pmap::init();
     crate::kernel::kalloc::init();
+    page::init();
 }

@@ -12,6 +12,7 @@ use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter}
 use super::pmap::MachinePmap as _;
 use crate::arch::{self, PAGE_SIZE, PhysAddr};
 use crate::config::MAX_CPUS;
+use crate::kernel::slab::Cache;
 use crate::sync::{BootCell, CpuLocal, OnceLock, Spinlock};
 use crate::{println, smp};
 
@@ -99,6 +100,10 @@ const CPU_COLORS: usize = COLORS / MAX_CPUS;
 /// Each CPU's count of pages taken, which picks its next colour.
 static NEXT_COLOR: CpuLocal<usize> = CpuLocal::new(0);
 
+/// The cache fictitious pages come from: pages outside the page array, such
+/// as placeholders.
+static CACHE: Cache<Page> = Cache::new("vm_page");
+
 /// Physical memory loaded from boot memory.
 struct Loaded {
     /// The memory the page array will cover, holes included.
@@ -184,6 +189,11 @@ pub fn setup() {
             }
         }
     }
+}
+
+/// Sets up the pages' second pass, once the VM is up, on the boot CPU.
+pub fn init() {
+    CACHE.register();
 }
 
 /// Takes a free page, from this CPU's own colours first; `None` when no page
