@@ -17,7 +17,7 @@ use crate::vm::page::{self, Page};
 
 /// The smallest alignment of a cache's objects: a free one holds a link to
 /// the next.
-const MIN_ALIGN: usize = 8;
+pub const MIN_ALIGN: usize = 8;
 
 /// A cache's untyped state.
 #[expect(dead_code, reason = "host_slab_info reads them")]
@@ -32,7 +32,9 @@ pub struct RawCache {
     align: usize,
     /// The space each object takes in a slab.
     buffer_size: usize,
-    /// How many objects a slab of one page holds.
+    /// The size of its slabs.
+    slab_size: usize,
+    /// How many objects a slab holds.
     buffers_per_slab: usize,
     /// Each CPU's slabs.
     cpus: CpuLocal<CpuSlabs>,
@@ -40,25 +42,36 @@ pub struct RawCache {
 
 impl RawCache {
     /// A cache named `name`, of objects of `object_size` bytes aligned to
-    /// `align`.
-    const fn new(name: &'static str, object_size: usize, align: usize) -> Self {
+    /// `align`, on slabs of `slab_size` bytes.
+    pub const fn new(
+        name: &'static str,
+        object_size: usize,
+        align: usize,
+        slab_size: usize,
+    ) -> Self {
         assert!(object_size > 0, "slab: empty objects");
         let align = if align < MIN_ALIGN { MIN_ALIGN } else { align };
         let buffer_size = object_size.next_multiple_of(align);
-        assert!(buffer_size <= PAGE_SIZE, "slab: objects larger than a page");
+        assert!(buffer_size <= slab_size, "slab: objects larger than a slab");
         Self {
             list_link: LinkedListAtomicLink::new(),
             name,
             object_size,
             align,
             buffer_size,
-            buffers_per_slab: PAGE_SIZE / buffer_size,
+            slab_size,
+            buffers_per_slab: slab_size / buffer_size,
             cpus: CpuLocal::new(CpuSlabs {
                 active: None,
                 slabs: 0,
                 objects: 0,
             }),
         }
+    }
+
+    /// Adds the cache to the list of caches.
+    pub fn register(&'static self) {
+        CACHES.lock().push_back(self);
     }
 
     /// Hands out a buffer from this CPU's slab, taking a new slab when it is
@@ -121,17 +134,21 @@ pub struct Cache<T> {
 }
 
 impl<T> Cache<T> {
-    /// A cache named `name`, laid out for `T`.
+    /// A cache named `name`, laid out for `T`, on slabs of one page.
     pub const fn new(name: &'static str) -> Self {
+        assert!(
+            size_of::<T>() <= PAGE_SIZE,
+            "slab: objects larger than a page"
+        );
         Self {
-            raw: RawCache::new(name, size_of::<T>(), align_of::<T>()),
+            raw: RawCache::new(name, size_of::<T>(), align_of::<T>(), PAGE_SIZE),
             marker: PhantomData,
         }
     }
 
     /// Adds the cache to the list of caches.
     pub fn register(&'static self) {
-        CACHES.lock().push_back(&self.raw);
+        self.raw.register();
     }
 
     /// Puts `value` in a new object from the cache.
