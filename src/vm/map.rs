@@ -7,16 +7,49 @@ use core::ops::Range;
 
 use intrusive_collections::{RBTree, RBTreeAtomicLink, UnsafeRef, intrusive_adapter};
 
+use crate::arch::Pmap;
 use crate::kernel::slab::Cache;
+use crate::sync::SleepLock;
 
 /// An address map: ranges of virtual memory and what they map; so far only
-/// its entries and bounds.
-#[expect(dead_code, reason = "vm_map_setup and vm_map_enter use them")]
+/// what a new map sets.
+#[expect(
+    dead_code,
+    reason = "vm_map_enter, pmap_enter and vm_map_reference read them"
+)]
 pub struct Map {
-    /// Its entries, by address.
-    entries: RBTree<EntryAdapter>,
     /// The addresses it may map.
     bounds: Range<usize>,
+    /// The physical map its mappings go into.
+    pmap: &'static Pmap,
+    /// How many references it has.
+    references: u32,
+    /// What changes as it maps and unmaps, behind its lock.
+    contents: SleepLock<Contents>,
+}
+
+/// What a map's lock guards.
+#[expect(dead_code, reason = "vm_map_enter reads them")]
+struct Contents {
+    /// Its entries, by address.
+    entries: RBTree<EntryAdapter>,
+    /// How much it maps, in bytes.
+    size: usize,
+}
+
+impl Map {
+    /// An empty map of `bounds` over `pmap`, with one reference.
+    pub const fn new(pmap: &'static Pmap, bounds: Range<usize>) -> Self {
+        Self {
+            bounds,
+            pmap,
+            references: 1,
+            contents: SleepLock::new(Contents {
+                entries: RBTree::new(EntryAdapter::NEW),
+                size: 0,
+            }),
+        }
+    }
 }
 
 /// A range of a map and what it maps; so far only the range and its place in

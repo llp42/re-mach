@@ -7,4 +7,7 @@ pub trait MachinePmap {
     /// Takes `size` bytes of physical memory for good, before the page
     /// allocator runs; returns where the kernel reaches them.
     fn steal_memory(size: usize) -> *mut u8;
+
+    /// The kernel's physical map.
+    fn kernel() -> &'static Self;
 }

@@ -89,14 +89,14 @@ impl MachinePmap for Pmap {
     fn steal_memory(size: usize) -> *mut u8 {
         boot_memory::steal_pages(size.div_ceil(PAGE_SIZE)).direct_map_ptr()
     }
+
+    fn kernel() -> &'static Self {
+        KERNEL_PMAP.get().expect("pmap: not bootstrapped")
+    }
 }
 
 /// The kernel's physical map, once `bootstrap` builds it.
 static KERNEL_PMAP: OnceLock<Pmap> = OnceLock::new();
-
-/// Free kernel virtual space below the kernel window.
-#[expect(dead_code, reason = "the VM takes it")]
-const VIRTUAL_BELOW_KERNEL: Range<usize> = MIN_KERNEL_ADDRESS..KERNEL_BASE;
 
 /// Free kernel virtual space above the boot mapping, once `bootstrap`
 /// sets it.
