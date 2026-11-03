@@ -4,6 +4,7 @@
 //! Address maps.
 
 use core::ops::Range;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use intrusive_collections::{
     Bound, KeyAdapter, RBTree, RBTreeAtomicLink, UnsafeRef, intrusive_adapter,
@@ -33,6 +34,11 @@ pub struct Map {
 struct Contents {
     /// Its entries, by address.
     entries: RBTree<EntryAdapter>,
+    /// The entries free space follows, by its size, then by address.
+    gaps: RBTree<GapAdapter>,
+    /// The free space before the first entry; all of the map while it is
+    /// empty.
+    leading_gap: usize,
     /// How much it maps, in bytes.
     size: usize,
 }
@@ -40,12 +46,15 @@ struct Contents {
 impl Map {
     /// An empty map of `bounds` over `pmap`, with one reference.
     pub const fn new(pmap: &'static Pmap, bounds: Range<usize>) -> Self {
+        let leading_gap = bounds.end - bounds.start;
         Self {
             bounds,
             pmap,
             references: 1,
             contents: SleepLock::new(Contents {
                 entries: RBTree::new(EntryAdapter::NEW),
+                gaps: RBTree::new(GapAdapter::NEW),
+                leading_gap,
                 size: 0,
             }),
         }
@@ -81,18 +90,45 @@ impl Map {
         {
             return Err(Error::NoSpace);
         }
-        let size = range.end - range.start;
+        let previous = below.clone_pointer();
+        let next = above
+            .get()
+            .map_or(self.bounds.end, |entry| entry.range.start);
+        let (start, size, gap) = (range.start, range.end - range.start, next - range.end);
         let entry = ENTRY_CACHE.allocate(Entry {
             tree_link: RBTreeAtomicLink::new(),
+            gap_link: RBTreeAtomicLink::new(),
             range,
+            gap: AtomicUsize::new(gap),
             protection,
             max_protection,
             inheritance,
         })?;
-        // SAFETY: the tree takes the entry for good.
+        // The entry now ends the gap after the one before it, or the leading
+        // gap.
+        match previous {
+            Some(previous) => {
+                if previous.gap_link.is_linked() {
+                    let key = (previous.gap.load(Ordering::Relaxed), previous.range.start);
+                    contents.gaps.find_mut(&key).remove();
+                }
+                let previous_gap = start - previous.range.end;
+                previous.gap.store(previous_gap, Ordering::Relaxed);
+                if previous_gap != 0 {
+                    contents.gaps.insert(previous);
+                }
+            }
+            None => contents.leading_gap = start - self.bounds.start,
+        }
+        let entry = CacheBox::into_raw(entry).as_ptr();
+        // SAFETY: the trees take the entry for good, once each.
         contents
             .entries
-            .insert(unsafe { UnsafeRef::from_raw(CacheBox::into_raw(entry).as_ptr()) });
+            .insert(unsafe { UnsafeRef::from_raw(entry) });
+        if gap != 0 {
+            // SAFETY: as above.
+            contents.gaps.insert(unsafe { UnsafeRef::from_raw(entry) });
+        }
         contents.size += size;
         drop(contents);
         Ok(())
@@ -104,8 +140,13 @@ impl Map {
 pub struct Entry {
     /// Its place in its map's tree.
     tree_link: RBTreeAtomicLink,
+    /// Its place in its map's gap tree, while free space follows it.
+    gap_link: RBTreeAtomicLink,
     /// The addresses it covers.
     range: Range<usize>,
+    /// The free space after it, up to the next entry or the map's end;
+    /// changed only under the map's write lock.
+    gap: AtomicUsize,
     /// What it allows now.
     #[expect(dead_code, reason = "vm_fault and vm_map_protect read it")]
     protection: Protection,
@@ -130,6 +171,22 @@ impl<'a> KeyAdapter<'a> for EntryAdapter {
 
     fn get_key(&self, entry: &'a Entry) -> usize {
         entry.range.start
+    }
+}
+
+intrusive_adapter!(
+    #[expect(
+        clippy::expl_impl_clone_on_copy,
+        reason = "intrusive_adapter! writes Clone by hand"
+    )]
+    GapAdapter = UnsafeRef<Entry>: Entry { gap_link => RBTreeAtomicLink }
+);
+
+impl<'a> KeyAdapter<'a> for GapAdapter {
+    type Key = (usize, usize);
+
+    fn get_key(&self, entry: &'a Entry) -> (usize, usize) {
+        (entry.gap.load(Ordering::Relaxed), entry.range.start)
     }
 }
 
