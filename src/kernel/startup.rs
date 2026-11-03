@@ -5,7 +5,7 @@
 
 use super::{radix_tree, sched};
 use crate::arch::{self, Machine as _};
-use crate::vm;
+use crate::{ipc, vm};
 
 /// Starts the machine-independent kernel, on the boot CPU, once the
 /// machine is set up.
@@ -13,5 +13,6 @@ pub fn start() -> ! {
     sched::init();
     vm::init();
     radix_tree::init();
+    ipc::bootstrap();
     arch::Current::halt()
 }
