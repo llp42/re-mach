@@ -82,6 +82,11 @@ impl RawCache {
             let slab = match cpu.active {
                 Some(slab) if slab.carved < self.buffers_per_slab => slab,
                 _ => {
+                    // Kalloc's larger slabs come with kalloc.
+                    assert!(
+                        self.slab_size == PAGE_SIZE,
+                        "slab: only one-page slabs are carved yet"
+                    );
                     let page = page::allocate().ok_or(Error::ResourceShortage)?;
                     cpu.slabs += 1;
                     Slab { page, carved: 0 }
