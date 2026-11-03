@@ -3,6 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Virtual memory.
 
+pub mod kernel;
 pub mod map;
 pub mod object;
 pub mod page;
@@ -13,4 +14,5 @@ pub fn init() {
     page::setup();
     object::bootstrap();
     map::init();
+    kernel::init();
 }

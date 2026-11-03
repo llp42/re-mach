@@ -134,6 +134,13 @@ SPDX-FileContributor: Avadis Tevanian, Jr.
 SPDX-FileContributor: Michael Wayne Young
 SPDX-License-Identifier: LicenseRef-CMU-CSL
 
+SPDX-FileName: vm/vm_kern.c
+SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
+SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
+SPDX-FileContributor: Avadis Tevanian, Jr.
+SPDX-FileContributor: Michael Wayne Young
+SPDX-License-Identifier: LicenseRef-CMU-CSL
+
 SPDX-FileName: vm/vm_map.c
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
 SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
