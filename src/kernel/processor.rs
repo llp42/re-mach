@@ -3,10 +3,14 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Processors and processor sets.
 
+use core::ptr;
+use core::sync::atomic::{AtomicPtr, AtomicU32};
+
 use intrusive_collections::{LinkedListAtomicLink, intrusive_adapter};
 
 use super::sched::{LOAD_SCALE, MIN_QUANTUM, Policies, RUN_QUEUES, RunQueue, SYSTEM_PRIORITY};
 use super::thread::RunQueueAdapter;
+use crate::ipc::port::Port;
 use crate::smp;
 use crate::sync::OnceLock;
 
@@ -51,11 +55,11 @@ impl Processor {
 #[expect(dead_code, reason = "processor_set_info and thread_create read them")]
 pub struct ProcessorSet {
     /// Whether it is in use; a destroyed set is not.
-    active: bool,
+    pub(super) active: bool,
     /// Whether it has no processor; threads created in it start suspended.
     empty: bool,
     /// How many references it has.
-    references: u32,
+    pub(super) references: AtomicU32,
     /// The highest priority its threads may take.
     max_priority: u32,
     /// The policies its threads may use.
@@ -64,18 +68,23 @@ pub struct ProcessorSet {
     quantum: u32,
     /// Its load, scaled by `LOAD_SCALE`.
     load: u32,
+    /// Its port, for controlling it.
+    pub(super) port: AtomicPtr<Port>,
+    /// Its name port, for information about it.
+    pub(super) name_port: AtomicPtr<Port>,
 }
 
 /// The default set, where every processor and thread starts.
-#[expect(dead_code, reason = "processor_set_info and thread_create read it")]
-static DEFAULT_SET: ProcessorSet = ProcessorSet {
+pub(super) static DEFAULT_SET: ProcessorSet = ProcessorSet {
     active: true,
     empty: true,
-    references: 1,
+    references: AtomicU32::new(1),
     max_priority: SYSTEM_PRIORITY,
     policies: Policies::TIMESHARE,
     quantum: MIN_QUANTUM,
     load: LOAD_SCALE,
+    port: AtomicPtr::new(ptr::null_mut()),
+    name_port: AtomicPtr::new(ptr::null_mut()),
 };
 
 /// The boot CPU's processor.
