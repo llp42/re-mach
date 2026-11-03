@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
+// Inspired by GNU Mach; see COPYRIGHT.
 //! Physical maps.
 
 use core::arch::asm;
@@ -19,6 +20,7 @@ use super::cpuid;
 use super::memory_layout::{
     DIRECT_MAP_BASE, KERNEL_BASE, MIN_KERNEL_ADDRESS, PAGE_SIZE, PAGE_TABLE_BASE,
 };
+use crate::kernel::slab::Cache;
 use crate::sync::OnceLock;
 use crate::vm::pmap::MachinePmap;
 
@@ -96,7 +98,14 @@ impl MachinePmap for Pmap {
     fn boot_space() -> Range<usize> {
         BOOT_SPACE.get().expect("pmap: not bootstrapped").clone()
     }
+
+    fn init() {
+        CACHE.register();
+    }
 }
+
+/// The cache pmaps come from.
+static CACHE: Cache<Pmap> = Cache::new("pmap");
 
 /// The kernel's physical map, once `bootstrap` builds it.
 static KERNEL_PMAP: OnceLock<Pmap> = OnceLock::new();

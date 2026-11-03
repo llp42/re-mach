@@ -9,6 +9,10 @@ pub mod object;
 pub mod page;
 pub mod pmap;
 
+use pmap::MachinePmap as _;
+
+use crate::arch;
+
 bitflags::bitflags! {
     /// What memory allows, as Mach's interface numbers it.
     pub struct Protection: u32 {
@@ -34,4 +38,5 @@ pub fn init() {
     object::bootstrap();
     map::init();
     kernel::init();
+    arch::Pmap::init();
 }
