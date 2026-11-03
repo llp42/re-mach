@@ -188,7 +188,6 @@ pub fn setup() {
 
 /// Takes a free page, from this CPU's own colours first; `None` when no page
 /// is free.
-#[expect(dead_code, reason = "kmem_cache_alloc takes its pages from it")]
 pub fn allocate() -> Option<&'static Page> {
     let first = {
         let mut next = NEXT_COLOR.lock();

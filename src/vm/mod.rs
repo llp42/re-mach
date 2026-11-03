@@ -9,6 +9,25 @@ pub mod object;
 pub mod page;
 pub mod pmap;
 
+bitflags::bitflags! {
+    /// What memory allows, as Mach's interface numbers it.
+    pub struct Protection: u32 {
+        /// Reading it.
+        const READ = 1;
+        /// Writing it.
+        const WRITE = 2;
+        /// Running it.
+        const EXECUTE = 4;
+    }
+}
+
+/// What a child task gets of memory, as Mach's interface numbers it; only
+/// the values used here.
+pub enum Inheritance {
+    /// A copy of it.
+    Copy = 1,
+}
+
 /// Sets up virtual memory, on the boot CPU.
 pub fn init() {
     page::setup();
