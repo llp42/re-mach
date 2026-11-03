@@ -21,7 +21,8 @@ use crate::smp::{self, MachinePerCpu};
 use crate::sync::OnceLock;
 
 /// One CPU's machine-dependent data, holding its machine-independent part;
-/// the GS base points at the current CPU's.
+/// the GS base points at the current CPU's. Each starts its own cache line.
+#[repr(align(64))]
 pub struct PerCpu {
     /// Itself, read through the GS base; set by `init` before the GS base
     /// points here.
