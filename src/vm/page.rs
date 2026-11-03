@@ -11,8 +11,9 @@ use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter}
 
 use super::pmap::MachinePmap as _;
 use crate::arch::{self, PAGE_SIZE, PhysAddr};
-use crate::println;
-use crate::sync::{BootCell, OnceLock, Spinlock};
+use crate::config::MAX_CPUS;
+use crate::sync::{BootCell, CpuLocal, OnceLock, Spinlock};
+use crate::{println, smp};
 
 /// A physical page.
 pub struct Page {
@@ -81,6 +82,12 @@ static QUEUES: PageQueues = PageQueues {
     inactive: [const { PageQueue::new(LinkedList::new(PageQueueAdapter::NEW)) }; COLORS],
     active: [const { PageQueue::new(LinkedList::new(PageQueueAdapter::NEW)) }; COLORS],
 };
+
+/// How many colours each CPU looks at first.
+const CPU_COLORS: usize = COLORS / MAX_CPUS;
+
+/// Each CPU's count of pages taken, which picks its next colour.
+static NEXT_COLOR: CpuLocal<usize> = CpuLocal::new(0);
 
 /// Physical memory loaded from boot memory.
 struct Loaded {
@@ -167,4 +174,17 @@ pub fn setup() {
             }
         }
     }
+}
+
+/// Takes a free page, from this CPU's own colours first; `None` when no page
+/// is free.
+#[expect(dead_code, reason = "kmem_cache_alloc takes its pages from it")]
+pub fn allocate() -> Option<&'static Page> {
+    let first = {
+        let mut next = NEXT_COLOR.lock();
+        let first = smp::current().id() * CPU_COLORS + *next % CPU_COLORS;
+        *next += 1;
+        first
+    };
+    (0..COLORS).find_map(|offset| QUEUES.free[(first + offset) % COLORS].lock().pop_front())
 }
