@@ -14,5 +14,23 @@ pub struct Space {
     active: bool,
 }
 
+impl Space {
+    /// A special space: one reference, never in use.
+    const fn special() -> Self {
+        Self {
+            references: 1,
+            active: false,
+        }
+    }
+}
+
 /// The cache spaces come from.
 pub(super) static CACHE: Cache<Space> = Cache::new("ipc_space");
+
+/// The space of the ports the kernel receives; never in use.
+#[expect(dead_code, reason = "ipc_port_alloc_kernel receives in it")]
+pub static KERNEL_SPACE: Space = Space::special();
+
+/// The space that marks ports receiving kernel replies; never in use.
+#[expect(dead_code, reason = "kernel replies mark their ports with it")]
+pub static REPLY_SPACE: Space = Space::special();
