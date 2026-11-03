@@ -9,6 +9,7 @@ mod arch;
 mod boot;
 mod collections;
 mod config;
+mod ipc;
 mod kernel;
 mod smp;
 mod sync;
