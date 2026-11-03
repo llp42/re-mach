@@ -10,6 +10,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use lock_api::{GuardNoSend, MutexGuard, RawMutex};
 
+use super::CachePadded;
 use super::critical_section::{CriticalSection, crit_enter, crit_exit};
 use crate::config::MAX_CPUS;
 use crate::smp;
@@ -53,20 +54,25 @@ unsafe impl RawMutex for RawCpuLock {
 /// One CPU's slot.
 type Slot<T> = lock_api::Mutex<RawCpuLock, T>;
 
-/// Data with a slot per CPU, each reached only by its own CPU.
-pub struct CpuLocal<T>([Slot<T>; MAX_CPUS]);
+/// Data with a slot per CPU, each reached only by its own CPU, and each on
+/// its own cache lines.
+pub struct CpuLocal<T>([CachePadded<Slot<T>>; MAX_CPUS]);
 
 impl<T: Copy> CpuLocal<T> {
     /// Every CPU's slot holding `value`.
     pub const fn new(value: T) -> Self {
-        let mut slots = [const { MaybeUninit::<Slot<T>>::uninit() }; MAX_CPUS];
+        let mut slots = [const { MaybeUninit::<CachePadded<Slot<T>>>::uninit() }; MAX_CPUS];
         let mut cpu = 0;
         while cpu < MAX_CPUS {
-            slots[cpu] = MaybeUninit::new(Slot::new(value));
+            slots[cpu] = MaybeUninit::new(CachePadded::new(Slot::new(value)));
             cpu += 1;
         }
         // SAFETY: the loop wrote every slot.
-        Self(unsafe { ptr::from_ref(&slots).cast::<[Slot<T>; MAX_CPUS]>().read() })
+        Self(unsafe {
+            ptr::from_ref(&slots)
+                .cast::<[CachePadded<Slot<T>>; MAX_CPUS]>()
+                .read()
+        })
     }
 }
 
