@@ -78,6 +78,11 @@ impl PerCpu {
     pub fn in_critical_section(&self) -> bool {
         self.critical_nesting.load(Ordering::Relaxed) != 0
     }
+
+    /// Whether this CPU is in an interrupt handler.
+    pub fn in_interrupt(&self) -> bool {
+        self.interrupt_nesting.load(Ordering::Relaxed) != 0
+    }
 }
 
 /// An interrupt handler running on its CPU; dropping it leaves the handler.

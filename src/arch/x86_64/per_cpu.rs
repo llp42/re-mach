@@ -161,9 +161,18 @@ impl MachinePerCpu for PerCpu {
     }
 
     fn run_pending_interrupts(&self) {
-        while let Some(vector) = interrupts::without_interrupts(|| self.take_pending()) {
-            self.common.enter_critical();
+        // Taking a vector and entering the section in one window keeps a
+        // newer interrupt from running before an older one held back.
+        while let Some(vector) = interrupts::without_interrupts(|| {
+            let vector = self.take_pending();
+            if vector.is_some() {
+                self.common.enter_critical();
+            }
+            vector
+        }) {
+            let interrupt = self.common.enter_interrupt();
             interrupt::handle(vector, None);
+            drop(interrupt);
             self.common.leave_critical();
         }
     }
