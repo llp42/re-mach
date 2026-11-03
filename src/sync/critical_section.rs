@@ -35,10 +35,11 @@ pub(super) fn crit_enter() {
     smp::current().enter_critical();
 }
 
-/// Lowers it; leaving the outermost runs the interrupts held back.
+/// Lowers it; leaving the outermost runs the interrupts held back, unless
+/// in an interrupt handler, where they wait for the context it interrupted.
 pub(super) fn crit_exit() {
     let cpu = arch::PerCpu::current();
-    if cpu.common().leave_critical() {
+    if cpu.common().leave_critical() && !cpu.common().in_interrupt() {
         cpu.run_pending_interrupts();
     }
 }
