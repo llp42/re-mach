@@ -6,7 +6,7 @@ use core::arch::asm;
 use core::cell::Cell;
 use core::mem::{self, MaybeUninit, offset_of};
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 
 use raw_cpuid::CpuId;
 use x86_64::VirtAddr;
@@ -35,6 +35,9 @@ pub struct PerCpu {
     tss: Cell<TaskStateSegment>,
     /// The interrupts its critical sections held back, a bit per vector.
     pending_interrupts: [AtomicU64; 4],
+    /// Whether any interrupt is held back, so leaving a section needs one
+    /// load to know there is nothing to run.
+    interrupts_held: AtomicBool,
 }
 
 // SAFETY: only its own CPU touches the TSS.
@@ -77,6 +80,7 @@ impl PerCpu {
             gdt: OnceLock::new(),
             tss: Cell::new(TaskStateSegment::new()),
             pending_interrupts: [const { AtomicU64::new(0) }; 4],
+            interrupts_held: AtomicBool::new(false),
         }
     }
 
@@ -121,12 +125,15 @@ impl PerCpu {
             word.load(Ordering::Relaxed) | 1 << (vector % 64),
             Ordering::Relaxed,
         );
+        self.interrupts_held.store(true, Ordering::Relaxed);
         true
     }
 
-    /// Takes this CPU's lowest pending vector, if any; with interrupts off.
+    /// Takes this CPU's lowest pending vector, if any, noting when none is
+    /// left; with interrupts off.
     fn take_pending(&self) -> Option<usize> {
-        self.pending_interrupts
+        let vector = self
+            .pending_interrupts
             .iter()
             .enumerate()
             .find_map(|(index, word)| {
@@ -136,7 +143,11 @@ impl PerCpu {
                     word.store(bits & !(1 << bit), Ordering::Relaxed);
                     index * 64 + usize::try_from(bit).unwrap()
                 })
-            })
+            });
+        if vector.is_none() {
+            self.interrupts_held.store(false, Ordering::Relaxed);
+        }
+        vector
     }
 }
 
@@ -161,6 +172,11 @@ impl MachinePerCpu for PerCpu {
     }
 
     fn run_pending_interrupts(&self) {
+        // The nesting is 0 by now, so an interrupt arriving after this load
+        // is handled at once, not held.
+        if !self.interrupts_held.load(Ordering::Relaxed) {
+            return;
+        }
         // Taking a vector and entering the section in one window keeps a
         // newer interrupt from running before an older one held back.
         while let Some(vector) = interrupts::without_interrupts(|| {
