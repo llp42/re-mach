@@ -5,6 +5,7 @@
 
 use core::mem::MaybeUninit;
 use core::ops::Range;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{ptr, slice};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
@@ -13,7 +14,7 @@ use super::pmap::MachinePmap as _;
 use crate::arch::{self, PAGE_SIZE, PhysAddr};
 use crate::config::MAX_CPUS;
 use crate::kernel::slab::Cache;
-use crate::sync::{BootCell, CpuLocal, OnceLock, Spinlock};
+use crate::sync::{BootCell, CachePadded, CpuLocal, OnceLock, Spinlock};
 use crate::{println, smp};
 
 /// A physical page.
@@ -66,18 +67,58 @@ intrusive_adapter!(
 );
 
 /// The pages of one colour on one queue.
-type PageQueue = Spinlock<LinkedList<PageQueueAdapter>>;
+struct PageQueue {
+    /// How many pages its list holds; changed only under the list's lock,
+    /// and read without it to pass an empty queue by.
+    pages: AtomicUsize,
+    /// The pages.
+    list: Spinlock<LinkedList<PageQueueAdapter>>,
+}
 
-/// The page queues, a list per colour each.
+impl PageQueue {
+    /// An empty one.
+    const fn new() -> Self {
+        Self {
+            pages: AtomicUsize::new(0),
+            list: Spinlock::new(LinkedList::new(PageQueueAdapter::NEW)),
+        }
+    }
+
+    /// Puts `page` at its end.
+    fn push(&self, page: &'static Page) {
+        let mut list = self.list.lock();
+        list.push_back(page);
+        // The count changes only under the lock.
+        self.pages
+            .store(self.pages.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+        drop(list);
+    }
+
+    /// Takes its first page; an empty queue is passed by without its lock.
+    fn pop(&self) -> Option<&'static Page> {
+        if self.pages.load(Ordering::Relaxed) == 0 {
+            return None;
+        }
+        let mut list = self.list.lock();
+        let page = list.pop_front()?;
+        // The count changes only under the lock.
+        self.pages
+            .store(self.pages.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
+        drop(list);
+        Some(page)
+    }
+}
+
+/// The page queues, a list per colour each, each on its own cache lines.
 struct PageQueues {
     /// Free pages.
-    free: [PageQueue; COLORS],
+    free: [CachePadded<PageQueue>; COLORS],
     /// Pages in use, not referenced lately.
     #[expect(dead_code, reason = "pageout moves pages through it")]
-    inactive: [PageQueue; COLORS],
+    inactive: [CachePadded<PageQueue>; COLORS],
     /// Pages in use, referenced lately.
     #[expect(dead_code, reason = "pageout moves pages through it")]
-    active: [PageQueue; COLORS],
+    active: [CachePadded<PageQueue>; COLORS],
 }
 
 /// Most low memory kept for DMA.
@@ -89,9 +130,9 @@ static DMA_RESERVE: Spinlock<[u64; DMA_RESERVE_LIMIT / PAGE_SIZE / 64]> =
     Spinlock::new([0; DMA_RESERVE_LIMIT / PAGE_SIZE / 64]);
 
 static QUEUES: PageQueues = PageQueues {
-    free: [const { PageQueue::new(LinkedList::new(PageQueueAdapter::NEW)) }; COLORS],
-    inactive: [const { PageQueue::new(LinkedList::new(PageQueueAdapter::NEW)) }; COLORS],
-    active: [const { PageQueue::new(LinkedList::new(PageQueueAdapter::NEW)) }; COLORS],
+    free: [const { CachePadded::new(PageQueue::new()) }; COLORS],
+    inactive: [const { CachePadded::new(PageQueue::new()) }; COLORS],
+    active: [const { CachePadded::new(PageQueue::new()) }; COLORS],
 };
 
 /// How many colours each CPU looks at first.
@@ -185,7 +226,7 @@ pub fn setup() {
             if frame < reserved {
                 DMA_RESERVE.lock()[frame / 64] |= 1 << (frame % 64);
             } else {
-                QUEUES.free[frame % COLORS].lock().push_back(page);
+                QUEUES.free[frame % COLORS].push(page);
             }
         }
     }
@@ -205,5 +246,5 @@ pub fn allocate() -> Option<&'static Page> {
         *next += 1;
         first
     };
-    (0..COLORS).find_map(|offset| QUEUES.free[(first + offset) % COLORS].lock().pop_front())
+    (0..COLORS).find_map(|offset| QUEUES.free[(first + offset) % COLORS].pop())
 }
