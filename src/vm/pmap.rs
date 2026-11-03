@@ -15,4 +15,7 @@ pub trait MachinePmap {
 
     /// The kernel addresses the boot mappings use.
     fn boot_space() -> Range<usize>;
+
+    /// Sets up what physical maps need, once the kernel map is up.
+    fn init();
 }
