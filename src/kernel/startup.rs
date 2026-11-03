@@ -15,5 +15,6 @@ pub fn start() -> ! {
     radix_tree::init();
     ipc::bootstrap();
     vm::init();
+    ipc::init();
     arch::Current::halt()
 }

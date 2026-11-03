@@ -270,6 +270,15 @@ pub fn print_pools() {
     }
 }
 
+/// The bytes the page array covers, holes included.
+///
+/// # Panics
+///
+/// If the page array is not set up.
+pub fn span_size() -> usize {
+    PAGES.get().expect("vm_page: not set up").pages.len() * PAGE_SIZE
+}
+
 /// Sets up the pages' second pass, once the VM is up, on the boot CPU.
 pub fn init() {
     CACHE.register();
