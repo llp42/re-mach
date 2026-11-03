@@ -10,11 +10,12 @@ use intrusive_collections::{
     Bound, KeyAdapter, RBTree, RBTreeAtomicLink, UnsafeRef, intrusive_adapter,
 };
 
+use super::pmap::MachinePmap as _;
 use super::{Inheritance, Protection};
 use crate::arch::Pmap;
 use crate::kernel::Error;
 use crate::kernel::slab::{Cache, CacheBox};
-use crate::sync::SleepLock;
+use crate::sync::{OnceLock, SleepLock};
 
 /// An address map: ranges of virtual memory and what they map; so far only
 /// what a new map sets.
@@ -103,6 +104,47 @@ impl Map {
             protection,
             max_protection,
             inheritance,
+            backing: None,
+        })?;
+        contents.link(self.bounds.start, previous, entry);
+        drop(contents);
+        Ok(())
+    }
+
+    /// Maps a new submap of `size` bytes wherever it fits, over this map's
+    /// physical map, and sets `submap` to it.
+    ///
+    /// # Errors
+    ///
+    /// `NoSpace` if no free space fits it, and `ResourceShortage` if no
+    /// entry can be allocated, which leaves `submap` set.
+    ///
+    /// # Panics
+    ///
+    /// If `submap` is set already.
+    pub fn enter_submap(&self, size: usize, submap: &'static OnceLock<Self>) -> Result<(), Error> {
+        let mut contents = self.contents.write();
+        let (previous, start) = contents.find_space(self.bounds.start, size)?;
+        let next = previous
+            .as_ref()
+            .map_or(self.bounds.start + contents.leading_gap, |entry| {
+                entry.range.end + entry.gap.load(Ordering::Relaxed)
+            });
+        let range = start..start + size;
+        self.pmap.reference();
+        assert!(
+            submap.set(Self::new(self.pmap, range.clone())).is_ok(),
+            "vm_map: submap set twice"
+        );
+        let entry = ENTRY_CACHE.allocate(Entry {
+            tree_link: RBTreeAtomicLink::new(),
+            gap_link: RBTreeAtomicLink::new(),
+            gap: AtomicUsize::new(next - range.end),
+            range,
+            protection: Protection::READ | Protection::WRITE,
+            max_protection: Protection::all(),
+            inheritance: Inheritance::Copy,
+            backing: submap.get().map(Backing::Submap),
         })?;
         contents.link(self.bounds.start, previous, entry);
         drop(contents);
@@ -111,6 +153,22 @@ impl Map {
 }
 
 impl Contents {
+    /// Where `size` bytes fit, and the entry they would follow: after the
+    /// smallest gap that holds them, the lowest among equals, or else at the
+    /// map's `start`, if the leading gap holds them.
+    fn find_space(
+        &self,
+        start: usize,
+        size: usize,
+    ) -> Result<(Option<UnsafeRef<Entry>>, usize), Error> {
+        let fit = self.gaps.lower_bound(Bound::Included(&(size, 0)));
+        match fit.get() {
+            Some(entry) => Ok((fit.clone_pointer(), entry.range.end)),
+            None if self.leading_gap >= size => Ok((None, start)),
+            None => Err(Error::NoSpace),
+        }
+    }
+
     /// Links `entry` after `previous`, or first, keeping the gaps and size
     /// up to date; it fits between `previous` and the entry after it, or
     /// the map's `start` and end.
@@ -144,7 +202,7 @@ impl Contents {
 }
 
 /// A range of a map and what it maps; so far only what an entry with no
-/// object sets.
+/// object or a submap sets.
 pub struct Entry {
     /// Its place in its map's tree.
     tree_link: RBTreeAtomicLink,
@@ -164,6 +222,16 @@ pub struct Entry {
     /// What a child task gets of it.
     #[expect(dead_code, reason = "vm_map_fork reads it")]
     inheritance: Inheritance,
+    /// What backs it; nothing while it is only reserved.
+    #[expect(dead_code, reason = "vm_map_lookup and vm_fault read it")]
+    backing: Option<Backing>,
+}
+
+/// What backs an entry; only the kinds used here.
+pub enum Backing {
+    /// A map of its own over the same physical map, such as the kernel's
+    /// IPC buffers.
+    Submap(#[expect(dead_code, reason = "vm_map_lookup descends into it")] &'static Map),
 }
 
 intrusive_adapter!(

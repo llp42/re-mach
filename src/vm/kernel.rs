@@ -31,3 +31,17 @@ pub fn init() {
     }
     assert!(KERNEL_MAP.set(map).is_ok(), "kmem_init: set up twice");
 }
+
+/// Makes `submap` a submap of the kernel map of `size` bytes, rounded up to
+/// pages, on the boot CPU.
+///
+/// # Panics
+///
+/// If the kernel map is not set up or has no room for it, or if `submap`
+/// is set already.
+pub fn submap(submap: &'static OnceLock<Map>, size: usize) {
+    let map = KERNEL_MAP.get().expect("kmem_submap: no kernel map");
+    if let Err(error) = map.enter_submap(size.next_multiple_of(PAGE_SIZE), submap) {
+        panic!("kmem_submap: vm_map_enter failed: {error:?}");
+    }
+}

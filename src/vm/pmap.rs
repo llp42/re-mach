@@ -13,6 +13,9 @@ pub trait MachinePmap {
     /// The kernel's physical map.
     fn kernel() -> &'static Self;
 
+    /// Takes a reference on it.
+    fn reference(&self);
+
     /// The kernel addresses the boot mappings use.
     fn boot_space() -> Range<usize>;
 

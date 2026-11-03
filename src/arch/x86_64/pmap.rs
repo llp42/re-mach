@@ -6,7 +6,7 @@
 use core::arch::asm;
 use core::ops::Range;
 use core::slice;
-use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use x86_64::instructions::tlb;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr3Flags, Cr4, Cr4Flags};
@@ -93,6 +93,10 @@ impl MachinePmap for Pmap {
 
     fn kernel() -> &'static Self {
         KERNEL_PMAP.get().expect("pmap: not bootstrapped")
+    }
+
+    fn reference(&self) {
+        self.reference_count.fetch_add(1, Ordering::Relaxed);
     }
 
     fn boot_space() -> Range<usize> {
