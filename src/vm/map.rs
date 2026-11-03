@@ -94,7 +94,7 @@ impl Map {
         let next = above
             .get()
             .map_or(self.bounds.end, |entry| entry.range.start);
-        let (start, size, gap) = (range.start, range.end - range.start, next - range.end);
+        let gap = next - range.end;
         let entry = ENTRY_CACHE.allocate(Entry {
             tree_link: RBTreeAtomicLink::new(),
             gap_link: RBTreeAtomicLink::new(),
@@ -104,34 +104,42 @@ impl Map {
             max_protection,
             inheritance,
         })?;
+        contents.link(self.bounds.start, previous, entry);
+        drop(contents);
+        Ok(())
+    }
+}
+
+impl Contents {
+    /// Links `entry` after `previous`, or first, keeping the gaps and size
+    /// up to date; it fits between `previous` and the entry after it, or
+    /// the map's `start` and end.
+    fn link(&mut self, start: usize, previous: Option<UnsafeRef<Entry>>, entry: CacheBox<Entry>) {
+        let (range, gap) = (entry.range.clone(), entry.gap.load(Ordering::Relaxed));
         // The entry now ends the gap after the one before it, or the leading
         // gap.
         match previous {
             Some(previous) => {
                 if previous.gap_link.is_linked() {
                     let key = (previous.gap.load(Ordering::Relaxed), previous.range.start);
-                    contents.gaps.find_mut(&key).remove();
+                    self.gaps.find_mut(&key).remove();
                 }
-                let previous_gap = start - previous.range.end;
+                let previous_gap = range.start - previous.range.end;
                 previous.gap.store(previous_gap, Ordering::Relaxed);
                 if previous_gap != 0 {
-                    contents.gaps.insert(previous);
+                    self.gaps.insert(previous);
                 }
             }
-            None => contents.leading_gap = start - self.bounds.start,
+            None => self.leading_gap = range.start - start,
         }
         let entry = CacheBox::into_raw(entry).as_ptr();
         // SAFETY: the trees take the entry for good, once each.
-        contents
-            .entries
-            .insert(unsafe { UnsafeRef::from_raw(entry) });
+        self.entries.insert(unsafe { UnsafeRef::from_raw(entry) });
         if gap != 0 {
             // SAFETY: as above.
-            contents.gaps.insert(unsafe { UnsafeRef::from_raw(entry) });
+            self.gaps.insert(unsafe { UnsafeRef::from_raw(entry) });
         }
-        contents.size += size;
-        drop(contents);
-        Ok(())
+        self.size += range.end - range.start;
     }
 }
 
