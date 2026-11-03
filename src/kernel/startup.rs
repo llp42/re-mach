@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Machine-independent startup.
 
-use super::sched;
+use super::{radix_tree, sched};
 use crate::arch::{self, Machine as _};
 use crate::vm;
 
@@ -12,5 +12,6 @@ use crate::vm;
 pub fn start() -> ! {
     sched::init();
     vm::init();
+    radix_tree::init();
     arch::Current::halt()
 }
