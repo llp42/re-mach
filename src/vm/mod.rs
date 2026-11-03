@@ -8,6 +8,7 @@ pub mod map;
 pub mod object;
 pub mod page;
 pub mod pmap;
+pub mod proxy;
 
 use pmap::MachinePmap as _;
 
@@ -46,4 +47,5 @@ pub fn bootstrap() {
 /// Finishes setting up virtual memory once IPC is up, on the boot CPU.
 pub fn init() {
     object::init();
+    proxy::init();
 }
