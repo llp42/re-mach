@@ -6,6 +6,7 @@
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use super::slab::Cache;
+use crate::arch;
 
 /// A thread; so far only what the sleep and run queues need.
 pub struct Thread {
@@ -31,10 +32,17 @@ intrusive_adapter!(
     pub RunQueueAdapter = UnsafeRef<Thread>: Thread { run_link => LinkedListAtomicLink }
 );
 
+/// What threads need of the machine.
+pub trait MachineThread {
+    /// Sets up threads' machine state, on the boot CPU.
+    fn module_init();
+}
+
 /// The cache threads come from.
 static CACHE: Cache<Thread> = Cache::new("thread");
 
 /// Sets up threads, on the boot CPU.
 pub fn init() {
     CACHE.register();
+    arch::Pcb::module_init();
 }

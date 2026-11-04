@@ -54,6 +54,14 @@ SPDX-FileContributor: Marcus Brinkmann
 SPDX-FileContributor: Thomas Schwinge
 SPDX-License-Identifier: GPL-2.0-or-later
 
+SPDX-FileName: i386/i386/pcb.c
+SPDX-FileCopyrightText: 1991, 1990 Carnegie Mellon University
+SPDX-License-Identifier: CMU-Mach
+
+SPDX-FileName: i386/i386/thread.h
+SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
+SPDX-License-Identifier: CMU-Mach
+
 SPDX-FileName: i386/i386/trap.c
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
