@@ -5,11 +5,14 @@
 
 use core::sync::atomic::{AtomicU32, Ordering, compiler_fence};
 
+use intrusive_collections::LinkedList;
+
 use crate::arch;
 use crate::kernel::clock::Wheel;
 use crate::kernel::processor::Processor;
 use crate::kernel::sched::{SLEEP_QUEUES, SleepQueue};
-use crate::kernel::thread::SleepQueueAdapter;
+use crate::kernel::thread::{RunQueueAdapter, SleepQueueAdapter};
+use crate::sync::Token;
 
 /// One CPU's machine-independent data, held in the machine's part.
 pub struct PerCpu {
@@ -24,6 +27,10 @@ pub struct PerCpu {
     sleep_queues: [SleepQueue; SLEEP_QUEUES],
     /// Its processor.
     processor: Processor,
+    /// The threads that ended on it, waiting for the reaper, linked as on
+    /// a run queue.
+    #[expect(dead_code, reason = "thread_terminate and the reaper use them")]
+    dead_threads: Token<LinkedList<RunQueueAdapter>>,
     /// Its timeouts; only it runs them.
     #[expect(dead_code, reason = "set_timeout and the softclock thread use them")]
     timeouts: Wheel,
@@ -45,6 +52,7 @@ impl PerCpu {
             critical_nesting: AtomicU32::new(0),
             sleep_queues: [const { SleepQueue::new(SleepQueueAdapter::NEW) }; SLEEP_QUEUES],
             processor: Processor::new(),
+            dead_threads: Token::new(LinkedList::new(RunQueueAdapter::NEW)),
             timeouts: Wheel::new(),
             pending_asts: AtomicU32::new(0),
         }
