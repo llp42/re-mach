@@ -6,6 +6,7 @@
 use core::sync::atomic::{AtomicU32, Ordering, compiler_fence};
 
 use crate::arch;
+use crate::kernel::clock::Wheel;
 use crate::kernel::processor::Processor;
 use crate::kernel::sched::{SLEEP_QUEUES, SleepQueue};
 use crate::kernel::thread::SleepQueueAdapter;
@@ -23,6 +24,9 @@ pub struct PerCpu {
     sleep_queues: [SleepQueue; SLEEP_QUEUES],
     /// Its processor.
     processor: Processor,
+    /// Its timeouts; only it runs them.
+    #[expect(dead_code, reason = "set_timeout and the softclock thread use them")]
+    timeouts: Wheel,
     /// The ASTs pending on it, a bit per reason.
     #[expect(dead_code, reason = "the first AST posts them")]
     pending_asts: AtomicU32,
@@ -41,6 +45,7 @@ impl PerCpu {
             critical_nesting: AtomicU32::new(0),
             sleep_queues: [const { SleepQueue::new(SleepQueueAdapter::NEW) }; SLEEP_QUEUES],
             processor: Processor::new(),
+            timeouts: Wheel::new(),
             pending_asts: AtomicU32::new(0),
         }
     }

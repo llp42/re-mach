@@ -182,6 +182,12 @@ SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Syste
 SPDX-FileContributor: Rich Draves
 SPDX-License-Identifier: LicenseRef-CMU-CSL
 
+SPDX-FileName: kern/mach_clock.c
+SPDX-FileCopyrightText: 1994-1988 Carnegie Mellon University
+SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
+SPDX-FileContributor: Avadis Tevanian, Jr.
+SPDX-License-Identifier: LicenseRef-CMU-CSL
+
 SPDX-FileName: kern/processor.c
 SPDX-FileCopyrightText: 1993-1988 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
