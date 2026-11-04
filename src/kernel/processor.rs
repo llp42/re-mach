@@ -8,8 +8,9 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
+use super::Error;
 use super::sched::{MIN_QUANTUM, Policies, RUN_QUEUES, RunQueue, SCHEDULER_SCALE, SYSTEM_PRIORITY};
-use super::slab::Cache;
+use super::slab::{Cache, CacheBox};
 use super::task::{SetTaskAdapter, Task};
 use super::thread::RunQueueAdapter;
 use super::{ipc_host, machine};
@@ -90,7 +91,33 @@ pub struct ProcessorSet {
     tasks: [Token<LinkedList<SetTaskAdapter>>; MEMBER_SHARDS],
     /// How many tasks it has.
     task_count: AtomicU32,
+    /// Its place in the list of all sets.
+    all_link: LinkedListAtomicLink,
 }
+
+intrusive_adapter!(
+    #[expect(
+        clippy::expl_impl_clone_on_copy,
+        reason = "intrusive_adapter! writes Clone by hand"
+    )]
+    AllSetsAdapter = UnsafeRef<ProcessorSet>: ProcessorSet { all_link => LinkedListAtomicLink }
+);
+
+/// Every processor set, and how many there are.
+struct AllSets {
+    list: LinkedList<AllSetsAdapter>,
+    count: u32,
+}
+
+/// The processor sets, behind one token: they change only as sets are
+/// created and destroyed.
+static ALL_SETS: Token<AllSets> = Token::new(AllSets {
+    list: LinkedList::new(AllSetsAdapter::NEW),
+    count: 0,
+});
+
+/// The set the kernel creates at boot, where the other CPUs go.
+pub(super) static SLAVE_SET: OnceLock<&'static ProcessorSet> = OnceLock::new();
 
 impl ProcessorSet {
     /// A new set, not in use yet, with one reference, no processor and no
@@ -108,7 +135,35 @@ impl ProcessorSet {
             name_port: AtomicPtr::new(ptr::null_mut()),
             tasks: [const { Token::new(LinkedList::new(SetTaskAdapter::NEW)) }; MEMBER_SHARDS],
             task_count: AtomicU32::new(0),
+            all_link: LinkedListAtomicLink::new(),
         }
+    }
+
+    /// A new set, in use, in the list of all sets, with its ports and
+    /// references for them, and for the caller's set and name.
+    ///
+    /// # Errors
+    ///
+    /// `ResourceShortage` if no set can be allocated.
+    pub fn create() -> Result<&'static Self, Error> {
+        let mut set = SET_CACHE.allocate(Self::new())?;
+        // The caller's set and name.
+        set.references.fetch_add(2, Ordering::Relaxed);
+        set.active = true;
+        // SAFETY: a set lives until it is destroyed, which comes later.
+        let set = unsafe { CacheBox::into_raw(set).as_ref() };
+        set.join_all();
+        ipc_host::init_set(set);
+        Ok(set)
+    }
+
+    /// Adds it to the list of all sets.
+    fn join_all(&'static self) {
+        let mut all = ALL_SETS.lock();
+        // SAFETY: a set leaves the list before it is freed.
+        all.list.push_back(unsafe { UnsafeRef::from_raw(self) });
+        all.count += 1;
+        drop(all);
     }
 
     /// Takes `task`, new and in no set, with a reference for it.
@@ -148,11 +203,14 @@ pub fn bootstrap() {
     );
 }
 
-/// Sets up processor sets, on the boot CPU, and gives every processor but
-/// the boot CPU's its ports.
+/// Sets up processor sets, on the boot CPU: gives every processor but the
+/// boot CPU's its ports, and creates the slave set.
 pub fn init() {
     SET_CACHE.register();
     for cpu in (1..MAX_CPUS).filter(|&cpu| machine::has_processor(cpu)) {
         ipc_host::init_processor(smp::of(cpu).processor());
     }
+    DEFAULT_SET.join_all();
+    let set = ProcessorSet::create().unwrap_or_else(|error| panic!("pset_sys_init: {error:?}"));
+    assert!(SLAVE_SET.set(set).is_ok(), "pset_sys_init: twice");
 }
