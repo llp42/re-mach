@@ -23,7 +23,8 @@ pub trait Machine {
     fn write_console(text: &str);
 
     /// Sets up the machine once the VM and IPC are up, on the boot CPU:
-    /// frees usable memory, sets up the FPU, and finds the APICs.
+    /// frees usable memory, sets up the FPU, and finds the APICs and the
+    /// CPUs.
     fn init();
     /// The kernel's command line, as the loader gave it; empty if none.
     #[expect(dead_code, reason = "the console and the bootstrap read it")]

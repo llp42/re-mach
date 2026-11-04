@@ -248,6 +248,21 @@ fn boot_slice<T>(len: usize) -> &'static mut [MaybeUninit<T>] {
     unsafe { slice::from_raw_parts_mut(start, len) }
 }
 
+/// Gives each CPU the ACPI tables list but the boot CPU its slot, the
+/// boot CPU's kind, on the boot CPU.
+fn init_slots() {
+    let count = apic::APIC_IDS.get().map_or(1, |ids| ids.len());
+    for cpu in 1..count {
+        machine::store_slot(
+            cpu,
+            Slot {
+                ty: CpuType::X86_64,
+                subtype: CpuSubtype::AT386,
+            },
+        );
+    }
+}
+
 /// The `x86_64` machine.
 pub struct X86_64;
 
@@ -272,6 +287,7 @@ impl Machine for X86_64 {
         if let Err(error) = acpi::init_apics() {
             panic!("acpi_apic_init failed with {error:?}");
         }
+        init_slots();
     }
 
     fn kernel_command_line() -> &'static CStr {
