@@ -22,6 +22,9 @@ pub trait Machine {
     /// Writes `text` to the console, where `\n` ends a line.
     fn write_console(text: &str);
 
+    /// Sets up the machine once the VM and IPC are up, on the boot CPU:
+    /// frees usable memory.
+    fn init();
     /// The kernel's command line, as the loader gave it; empty if none.
     #[expect(dead_code, reason = "the console and the bootstrap read it")]
     fn kernel_command_line() -> &'static CStr;

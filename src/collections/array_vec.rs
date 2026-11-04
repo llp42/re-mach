@@ -52,6 +52,23 @@ impl<T, const N: usize> ArrayVec<T, N> {
         self.len += 1;
     }
 
+    /// Keeps only the items `keep` holds to, in their order.
+    pub fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) {
+        let len = self.len;
+        // Items not yet moved are out of reach if `keep` panics.
+        self.len = 0;
+        for index in 0..len {
+            // SAFETY: the items from `index` on are still written, and this
+            // one is read once.
+            let item = unsafe { self.items[index].assume_init_read() };
+            if keep(&item) {
+                // At or below `index`, so not one still to be read.
+                self.items[self.len].write(item);
+                self.len += 1;
+            }
+        }
+    }
+
     /// Removes every item.
     pub fn clear(&mut self) {
         let items: *mut [T] = &raw mut **self;

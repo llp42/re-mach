@@ -264,6 +264,10 @@ impl Machine for X86_64 {
         }
     }
 
+    fn init() {
+        boot_memory::free_usable();
+    }
+
     fn kernel_command_line() -> &'static CStr {
         KERNEL_COMMAND_LINE.get().copied().unwrap_or_default()
     }

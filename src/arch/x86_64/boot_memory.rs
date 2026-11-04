@@ -457,6 +457,28 @@ pub fn steal_pages(count: usize) -> PhysAddr {
     start
 }
 
+/// Frees usable memory to `vm::page`, on the boot CPU: the temporary boot
+/// data is released, then each available area above the first 64 KiB, but
+/// for the boot data kept, goes to the page allocator.
+pub fn free_usable() {
+    let mut memory = BOOT_MEMORY.borrow_mut();
+    memory
+        .boot_data
+        .retain(|data| data.retention == Retention::Permanent);
+    for entry in memory
+        .map
+        .iter()
+        .filter(|entry| matches!(entry.kind, EntryKind::Available))
+    {
+        let end = entry.range.end.min(HIGH_MEMORY_LIMIT);
+        let mut start = entry.range.start.max(LOW_MEMORY_BASE);
+        while let Some(gap) = memory.find_gap(start..end) {
+            start = gap.end;
+            page::release(gap);
+        }
+    }
+}
+
 /// Shows the physical memory map and loads its segments into `vm::page`;
 /// closes the boot heap, whose free part `vm::page` takes.
 ///
