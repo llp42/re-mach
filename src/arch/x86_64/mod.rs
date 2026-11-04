@@ -11,6 +11,7 @@ mod boot_header;
 mod boot_memory;
 mod boot_stack;
 mod cpuid;
+mod fpu;
 mod gdt;
 mod idt;
 mod interrupt;
@@ -266,6 +267,7 @@ impl Machine for X86_64 {
 
     fn init() {
         boot_memory::free_usable();
+        fpu::init();
     }
 
     fn kernel_command_line() -> &'static CStr {
