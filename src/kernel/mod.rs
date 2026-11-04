@@ -15,6 +15,7 @@ pub mod radix_tree;
 pub mod sched;
 pub mod slab;
 pub mod startup;
+pub mod task;
 pub mod thread;
 
 pub use error::Error;
