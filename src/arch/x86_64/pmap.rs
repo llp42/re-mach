@@ -5,8 +5,8 @@
 
 use core::arch::asm;
 use core::ops::Range;
-use core::slice;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::{ptr, slice};
 
 use x86_64::instructions::tlb;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr3Flags, Cr4, Cr4Flags};
@@ -61,6 +61,12 @@ const DIRECT_MAP_PAGE: PageTableFlags = LARGE_PAGE
     .union(PageTableFlags::ACCESSED)
     .union(PageTableFlags::DIRTY);
 
+/// Device memory's page: global, writable, uncached (PAT entry 3).
+const DEVICE_PAGE: PageTableFlags = TABLE
+    .union(PageTableFlags::WRITE_THROUGH)
+    .union(PageTableFlags::NO_CACHE)
+    .union(PageTableFlags::GLOBAL);
+
 /// The page attribute table: entries 0 to 3 keep their reset types, so a
 /// PTE's PWT and PCD bits keep their meaning; 5 and 6 add write-protect and
 /// write-combining.
@@ -99,6 +105,12 @@ impl MachinePmap for Pmap {
         self.reference_count.fetch_add(1, Ordering::Relaxed);
     }
 
+    fn enter_device(address: Range<usize>, physical: PhysAddr) {
+        for offset in (0..address.end - address.start).step_by(PAGE_SIZE) {
+            enter_kernel_page(address.start + offset, physical + offset, DEVICE_PAGE);
+        }
+    }
+
     fn boot_space() -> Range<usize> {
         BOOT_SPACE.get().expect("pmap: not bootstrapped").clone()
     }
@@ -123,6 +135,50 @@ static DIRECT_MAP_END: OnceLock<usize> = OnceLock::new();
 /// Index of `address`'s entry in a table whose entries map `size` bytes.
 const fn index(address: usize, size: usize) -> usize {
     address / size % ENTRIES
+}
+
+/// Where the page table window shows the entry that maps `address` at
+/// `level`: 0 for its page table's entry, up to 3 for its PML4's.
+fn window_entry(address: usize, level: usize) -> &'static AtomicU64 {
+    let base = (0..level).fold(PAGE_TABLE_BASE, |base, step| {
+        base + (PAGE_TABLE_SLOT << (30 - 9 * step))
+    });
+    let index = (address >> (12 + 9 * level)) & ((1 << (36 - 9 * level)) - 1);
+    // SAFETY: the window shows every table of the loaded PML4, as entries.
+    unsafe { &*ptr::with_exposed_provenance::<AtomicU64>(base + index * 8) }
+}
+
+/// Maps kernel `address` to `physical` with `flags`, in the kernel pmap: as
+/// every pmap shares kernel space's tables, the entry is written with one
+/// atomic operation and no lock.
+///
+/// # Panics
+///
+/// If no page table maps `address`, or a page is mapped there already.
+fn enter_kernel_page(address: usize, physical: PhysAddr, flags: PageTableFlags) {
+    // Kernel space's PML4 entries are always there; its directory and page
+    // table may not be.
+    for level in [2, 1] {
+        let entry = PageTableFlags::from_bits_truncate(
+            window_entry(address, level).load(Ordering::Relaxed),
+        );
+        assert!(
+            entry.contains(PageTableFlags::PRESENT) && !entry.contains(PageTableFlags::HUGE_PAGE),
+            "pmap: no page table at {address:#x}"
+        );
+    }
+    // A page that was not present is in no TLB, so nothing to invalidate.
+    assert!(
+        window_entry(address, 0)
+            .compare_exchange(
+                0,
+                frame(physical).as_u64() | flags.bits(),
+                Ordering::Release,
+                Ordering::Relaxed
+            )
+            .is_ok(),
+        "pmap: {address:#x} mapped already"
+    );
 }
 
 /// `address` as the `x86_64` crate's.

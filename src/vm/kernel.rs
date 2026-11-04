@@ -3,10 +3,13 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Kernel memory: the kernel's map.
 
+use core::ptr::{self, NonNull};
+
 use super::map::Map;
 use super::pmap::MachinePmap as _;
 use super::{Inheritance, Protection};
-use crate::arch::{self, MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE};
+use crate::arch::{self, MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE, PhysAddr};
+use crate::kernel::Error;
 use crate::sync::OnceLock;
 
 /// The kernel's map, once `init` sets it up.
@@ -44,4 +47,30 @@ pub fn submap(submap: &'static OnceLock<Map>, size: usize) {
     if let Err(error) = map.enter_submap(size.next_multiple_of(PAGE_SIZE), submap) {
         panic!("kmem_submap: vm_map_enter failed: {error:?}");
     }
+}
+
+/// Maps `size` bytes of device memory at `physical` into the kernel map,
+/// uncached; returns where `physical` lands.
+///
+/// # Errors
+///
+/// `NoSpace` if the kernel map has no room for them, and `ResourceShortage`
+/// if no entry can be allocated.
+///
+/// # Panics
+///
+/// If the kernel map is not set up.
+#[expect(dead_code, reason = "acpi_apic_init maps the local APIC with it")]
+pub fn map_device(physical: PhysAddr, size: usize) -> Result<NonNull<u8>, Error> {
+    let map = KERNEL_MAP
+        .get()
+        .expect("kmem_map_aligned_table: no kernel map");
+    let offset = physical.0 % PAGE_SIZE;
+    let range = map.enter_anywhere(
+        (offset + size).next_multiple_of(PAGE_SIZE),
+        Protection::READ | Protection::WRITE,
+        Protection::all(),
+    )?;
+    arch::Pmap::enter_device(range.clone(), PhysAddr(physical.0 - offset));
+    Ok(NonNull::new(ptr::with_exposed_provenance_mut(range.start + offset)).unwrap())
 }

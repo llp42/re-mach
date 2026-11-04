@@ -105,6 +105,8 @@ impl Map {
             max_protection,
             inheritance,
             backing: None,
+            wire_count: 0,
+            wired_access: Protection::empty(),
         })?;
         contents.link(self.bounds.start, previous, entry);
         drop(contents);
@@ -145,10 +147,50 @@ impl Map {
             max_protection: Protection::all(),
             inheritance: Inheritance::Copy,
             backing: submap.get().map(Backing::Submap),
+            wire_count: 0,
+            wired_access: Protection::empty(),
         })?;
         contents.link(self.bounds.start, previous, entry);
         drop(contents);
         Ok(())
+    }
+
+    /// Maps `size` bytes wherever they fit, wired, with nothing behind them,
+    /// allowing `protection` now and at most `max_protection`; returns where.
+    ///
+    /// # Errors
+    ///
+    /// `NoSpace` if no free space fits them, and `ResourceShortage` if no
+    /// entry can be allocated.
+    pub fn enter_anywhere(
+        &self,
+        size: usize,
+        protection: Protection,
+        max_protection: Protection,
+    ) -> Result<Range<usize>, Error> {
+        let mut contents = self.contents.write();
+        let (previous, start) = contents.find_space(self.bounds.start, size)?;
+        let next = previous
+            .as_ref()
+            .map_or(self.bounds.start + contents.leading_gap, |entry| {
+                entry.range.end + entry.gap.load(Ordering::Relaxed)
+            });
+        let range = start..start + size;
+        let entry = ENTRY_CACHE.allocate(Entry {
+            tree_link: RBTreeAtomicLink::new(),
+            gap_link: RBTreeAtomicLink::new(),
+            gap: AtomicUsize::new(next - range.end),
+            range: range.clone(),
+            protection,
+            max_protection,
+            inheritance: Inheritance::Copy,
+            backing: None,
+            wire_count: 1,
+            wired_access: Protection::READ | Protection::WRITE,
+        })?;
+        contents.link(self.bounds.start, previous, entry);
+        drop(contents);
+        Ok(range)
     }
 }
 
@@ -202,7 +244,7 @@ impl Contents {
 }
 
 /// A range of a map and what it maps; so far only what an entry with no
-/// object or a submap sets.
+/// object, a wired one or a submap sets.
 pub struct Entry {
     /// Its place in its map's tree.
     tree_link: RBTreeAtomicLink,
@@ -225,6 +267,12 @@ pub struct Entry {
     /// What backs it; nothing while it is only reserved.
     #[expect(dead_code, reason = "vm_map_lookup and vm_fault read it")]
     backing: Option<Backing>,
+    /// How many times it is wired: its pages stay resident and mapped.
+    #[expect(dead_code, reason = "vm_map_pageable and vm_fault read it")]
+    wire_count: u32,
+    /// What it allows while wired.
+    #[expect(dead_code, reason = "vm_map_pageable and vm_fault read it")]
+    wired_access: Protection,
 }
 
 /// What backs an entry; only the kinds used here.
