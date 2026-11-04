@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use lock_api::{GuardNoSend, RawMutex};
 
 use super::critical_section::{crit_enter, crit_exit};
+use crate::smp;
 
 /// A spinlock's raw lock: a flag, taken inside a critical section.
 pub struct RawSpinlock {
@@ -26,6 +27,7 @@ unsafe impl RawMutex for RawSpinlock {
 
     fn lock(&self) {
         crit_enter();
+        smp::current().take_spinlock();
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -43,7 +45,9 @@ unsafe impl RawMutex for RawSpinlock {
             .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok();
-        if !taken {
+        if taken {
+            smp::current().take_spinlock();
+        } else {
             crit_exit();
         }
         taken
@@ -51,6 +55,7 @@ unsafe impl RawMutex for RawSpinlock {
 
     unsafe fn unlock(&self) {
         self.locked.store(false, Ordering::Release);
+        smp::current().release_spinlock();
         crit_exit();
     }
 }

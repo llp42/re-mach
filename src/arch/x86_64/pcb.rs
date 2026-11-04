@@ -3,15 +3,19 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Threads' machine state: their process control blocks.
 
-use core::arch::global_asm;
+use core::arch::{asm, global_asm};
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use x86_64::VirtAddr;
+
 use super::fpu;
+use super::per_cpu::PerCpu;
 use super::trap::TrapFrame;
 use crate::kernel::Error;
 use crate::kernel::slab::{Cache, CacheBox};
 use crate::kernel::thread::{self, MachineThread};
+use crate::smp::MachinePerCpu as _;
 use crate::vm::kernel::KernelStack;
 
 /// A thread's machine state: its user registers, and where its kernel
@@ -85,5 +89,30 @@ impl MachineThread for Pcb {
                 .write(thread_trampoline);
         }
         self.stack_pointer.store(frame.addr(), Ordering::Release);
+    }
+
+    unsafe fn load(&self) -> ! {
+        // A trap from user mode saves the thread's registers in its PCB.
+        let user_end = ptr::from_ref(&self.user).addr() + size_of::<TrapFrame>();
+        let tss = PerCpu::current().tss();
+        let mut updated = tss.get();
+        updated.privilege_stack_table[0] = VirtAddr::new(u64::try_from(user_end).unwrap());
+        tss.set(updated);
+        // SAFETY: guaranteed by the caller; the frame is the one
+        // `attach_stack` wrote.
+        unsafe {
+            asm!(
+                "movq {stack_pointer}, %rsp",
+                "popq %r15",
+                "popq %r14",
+                "popq %r13",
+                "popq %r12",
+                "popq %rbx",
+                "popq %rbp",
+                "ret",
+                stack_pointer = in(reg) self.stack_pointer.load(Ordering::Acquire),
+                options(att_syntax, noreturn),
+            );
+        }
     }
 }

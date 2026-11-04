@@ -3,6 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Threads.
 
+use core::mem;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
@@ -91,6 +92,9 @@ pub struct Thread {
     kernel_stack: OnceLock<KernelStack>,
     /// The processor it last ran on; null before it first runs.
     last_processor: AtomicPtr<Processor>,
+    /// How deep its critical sections nest; a new thread starts inside the
+    /// one the switch to it is made in.
+    critical_nesting: AtomicU32,
 }
 
 intrusive_adapter!(
@@ -138,6 +142,13 @@ pub trait MachineThread: Sized {
     /// Sets `stack` up to start its thread in `start`, which the thread
     /// enters by calling `begin`, once the switch to it is made.
     fn attach_stack(&self, stack: &KernelStack, start: fn() -> !);
+    /// Switches the current CPU to its thread for good.
+    ///
+    /// # Safety
+    ///
+    /// Its stack is set up, and the CPU is inside a critical section the
+    /// thread's count holds.
+    unsafe fn load(&self) -> !;
 }
 
 /// Where a new thread begins, before its function: it leaves the critical
@@ -196,6 +207,28 @@ impl Thread {
         cpu.set_active_thread(self);
         self.last_processor
             .store(ptr::from_ref(cpu.processor()).cast_mut(), Ordering::Release);
+    }
+
+    /// Switches the current CPU to it for good, from inside a critical
+    /// section, `section`, which it takes over: the CPU gives up what it ran.
+    ///
+    /// # Panics
+    ///
+    /// If the CPU holds a spinlock, or the thread is not inside a critical
+    /// section, as threads are while switched away from.
+    pub fn load(&'static self, section: CriticalSection) -> ! {
+        let cpu = smp::current();
+        assert!(cpu.spinlocks() == 0, "load_context: spinlocks held");
+        assert!(
+            self.critical_nesting.load(Ordering::Relaxed) != 0,
+            "load_context: thread outside a critical section"
+        );
+        // The section goes on in the thread, whose count holds it.
+        mem::forget(section);
+        cpu.switch_nesting(&self.critical_nesting);
+        // SAFETY: the thread has its stack set up to start, and the CPU is
+        // in a critical section its count holds.
+        unsafe { self.pcb.load() }
     }
 
     /// Marks it running, as a thread that is about to be switched to.
@@ -296,6 +329,7 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         start: OnceLock::new(),
         kernel_stack: OnceLock::new(),
         last_processor: AtomicPtr::new(ptr::null_mut()),
+        critical_nesting: AtomicU32::new(1),
     })?;
     // SAFETY: a thread lives until the reaper frees it, which comes later.
     let thread = unsafe { CacheBox::into_raw(thread).as_ref() };
