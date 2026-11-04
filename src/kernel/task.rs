@@ -6,22 +6,24 @@
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
-use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
+use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use super::Error;
 use super::clock::{self, TimeValue};
 use super::processor::{DEFAULT_SET, ProcessorSet};
 use super::sched::USER_PRIORITY;
 use super::slab::{Cache, CacheBox};
+use super::thread::{TaskThreadAdapter, Thread};
 use crate::arch::{self, Machine as _};
 use crate::ipc::port::{self, KernelObject, Port};
 use crate::ipc::space::Space;
 use crate::sync::OnceLock;
+use crate::sync::Token;
 use crate::vm::kernel::KERNEL_MAP;
 use crate::vm::map::Map;
 
 /// The bytes a task's name holds, its final NUL included.
-const NAME_SIZE: usize = 32;
+pub const NAME_SIZE: usize = 32;
 
 /// A task; so far only what a new task sets.
 #[expect(dead_code, reason = "the task calls read them")]
@@ -39,15 +41,21 @@ pub struct Task {
     /// The send right for its port it hands out.
     self_send: AtomicPtr<Port>,
     /// Its threads' priority.
-    priority: u32,
+    pub(super) priority: u32,
     /// The highest priority its threads may take.
-    max_priority: u32,
+    pub(super) max_priority: u32,
+    /// How many times it is suspended.
+    pub(super) suspend_count: AtomicU32,
     /// Whether it may be moved to another processor set.
     may_assign: bool,
     /// When it was created.
     creation_time: TimeValue,
     /// Its name, ending with a NUL.
-    name: [u8; NAME_SIZE],
+    pub(super) name: [u8; NAME_SIZE],
+    /// Its threads.
+    threads: Token<LinkedList<TaskThreadAdapter>>,
+    /// How many threads it has.
+    thread_count: AtomicU32,
     /// The processor set its threads run on; set as the set takes it.
     pub(super) set: AtomicPtr<ProcessorSet>,
     /// Its place in its set's tasks.
@@ -61,6 +69,18 @@ intrusive_adapter!(
     )]
     pub SetTaskAdapter = UnsafeRef<Task>: Task { set_link => LinkedListAtomicLink }
 );
+
+impl Task {
+    /// Takes `thread`, new, with a reference for it.
+    pub(super) fn add_thread(&self, thread: &'static Thread) {
+        self.references.fetch_add(1, Ordering::Relaxed);
+        self.thread_count.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: a thread leaves its task before it is freed.
+        self.threads
+            .lock()
+            .push_back(unsafe { UnsafeRef::from_raw(thread) });
+    }
+}
 
 /// The kernel's task, once `init` creates it.
 pub static KERNEL_TASK: OnceLock<&'static Task> = OnceLock::new();
@@ -104,6 +124,9 @@ fn create_kernel() -> Result<&'static Task, Error> {
         may_assign: true,
         creation_time: clock::stamp(),
         name,
+        suspend_count: AtomicU32::new(0),
+        threads: Token::new(LinkedList::new(TaskThreadAdapter::NEW)),
+        thread_count: AtomicU32::new(0),
         set: AtomicPtr::new(ptr::null_mut()),
         set_link: LinkedListAtomicLink::new(),
     })?;

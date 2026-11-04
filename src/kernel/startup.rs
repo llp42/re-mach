@@ -23,5 +23,8 @@ pub fn start() -> ! {
     thread::init();
     processor::init();
     sched::recompute_priorities(&sched::RECOMPUTE_PRIORITIES);
+    let kernel_task = task::KERNEL_TASK.get().expect("startup: no kernel task");
+    let _startup = thread::create(kernel_task)
+        .unwrap_or_else(|error| panic!("startup: thread_create: {error:?}"));
     arch::Current::halt()
 }

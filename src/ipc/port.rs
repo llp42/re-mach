@@ -11,6 +11,7 @@ use crate::kernel::host::Host;
 use crate::kernel::processor::{Processor, ProcessorSet};
 use crate::kernel::slab::{Cache, CacheBox};
 use crate::kernel::task::Task;
+use crate::kernel::thread::Thread;
 use crate::vm::object::Object;
 
 /// A port; so far only its reference count, whether it is alive, its
@@ -72,6 +73,8 @@ pub enum KernelObject {
     ProcessorName(#[expect(dead_code, reason = "processor_info reads it")] &'static Processor),
     /// A task's port.
     Task(#[expect(dead_code, reason = "convert_port_to_task reads it")] NonNull<Task>),
+    /// A thread's port.
+    Thread(#[expect(dead_code, reason = "convert_port_to_thread reads it")] NonNull<Thread>),
 }
 
 /// The cache ports come from.

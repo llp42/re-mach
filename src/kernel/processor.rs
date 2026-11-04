@@ -12,7 +12,7 @@ use super::Error;
 use super::sched::{MIN_QUANTUM, Policies, RUN_QUEUES, RunQueue, SCHEDULER_SCALE, SYSTEM_PRIORITY};
 use super::slab::{Cache, CacheBox};
 use super::task::{SetTaskAdapter, Task};
-use super::thread::RunQueueAdapter;
+use super::thread::{RunQueueAdapter, SetThreadAdapter, Thread};
 use super::{ipc_host, machine};
 use crate::config::MAX_CPUS;
 use crate::ipc::port::Port;
@@ -72,7 +72,7 @@ pub struct ProcessorSet {
     /// Whether it is in use; a destroyed set is not.
     pub(super) active: bool,
     /// Whether it has no processor; threads created in it start suspended.
-    empty: bool,
+    pub(super) empty: bool,
     /// How many references it has.
     pub(super) references: AtomicU32,
     /// The highest priority its threads may take.
@@ -91,6 +91,10 @@ pub struct ProcessorSet {
     tasks: [Token<LinkedList<SetTaskAdapter>>; MEMBER_SHARDS],
     /// How many tasks it has.
     task_count: AtomicU32,
+    /// Its threads, by address.
+    threads: [Token<LinkedList<SetThreadAdapter>>; MEMBER_SHARDS],
+    /// How many threads it has.
+    thread_count: AtomicU32,
     /// Its place in the list of all sets.
     all_link: LinkedListAtomicLink,
 }
@@ -135,6 +139,8 @@ impl ProcessorSet {
             name_port: AtomicPtr::new(ptr::null_mut()),
             tasks: [const { Token::new(LinkedList::new(SetTaskAdapter::NEW)) }; MEMBER_SHARDS],
             task_count: AtomicU32::new(0),
+            threads: [const { Token::new(LinkedList::new(SetThreadAdapter::NEW)) }; MEMBER_SHARDS],
+            thread_count: AtomicU32::new(0),
             all_link: LinkedListAtomicLink::new(),
         }
     }
@@ -155,6 +161,20 @@ impl ProcessorSet {
         set.join_all();
         ipc_host::init_set(set);
         Ok(set)
+    }
+
+    /// Takes `thread`, new and in no set, with a reference for it.
+    pub(super) fn add_thread(&'static self, thread: &'static Thread) {
+        self.references.fetch_add(1, Ordering::Relaxed);
+        let shard = &self.threads[ptr::from_ref(thread).addr() / 64 % MEMBER_SHARDS];
+        // SAFETY: threads are never freed while a set holds them.
+        shard
+            .lock()
+            .push_back(unsafe { UnsafeRef::from_raw(thread) });
+        thread
+            .set
+            .store(ptr::from_ref(self).cast_mut(), Ordering::Release);
+        self.thread_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Adds it to the list of all sets.

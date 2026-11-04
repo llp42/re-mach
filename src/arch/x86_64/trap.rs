@@ -6,9 +6,12 @@
 use core::arch::global_asm;
 use core::fmt::{self, Write};
 
+use x86_64::VirtAddr;
 use x86_64::registers::control::Cr2;
+use x86_64::registers::rflags::RFlags;
 use x86_64::structures::idt::InterruptStackFrameValue;
 
+use super::gdt;
 use super::serial::Serial;
 
 // Each entry pushes a zero error code, unless the CPU pushed one, and its
@@ -123,6 +126,39 @@ pub struct TrapFrame {
     error_code: u64,
     /// Pushed by the CPU.
     pub interrupted: InterruptStackFrameValue,
+}
+
+impl TrapFrame {
+    /// A new thread's: all zero but user mode's segments and interrupts
+    /// on, so the thread starts in user mode.
+    pub fn user() -> Self {
+        Self {
+            r15: 0,
+            r14: 0,
+            r13: 0,
+            r12: 0,
+            r11: 0,
+            r10: 0,
+            r9: 0,
+            r8: 0,
+            rbp: 0,
+            rdi: 0,
+            rsi: 0,
+            rdx: 0,
+            rcx: 0,
+            rbx: 0,
+            rax: 0,
+            vector: 0,
+            error_code: 0,
+            interrupted: InterruptStackFrameValue::new(
+                VirtAddr::zero(),
+                gdt::USER_CODE,
+                RFlags::INTERRUPT_FLAG,
+                VirtAddr::zero(),
+                gdt::USER_DATA,
+            ),
+        }
+    }
 }
 
 impl fmt::Display for TrapFrame {
