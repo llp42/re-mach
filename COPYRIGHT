@@ -110,6 +110,10 @@ SPDX-FileName: include/mach/policy.h
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
 
+SPDX-FileName: include/mach/time_value.h
+SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
+SPDX-License-Identifier: CMU-Mach
+
 SPDX-FileName: include/mach/vm_inherit.h
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
 SPDX-FileContributor: Avadis Tevanian, Jr.

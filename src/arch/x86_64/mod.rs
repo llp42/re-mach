@@ -20,6 +20,7 @@ mod mmio;
 mod per_cpu;
 mod pic;
 mod pmap;
+mod rtc;
 mod serial;
 mod stack;
 mod syscall;
@@ -38,8 +39,10 @@ use x86_64::registers::rflags::{self, RFlags};
 use crate::arch::Machine;
 use crate::boot::multiboot2::{self, ElfSectionType, Tag};
 use crate::boot::{self, BootModule};
+use crate::kernel::clock::{self, TimeValue};
 use crate::kernel::machine::{self, CpuSubtype, CpuType, Slot};
 use crate::kernel::startup;
+use crate::println;
 use crate::smp::{self, MachinePerCpu as _};
 use crate::sync::OnceLock;
 pub use address::PhysAddr;
@@ -248,6 +251,20 @@ fn boot_slice<T>(len: usize) -> &'static mut [MaybeUninit<T>] {
     unsafe { slice::from_raw_parts_mut(start, len) }
 }
 
+/// Sets the time of day from the real-time clock, on the boot CPU.
+fn init_time_of_day() {
+    if let Some(date) = rtc::read() {
+        println!(
+            "RTC time is {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            date.year, date.month, date.day, date.hour, date.minute, date.second
+        );
+        clock::set_time(TimeValue {
+            seconds: date.seconds(),
+            nanoseconds: 0,
+        });
+    }
+}
+
 /// Gives each CPU the ACPI tables list but the boot CPU its slot, the
 /// boot CPU's kind, on the boot CPU.
 fn init_slots() {
@@ -289,6 +306,7 @@ impl Machine for X86_64 {
         }
         init_slots();
         apic::configure_io_apics();
+        init_time_of_day();
     }
 
     fn kernel_command_line() -> &'static CStr {
