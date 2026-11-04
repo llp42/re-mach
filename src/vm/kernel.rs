@@ -60,7 +60,6 @@ pub fn submap(submap: &'static OnceLock<Map>, size: usize) {
 /// # Panics
 ///
 /// If the kernel map is not set up.
-#[expect(dead_code, reason = "acpi_apic_init maps the local APIC with it")]
 pub fn map_device(physical: PhysAddr, size: usize) -> Result<NonNull<u8>, Error> {
     let map = KERNEL_MAP
         .get()

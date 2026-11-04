@@ -100,6 +100,15 @@ impl PerCpu {
         );
     }
 
+    /// Its local APIC ID.
+    ///
+    /// # Panics
+    ///
+    /// Before `store_apic_id` on its CPU.
+    pub fn apic_id(&self) -> u8 {
+        *self.apic_id.get().expect("per_cpu: no APIC ID yet")
+    }
+
     /// Stores its GDT.
     ///
     /// # Panics
