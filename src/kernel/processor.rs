@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU32};
 
 use intrusive_collections::{LinkedListAtomicLink, intrusive_adapter};
 
-use super::sched::{LOAD_SCALE, MIN_QUANTUM, Policies, RUN_QUEUES, RunQueue, SYSTEM_PRIORITY};
+use super::sched::{MIN_QUANTUM, Policies, RUN_QUEUES, RunQueue, SCHEDULER_SCALE, SYSTEM_PRIORITY};
 use super::thread::RunQueueAdapter;
 use crate::ipc::port::Port;
 use crate::smp;
@@ -72,7 +72,7 @@ pub struct ProcessorSet {
     policies: Policies,
     /// Its processors' quantum, in ticks.
     quantum: u32,
-    /// Its load, scaled by `LOAD_SCALE`.
+    /// Its load, scaled by `SCHEDULER_SCALE`.
     load: u32,
     /// Its port, for controlling it.
     pub(super) port: AtomicPtr<Port>,
@@ -88,7 +88,7 @@ pub(super) static DEFAULT_SET: ProcessorSet = ProcessorSet {
     max_priority: SYSTEM_PRIORITY,
     policies: Policies::TIMESHARE,
     quantum: MIN_QUANTUM,
-    load: LOAD_SCALE,
+    load: SCHEDULER_SCALE,
     port: AtomicPtr::new(ptr::null_mut()),
     name_port: AtomicPtr::new(ptr::null_mut()),
 };

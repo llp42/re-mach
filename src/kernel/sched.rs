@@ -38,8 +38,8 @@ pub const SYSTEM_PRIORITY: u32 = 6;
 /// The shortest quantum, in ticks: 33 context switches a second.
 pub const MIN_QUANTUM: u32 = HZ / 33;
 
-/// The fixed-point one of a set's load.
-pub const LOAD_SCALE: u32 = 128;
+/// The scheduler's fixed-point one, which a set's load is scaled by.
+pub const SCHEDULER_SCALE: u32 = 128;
 
 bitflags::bitflags! {
     /// Scheduling policies, as Mach's interface numbers them; only those
