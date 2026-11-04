@@ -10,15 +10,15 @@ use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use super::Error;
 use super::clock::{self, TimeValue};
-use super::processor::ProcessorSet;
+use super::processor::{Processor, ProcessorSet};
 use super::sched::{self, Policies, RUN_QUEUES, SCHEDULER_SCALE};
 use super::slab::{Cache, CacheBox};
 use super::task::{self, Task};
-use crate::arch;
 use crate::ipc::port::{self, KernelObject, Port};
 use crate::sync::{CriticalSection, OnceLock, Token};
 use crate::vm;
 use crate::vm::kernel::KernelStack;
+use crate::{arch, smp};
 
 bitflags::bitflags! {
     /// What a thread is doing, as Mach numbers it; only the states used
@@ -89,6 +89,8 @@ pub struct Thread {
     start: OnceLock<fn() -> !>,
     /// Its kernel stack, once it has one.
     kernel_stack: OnceLock<KernelStack>,
+    /// The processor it last ran on; null before it first runs.
+    last_processor: AtomicPtr<Processor>,
 }
 
 intrusive_adapter!(
@@ -188,6 +190,14 @@ impl Thread {
         Ok(())
     }
 
+    /// Records that it runs on the current CPU, as the CPU switches to it.
+    pub fn run_here(&'static self) {
+        let cpu = smp::current();
+        cpu.set_active_thread(self);
+        self.last_processor
+            .store(ptr::from_ref(cpu.processor()).cast_mut(), Ordering::Release);
+    }
+
     /// Marks it running, as a thread that is about to be switched to.
     pub fn mark_running(&self) {
         self.state
@@ -285,6 +295,7 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         self_send: AtomicPtr::new(ptr::null_mut()),
         start: OnceLock::new(),
         kernel_stack: OnceLock::new(),
+        last_processor: AtomicPtr::new(ptr::null_mut()),
     })?;
     // SAFETY: a thread lives until the reaper frees it, which comes later.
     let thread = unsafe { CacheBox::into_raw(thread).as_ref() };

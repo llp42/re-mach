@@ -3,7 +3,8 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Machine-independent startup.
 
-use super::{clock, machine, processor, radix_tree, sched, task, thread};
+use super::thread::{self, Thread};
+use super::{clock, machine, processor, radix_tree, sched, task};
 use crate::arch::{self, Machine as _};
 use crate::{ipc, smp, vm};
 
@@ -43,11 +44,12 @@ pub fn start() -> ! {
     startup
         .resume()
         .unwrap_or_else(|error| panic!("startup: thread_resume: {error:?}"));
-    launch_first_thread()
+    launch_first_thread(startup)
 }
 
-/// Brings the current CPU up and starts its first thread on it.
-fn launch_first_thread() -> ! {
+/// Brings the current CPU up and starts `thread` on it, its first.
+fn launch_first_thread(thread: &'static Thread) -> ! {
     machine::cpu_up(smp::current().id());
+    thread.run_here();
     arch::Current::halt()
 }
