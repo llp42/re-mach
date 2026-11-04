@@ -6,11 +6,11 @@
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
-use intrusive_collections::UnsafeRef;
+use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use super::Error;
 use super::clock::{self, TimeValue};
-use super::processor::DEFAULT_SET;
+use super::processor::{DEFAULT_SET, ProcessorSet};
 use super::sched::USER_PRIORITY;
 use super::slab::{Cache, CacheBox};
 use crate::arch::{self, Machine as _};
@@ -48,7 +48,19 @@ pub struct Task {
     creation_time: TimeValue,
     /// Its name, ending with a NUL.
     name: [u8; NAME_SIZE],
+    /// The processor set its threads run on; set as the set takes it.
+    pub(super) set: AtomicPtr<ProcessorSet>,
+    /// Its place in its set's tasks.
+    set_link: LinkedListAtomicLink,
 }
+
+intrusive_adapter!(
+    #[expect(
+        clippy::expl_impl_clone_on_copy,
+        reason = "intrusive_adapter! writes Clone by hand"
+    )]
+    pub SetTaskAdapter = UnsafeRef<Task>: Task { set_link => LinkedListAtomicLink }
+);
 
 /// The kernel's task, once `init` creates it.
 pub static KERNEL_TASK: OnceLock<&'static Task> = OnceLock::new();
@@ -92,6 +104,8 @@ fn create_kernel() -> Result<&'static Task, Error> {
         may_assign: true,
         creation_time: clock::stamp(),
         name,
+        set: AtomicPtr::new(ptr::null_mut()),
+        set_link: LinkedListAtomicLink::new(),
     })?;
     let task = CacheBox::into_raw(task);
     // SAFETY: the task is the kernel's for good.
@@ -100,5 +114,6 @@ fn create_kernel() -> Result<&'static Task, Error> {
     let port = CacheBox::into_raw(port).as_ptr();
     task.self_port.store(port, Ordering::Release);
     task.self_send.store(port, Ordering::Release);
+    DEFAULT_SET.add_task(task);
     Ok(task)
 }

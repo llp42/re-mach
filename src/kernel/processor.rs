@@ -4,15 +4,20 @@
 //! Processors and processor sets.
 
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU32};
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
-use intrusive_collections::{LinkedListAtomicLink, intrusive_adapter};
+use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use super::sched::{MIN_QUANTUM, Policies, RUN_QUEUES, RunQueue, SCHEDULER_SCALE, SYSTEM_PRIORITY};
+use super::task::{SetTaskAdapter, Task};
 use super::thread::RunQueueAdapter;
 use crate::ipc::port::Port;
 use crate::smp;
-use crate::sync::OnceLock;
+use crate::sync::{OnceLock, Token};
+
+/// How many lists a set's tasks are spread over by address, each behind
+/// its own token, so no lock covers all of them.
+const MEMBER_SHARDS: usize = 64;
 
 /// A processor: one per CPU, in that CPU's data.
 #[expect(dead_code, reason = "the dispatcher and processor_info read them")]
@@ -78,6 +83,23 @@ pub struct ProcessorSet {
     pub(super) port: AtomicPtr<Port>,
     /// Its name port, for information about it.
     pub(super) name_port: AtomicPtr<Port>,
+    /// Its tasks, by address.
+    tasks: [Token<LinkedList<SetTaskAdapter>>; MEMBER_SHARDS],
+    /// How many tasks it has.
+    task_count: AtomicU32,
+}
+
+impl ProcessorSet {
+    /// Takes `task`, new and in no set, with a reference for it.
+    pub(super) fn add_task(&'static self, task: &'static Task) {
+        self.references.fetch_add(1, Ordering::Relaxed);
+        let shard = &self.tasks[ptr::from_ref(task).addr() / 64 % MEMBER_SHARDS];
+        // SAFETY: tasks are never freed while a set holds them.
+        shard.lock().push_back(unsafe { UnsafeRef::from_raw(task) });
+        task.set
+            .store(ptr::from_ref(self).cast_mut(), Ordering::Release);
+        self.task_count.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// The default set, where every processor and thread starts.
@@ -91,6 +113,8 @@ pub(super) static DEFAULT_SET: ProcessorSet = ProcessorSet {
     load: SCHEDULER_SCALE,
     port: AtomicPtr::new(ptr::null_mut()),
     name_port: AtomicPtr::new(ptr::null_mut()),
+    tasks: [const { Token::new(LinkedList::new(SetTaskAdapter::NEW)) }; MEMBER_SHARDS],
+    task_count: AtomicU32::new(0),
 };
 
 /// The boot CPU's processor.
