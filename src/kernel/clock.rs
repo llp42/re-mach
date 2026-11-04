@@ -10,7 +10,8 @@ use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusi
 
 use super::machine::{self, CpuState};
 use super::sched;
-use crate::arch::PAGE_SIZE;
+use crate::arch::{Current, Machine as _, PAGE_SIZE};
+use crate::config::HZ;
 use crate::sync::{OnceLock, Spinlock};
 use crate::{smp, vm};
 
@@ -196,9 +197,21 @@ static TIME: SharedTime = SharedTime::new();
 /// The time since boot, which the boot CPU's ticks advance.
 static UPTIME: SharedTime = SharedTime::new();
 
-/// A time stamp: the time of day now.
+/// The time counter at the boot CPU's last tick.
+static LAST_TICK: AtomicU64 = AtomicU64::new(0);
+
+/// A time stamp: the time of day now, with the counter's change since the
+/// boot CPU's last tick, kept under a tick.
 pub fn stamp() -> TimeValue {
-    TIME.get()
+    loop {
+        let last = LAST_TICK.load(Ordering::Acquire);
+        let time = TIME.get();
+        if LAST_TICK.load(Ordering::Acquire) == last {
+            let since = Current::counter_nanoseconds().saturating_sub(last);
+            let since = i64::try_from(since).unwrap_or(i64::MAX);
+            return time.add_nanoseconds(since.min(NANOSECONDS_PER_SECOND / i64::from(HZ) - 1));
+        }
+    }
 }
 
 /// Sets the time of day, on the boot CPU.
@@ -324,5 +337,6 @@ pub fn interrupt(microseconds: u32, user_mode: bool) {
             mapped.set_time(time);
             mapped.set_uptime(uptime);
         }
+        LAST_TICK.store(Current::counter_nanoseconds(), Ordering::Release);
     }
 }
