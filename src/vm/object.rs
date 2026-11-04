@@ -6,14 +6,18 @@
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
+use intrusive_collections::{
+    LinkedList, LinkedListAtomicLink, RBTree, UnsafeRef, intrusive_adapter,
+};
 
+use super::page::{Page, PageTreeAdapter};
 use crate::arch::{MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS};
 use crate::ipc::port::{self, KernelObject, Port};
 use crate::kernel::slab::{Cache, CacheBox};
+use crate::sync::Token;
 
 /// The kernel's side of a memory object; so far only its first values, its
-/// name port and its place in the list of persisting objects.
+/// name port, its place in the list of persisting objects and its pages.
 #[expect(
     dead_code,
     reason = "vm_object_reference, vm_object_deallocate and the pager calls read them"
@@ -33,6 +37,16 @@ pub struct Object {
     pager_name: AtomicPtr<Port>,
     /// Its place in the list of persisting objects.
     persisting_link: LinkedListAtomicLink,
+    /// Its resident pages, behind its token.
+    pages: Token<Pages>,
+}
+
+/// An object's resident pages.
+struct Pages {
+    /// The pages, by offset.
+    tree: RBTree<PageTreeAdapter>,
+    /// How many there are.
+    count: usize,
 }
 
 intrusive_adapter!(
@@ -54,12 +68,30 @@ impl Object {
             alive: true,
             pager_name: AtomicPtr::new(ptr::null_mut()),
             persisting_link: LinkedListAtomicLink::new(),
+            pages: Token::new(Pages {
+                tree: RBTree::new(PageTreeAdapter::NEW),
+                count: 0,
+            }),
         }
+    }
+
+    /// Puts `page`, which belongs to no object, in it at `offset`.
+    ///
+    /// # Panics
+    ///
+    /// If `page` belongs to an object.
+    pub fn insert(&self, page: &'static Page, offset: usize) {
+        let mut pages = self.pages.lock();
+        page.set_object(self, offset);
+        pages.tree.insert(page);
+        pages.count += 1;
+        drop(pages);
     }
 }
 
-/// The object all wired kernel memory belongs to.
-static KERNEL_OBJECT: Object = Object::new(MAX_KERNEL_ADDRESS - MIN_KERNEL_ADDRESS + 1);
+/// The object all wired kernel memory belongs to, at the offset of its
+/// address in the kernel map.
+pub static KERNEL_OBJECT: Object = Object::new(MAX_KERNEL_ADDRESS - MIN_KERNEL_ADDRESS + 1);
 
 /// The unreferenced objects kept in case they are used again, until memory
 /// runs low.

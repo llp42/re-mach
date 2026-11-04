@@ -18,6 +18,8 @@ pub trait MachinePmap {
     /// Takes a reference on it.
     fn reference(&self);
 
+    /// Maps kernel `address` to the page at `physical`, read-write.
+    fn enter_kernel(address: usize, physical: PhysAddr);
     /// Maps the kernel addresses of `address` to the device memory from
     /// `physical` on, uncached.
     fn enter_device(address: Range<usize>, physical: PhysAddr);
