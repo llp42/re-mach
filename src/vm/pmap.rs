@@ -4,6 +4,8 @@
 
 use core::ops::Range;
 
+use crate::arch::PhysAddr;
+
 /// The machine's physical maps.
 pub trait MachinePmap {
     /// Takes `size` bytes of physical memory for good, before the page
@@ -16,6 +18,9 @@ pub trait MachinePmap {
     /// Takes a reference on it.
     fn reference(&self);
 
+    /// Maps the kernel addresses of `address` to the device memory from
+    /// `physical` on, uncached.
+    fn enter_device(address: Range<usize>, physical: PhysAddr);
     /// The kernel addresses the boot mappings use.
     fn boot_space() -> Range<usize>;
 
