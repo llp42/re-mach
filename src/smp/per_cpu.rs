@@ -3,7 +3,8 @@
 //! Per-CPU data: the machine-independent part, and the trait through which
 //! it reaches the machine's part.
 
-use core::sync::atomic::{AtomicU32, Ordering, compiler_fence};
+use core::ptr;
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering, compiler_fence};
 
 use intrusive_collections::LinkedList;
 
@@ -11,7 +12,7 @@ use crate::arch;
 use crate::kernel::clock::Wheel;
 use crate::kernel::processor::Processor;
 use crate::kernel::sched::{SLEEP_QUEUES, SleepQueue};
-use crate::kernel::thread::{RunQueueAdapter, SleepQueueAdapter};
+use crate::kernel::thread::{RunQueueAdapter, SleepQueueAdapter, Thread};
 use crate::sync::Token;
 
 /// One CPU's machine-independent data, held in the machine's part.
@@ -27,6 +28,8 @@ pub struct PerCpu {
     sleep_queues: [SleepQueue; SLEEP_QUEUES],
     /// Its processor.
     processor: Processor,
+    /// The thread it runs; null before its first.
+    active_thread: AtomicPtr<Thread>,
     /// The threads that ended on it, waiting for the reaper, linked as on
     /// a run queue.
     #[expect(dead_code, reason = "thread_terminate and the reaper use them")]
@@ -51,6 +54,7 @@ impl PerCpu {
             critical_nesting: AtomicU32::new(0),
             sleep_queues: [const { SleepQueue::new(SleepQueueAdapter::NEW) }; SLEEP_QUEUES],
             processor: Processor::new(),
+            active_thread: AtomicPtr::new(ptr::null_mut()),
             dead_threads: Token::new(LinkedList::new(RunQueueAdapter::NEW)),
             timeouts: Wheel::new(),
             pending_asts: AtomicU32::new(0),
@@ -70,6 +74,12 @@ impl PerCpu {
     /// Its timeouts.
     pub const fn timeouts(&self) -> &Wheel {
         &self.timeouts
+    }
+
+    /// Makes `thread` the one it runs, as it switches to it.
+    pub fn set_active_thread(&self, thread: &'static Thread) {
+        self.active_thread
+            .store(ptr::from_ref(thread).cast_mut(), Ordering::Release);
     }
 
     /// Enters an interrupt handler on this CPU; dropping the guard leaves it.
