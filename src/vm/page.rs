@@ -193,17 +193,26 @@ struct Loaded {
     span: Option<Range<PhysAddr>>,
     /// The boot heap's unused part, free from the start.
     heap: Option<Range<PhysAddr>>,
+    /// The bytes of the segments loaded, holes within them included.
+    size: usize,
 }
 
 static LOADED: BootCell<Loaded> = BootCell::new(Loaded {
     span: None,
     heap: None,
+    size: 0,
 });
 
-/// Widens the span to cover `range`.
+/// Loads the segment `range`, widening the span to cover it.
 pub fn load(range: Range<PhysAddr>) {
     let mut loaded = LOADED.borrow_mut();
+    loaded.size += range.end - range.start;
     loaded.span = Some(widen(loaded.span.take(), range));
+}
+
+/// The bytes of the segments loaded, holes within them included.
+pub fn memory_size() -> usize {
+    LOADED.borrow().size
 }
 
 /// Widens the free heap to cover `range`.

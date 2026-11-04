@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Machine-independent startup.
 
-use super::{clock, radix_tree, sched};
+use super::{clock, machine, radix_tree, sched};
 use crate::arch::{self, Machine as _};
 use crate::{ipc, vm};
 
@@ -18,5 +18,6 @@ pub fn start() -> ! {
     ipc::init();
     arch::Current::init();
     clock::map_time();
+    machine::init_info();
     arch::Current::halt()
 }
