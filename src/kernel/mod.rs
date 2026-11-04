@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! Machine-independent kernel code.
 
+pub mod ast;
 pub mod clock;
 pub mod console;
 mod error;

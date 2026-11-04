@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, AtomicU64, Ordering, fe
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use super::machine::{self, CpuState};
+use super::sched;
 use crate::arch::PAGE_SIZE;
 use crate::sync::{OnceLock, Spinlock};
 use crate::{smp, vm};
@@ -244,7 +245,8 @@ pub fn map_time() {
 /// the thread's, and the CPU's in that state.
 pub fn interrupt(microseconds: u32, user_mode: bool) {
     let cpu = smp::current();
-    if let Some(thread) = cpu.active_thread() {
+    let thread = cpu.active_thread();
+    if let Some(thread) = thread {
         thread.add_time(microseconds, user_mode);
     }
     let state = if user_mode {
@@ -253,6 +255,9 @@ pub fn interrupt(microseconds: u32, user_mode: bool) {
         CpuState::System
     };
     machine::count_tick(cpu.id(), state);
+    if let Some(thread) = thread {
+        sched::quantum_update(thread, 1);
+    }
     let wheel = cpu.timeouts();
     wheel
         .ticks

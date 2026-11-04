@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering, compiler_fence};
 use intrusive_collections::LinkedList;
 
 use crate::arch;
+use crate::kernel::ast::Ast;
 use crate::kernel::clock::Wheel;
 use crate::kernel::processor::Processor;
 use crate::kernel::sched::{SLEEP_QUEUES, SleepQueue};
@@ -42,7 +43,6 @@ pub struct PerCpu {
     /// Its timeouts; only it runs them.
     timeouts: Wheel,
     /// The ASTs pending on it, a bit per reason.
-    #[expect(dead_code, reason = "the first AST posts them")]
     pending_asts: AtomicU32,
 }
 
@@ -122,6 +122,16 @@ impl PerCpu {
     /// How many spinlocks this CPU holds.
     pub fn spinlocks(&self) -> u32 {
         self.spinlocks.load(Ordering::Relaxed)
+    }
+
+    /// Posts `asts` on it.
+    pub fn add_asts(&self, asts: Ast) {
+        self.pending_asts.fetch_or(asts.bits(), Ordering::Relaxed);
+    }
+
+    /// The ASTs pending on it.
+    pub fn asts(&self) -> Ast {
+        Ast::from_bits_retain(self.pending_asts.load(Ordering::Relaxed))
     }
 
     /// Enters an interrupt handler on this CPU; dropping the guard leaves it.

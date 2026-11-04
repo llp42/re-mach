@@ -7,10 +7,12 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use intrusive_collections::LinkedList;
 
+use super::ast;
 use super::clock::{self, Timeout};
 use super::processor::{self, ActionQueueAdapter};
-use super::thread::{RunQueueAdapter, SleepQueueAdapter};
+use super::thread::{RunQueueAdapter, SleepQueueAdapter, Thread};
 use crate::config::HZ;
+use crate::smp;
 
 /// The threads sleeping on the events that hash to one slot.
 pub type SleepQueue = LinkedList<SleepQueueAdapter>;
@@ -69,10 +71,51 @@ pub const PRIORITY_SHIFT: u32 = 17;
 bitflags::bitflags! {
     /// Scheduling policies, as Mach's interface numbers them; only those
     /// used here.
+    #[derive(PartialEq, Eq)]
     pub struct Policies: u32 {
         /// Priorities decay with use.
         const TIMESHARE = 1;
+        /// Priorities stay, and each thread has its own quantum.
+        const FIXED_PRIORITY = 2;
     }
+}
+
+/// How much scaled use a thread gathers within a quantum before its
+/// priority is recomputed.
+pub const USAGE_THRESHOLD: u32 = 1 << (PRIORITY_SHIFT + 2 + SCHEDULER_SHIFT);
+
+/// Charges `ticks` ticks to `thread`, running on the current CPU's
+/// processor: its quantum runs down and is renewed when it runs out, its
+/// priority follows its use, and the CPU checks whether it should switch.
+pub fn quantum_update(thread: &'static Thread, ticks: u32) {
+    let processor = smp::current().processor();
+    // A processor moving between sets is in none.
+    let Some(set) = processor.set() else {
+        return;
+    };
+    let set_quantum = set.current_quantum();
+    let mut quantum = if processor.queued.load(Ordering::Relaxed) == 0 {
+        set_quantum
+    } else {
+        MIN_QUANTUM
+    };
+    let left = processor.quantum.load(Ordering::Relaxed) - i32::try_from(ticks).unwrap();
+    processor.quantum.store(left, Ordering::Relaxed);
+    if quantum != processor.last_quantum.load(Ordering::Relaxed)
+        && set.processor_count.load(Ordering::Relaxed) > 1
+    {
+        processor.last_quantum.store(quantum, Ordering::Relaxed);
+        quantum = set.adjust_quantum(quantum);
+    }
+    if left <= 0 {
+        thread.charge_tick(true);
+        processor.first_quantum.store(false, Ordering::Relaxed);
+        let next = i32::try_from(thread.next_quantum(quantum)).unwrap();
+        processor.quantum.store(left + next, Ordering::Relaxed);
+    } else {
+        thread.charge_tick(false);
+    }
+    ast::check(thread);
 }
 
 /// Sets up the scheduler, on the boot CPU.
