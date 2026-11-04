@@ -237,3 +237,13 @@ pub fn map_time() {
     mapped.set_time(TIME.get());
     assert!(MAPPED_TIME.set(mapped).is_ok(), "mapable_time_init: twice");
 }
+
+/// Takes a clock tick on the current CPU, `microseconds` after the one
+/// before, with the thread it interrupted in user mode or not; so far the
+/// CPU only counts it.
+pub fn interrupt(_microseconds: u32, _user_mode: bool) {
+    let wheel = smp::current().timeouts();
+    wheel
+        .ticks
+        .store(wheel.ticks.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+}

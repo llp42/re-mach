@@ -51,5 +51,6 @@ pub fn start() -> ! {
 fn launch_first_thread(thread: &'static Thread) -> ! {
     machine::cpu_up(smp::current().id());
     thread.run_here();
+    arch::Current::start_clock();
     arch::Current::halt()
 }

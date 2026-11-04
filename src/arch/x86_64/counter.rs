@@ -81,7 +81,6 @@ fn measure_tsc(period: u64) -> u64 {
 /// # Panics
 ///
 /// Before `init`.
-#[expect(dead_code, reason = "the local APIC timer's calibration reads it")]
 pub fn nanoseconds() -> u64 {
     match COUNTER.get().expect("counter: none picked") {
         // SAFETY: RDTSC only reads the counter.

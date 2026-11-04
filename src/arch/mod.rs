@@ -28,6 +28,8 @@ pub trait Machine {
     /// sets the APICs up, reads the time of day, and starts the time
     /// counter.
     fn init();
+    /// Starts the current CPU's clock ticking.
+    fn start_clock();
     /// Sets up tasks' machine part, on the boot CPU.
     fn task_module_init();
     /// The kernel's command line, as the loader gave it; empty if none.

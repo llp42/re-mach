@@ -5,12 +5,13 @@
 
 use x86_64::registers::model_specific::{ApicBase, ApicBaseFlags};
 
+use super::counter;
 use super::mmio::Registers;
 use super::per_cpu::PerCpu;
 use crate::collections::ArrayVec;
-use crate::config::MAX_CPUS;
+use crate::config::{HZ, MAX_CPUS};
 use crate::println;
-use crate::smp::MachinePerCpu as _;
+use crate::smp::{self, MachinePerCpu as _};
 use crate::sync::OnceLock;
 
 /// Turns on the boot CPU's local APIC in xAPIC mode.
@@ -98,13 +99,32 @@ pub const SPURIOUS_VECTOR: u32 = 0xff;
 /// Local APIC registers, by byte offset.
 mod local {
     pub const TASK_PRIORITY: usize = 0x80;
+    pub const END_OF_INTERRUPT: usize = 0xb0;
     pub const SPURIOUS: usize = 0xf0;
     pub const ERROR_STATUS: usize = 0x280;
     pub const TIMER: usize = 0x320;
     pub const PERFORMANCE: usize = 0x340;
     pub const LINT0: usize = 0x350;
     pub const LINT1: usize = 0x360;
+    pub const INITIAL_COUNT: usize = 0x380;
+    pub const CURRENT_COUNT: usize = 0x390;
+    pub const DIVIDE: usize = 0x3e0;
 }
+
+/// The local APIC timer's vector: above every device's, below the IPIs'.
+pub const TIMER_VECTOR: usize = 0xf0;
+
+/// The timer's divide configuration: by 2.
+const DIVIDE_BY_2: u32 = 0;
+
+/// The timer's periodic mode.
+const PERIODIC: u32 = 1 << 17;
+
+/// How long the timer is measured against the time counter: 10 ticks.
+const CALIBRATION_TICKS: u64 = 10;
+
+/// The timer's count for one tick, once calibrated.
+static TICK_COUNT: OnceLock<u32> = OnceLock::new();
 
 /// A local vector table entry's mask bit.
 const MASKED: u32 = 1 << 16;
@@ -241,4 +261,57 @@ fn setup_local(local: &Registers) {
     local.write(local::TASK_PRIORITY, 0);
     local.write(local::SPURIOUS, SPURIOUS_VECTOR | SOFTWARE_ENABLE);
     local.write(local::ERROR_STATUS, 0);
+}
+
+/// Calibrates the current CPU's local APIC timer against the time counter
+/// over `CALIBRATION_TICKS` ticks, then starts it ticking `HZ` times a
+/// second.
+///
+/// # Panics
+///
+/// If the ACPI step found no local APIC, or the timer did not count.
+pub fn start_timer() {
+    let local = LOCAL_APIC.get().expect("startrtclock: no local APIC");
+    let count = if let Some(&count) = TICK_COUNT.get() {
+        count
+    } else {
+        let count = calibrate(local);
+        assert!(
+            TICK_COUNT.set(count).is_ok(),
+            "startrtclock: calibrated twice"
+        );
+        count
+    };
+    local.write(local::DIVIDE, DIVIDE_BY_2);
+    local.write(
+        local::TIMER,
+        PERIODIC | u32::try_from(TIMER_VECTOR).unwrap(),
+    );
+    local.write(local::INITIAL_COUNT, count);
+    println!("LAPIC timer configured on cpu{}", smp::current().id());
+}
+
+/// The timer's count for one tick, measured one-shot and masked.
+fn calibrate(local: &Registers) -> u32 {
+    local.write(local::DIVIDE, DIVIDE_BY_2);
+    local.write(local::TIMER, MASKED | u32::try_from(TIMER_VECTOR).unwrap());
+    let span = CALIBRATION_TICKS * 1_000_000_000 / u64::from(HZ);
+    let start = counter::nanoseconds();
+    local.write(local::INITIAL_COUNT, u32::MAX);
+    while counter::nanoseconds() - start < span {}
+    let counted = u32::MAX - local.read(local::CURRENT_COUNT);
+    local.write(local::INITIAL_COUNT, 0);
+    assert!(
+        counted != 0,
+        "startrtclock: the local APIC timer did not count"
+    );
+    println!("timer calibration... done");
+    counted / u32::try_from(CALIBRATION_TICKS).unwrap()
+}
+
+/// Ends the interrupt the current CPU's local APIC is delivering.
+pub fn end_of_interrupt() {
+    if let Some(local) = LOCAL_APIC.get() {
+        local.write(local::END_OF_INTERRUPT, 0);
+    }
 }

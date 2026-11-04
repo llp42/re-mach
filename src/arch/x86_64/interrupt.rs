@@ -7,10 +7,14 @@ use core::fmt::Write;
 
 use x86_64::VirtAddr;
 
-use super::idt;
+use x86_64::PrivilegeLevel;
+
 use super::per_cpu::PerCpu;
 use super::serial::Serial;
 use super::trap::TrapFrame;
+use super::{apic, idt};
+use crate::config::HZ;
+use crate::kernel::clock;
 use crate::smp::MachinePerCpu as _;
 use crate::sync::CriticalSection;
 
@@ -92,6 +96,11 @@ extern "sysv64" fn interrupt(frame: &TrapFrame) {
     if frame.vector == 0xff {
         return;
     }
+    // The timer's EOI comes first, so a tick held back still lets the next
+    // one in; held ticks run once.
+    if frame.vector == apic::TIMER_VECTOR {
+        apic::end_of_interrupt();
+    }
     if cpu.hold(frame.vector) {
         return;
     }
@@ -100,9 +109,16 @@ extern "sysv64" fn interrupt(frame: &TrapFrame) {
 }
 
 /// Runs `vector`'s handler, in a critical section, with the state it
-/// interrupted unless it was held back; none is set up yet, since no
-/// source is unmasked.
+/// interrupted unless it was held back; the timer's is the clock's, and
+/// no other source is unmasked yet.
 pub fn handle(vector: usize, frame: Option<&TrapFrame>) {
+    if vector == apic::TIMER_VECTOR {
+        // A tick held back interrupted the kernel.
+        let user_mode = frame
+            .is_some_and(|frame| frame.interrupted.code_segment.rpl() != PrivilegeLevel::Ring0);
+        clock::interrupt(1_000_000 / HZ, user_mode);
+        return;
+    }
     let _ = write!(Serial, "Unexpected interrupt {vector}");
     let _ = frame.map_or_else(
         || write!(Serial, ", held back\r\n"),

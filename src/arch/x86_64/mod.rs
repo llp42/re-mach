@@ -304,6 +304,10 @@ impl Machine for X86_64 {
         counter::init();
     }
 
+    fn start_clock() {
+        apic::start_timer();
+    }
+
     fn task_module_init() {
         machine_task::module_init();
     }
