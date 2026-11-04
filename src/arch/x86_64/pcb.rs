@@ -5,7 +5,8 @@
 
 use super::fpu;
 use super::trap::TrapFrame;
-use crate::kernel::slab::Cache;
+use crate::kernel::Error;
+use crate::kernel::slab::{Cache, CacheBox};
 use crate::kernel::thread::MachineThread;
 
 /// A thread's machine state; so far only its user registers.
@@ -22,5 +23,11 @@ impl MachineThread for Pcb {
     fn module_init() {
         CACHE.register();
         fpu::module_init();
+    }
+
+    fn new() -> Result<CacheBox<Self>, Error> {
+        CACHE.allocate(Self {
+            user: TrapFrame::user(),
+        })
     }
 }

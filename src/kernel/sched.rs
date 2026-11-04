@@ -32,6 +32,11 @@ static ACTION_QUEUE: LinkedList<ActionQueueAdapter> = LinkedList::new(ActionQueu
 /// How many times threads' priorities have been recomputed, once a second.
 static SCHEDULER_TICK: AtomicU32 = AtomicU32::new(0);
 
+/// The scheduler tick.
+pub fn scheduler_tick() -> u32 {
+    SCHEDULER_TICK.load(Ordering::Relaxed)
+}
+
 /// What recomputes threads' priorities each second.
 pub static RECOMPUTE_PRIORITIES: Timeout = Timeout::new(recompute_priorities);
 
@@ -53,6 +58,13 @@ pub const MIN_QUANTUM: u32 = HZ / 33;
 
 /// The scheduler's fixed-point one, which a set's load is scaled by.
 pub const SCHEDULER_SCALE: u32 = 128;
+
+/// How far `SCHEDULER_SCALE` shifts.
+pub const SCHEDULER_SHIFT: u32 = 7;
+
+/// How far a thread's use is shifted, past `SCHEDULER_SHIFT`, to age its
+/// priority.
+pub const PRIORITY_SHIFT: u32 = 17;
 
 bitflags::bitflags! {
     /// Scheduling policies, as Mach's interface numbers them; only those
