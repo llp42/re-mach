@@ -308,6 +308,10 @@ impl Machine for X86_64 {
         apic::start_timer();
     }
 
+    fn counter_nanoseconds() -> u64 {
+        counter::nanoseconds()
+    }
+
     fn task_module_init() {
         machine_task::module_init();
     }
