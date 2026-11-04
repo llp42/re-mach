@@ -10,7 +10,11 @@ use super::object::KERNEL_OBJECT;
 use super::page;
 use super::pmap::MachinePmap as _;
 use super::{Inheritance, Protection};
-use crate::arch::{self, MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE, PhysAddr};
+use core::ops::Range;
+
+use crate::arch::{
+    self, KERNEL_STACK_SIZE, MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE, PhysAddr,
+};
 use crate::kernel::Error;
 use crate::sync::OnceLock;
 
@@ -96,10 +100,53 @@ pub fn allocate_wired(size: usize) -> Result<NonNull<u8>, Error> {
         Protection::all(),
         Some(&KERNEL_OBJECT),
     )?;
-    for address in range.clone().step_by(PAGE_SIZE) {
+    fill(range.clone())?;
+    Ok(NonNull::new(ptr::with_exposed_provenance_mut(range.start)).unwrap())
+}
+
+/// Maps a zeroed page of the kernel object at each page of `range`, at the
+/// offset of its address in the kernel map.
+fn fill(range: Range<usize>) -> Result<(), Error> {
+    for address in range.step_by(PAGE_SIZE) {
         let page = page::allocate_zeroed().ok_or(Error::ResourceShortage)?;
         KERNEL_OBJECT.insert(page, address - MIN_KERNEL_ADDRESS);
         arch::Pmap::enter_kernel(address, page.address());
     }
-    Ok(NonNull::new(ptr::with_exposed_provenance_mut(range.start)).unwrap())
+    Ok(())
+}
+
+/// A thread's kernel stack, which it keeps for life.
+pub struct KernelStack {
+    /// Past its last byte, where pushing starts.
+    top: usize,
+}
+
+impl KernelStack {
+    /// Past its last byte, where pushing starts.
+    pub const fn top(&self) -> usize {
+        self.top
+    }
+}
+
+/// Takes a kernel stack: `KERNEL_STACK_SIZE` bytes of wired, zeroed memory
+/// of the kernel object, above a page left unmapped, so running off its
+/// end faults.
+///
+/// # Errors
+///
+/// As `allocate_wired`.
+///
+/// # Panics
+///
+/// If the kernel map is not set up.
+pub fn allocate_stack() -> Result<KernelStack, Error> {
+    let map = KERNEL_MAP.get().expect("kmem_alloc_stack: no kernel map");
+    let range = map.enter_anywhere(
+        PAGE_SIZE + KERNEL_STACK_SIZE,
+        Protection::READ | Protection::WRITE,
+        Protection::all(),
+        Some(&KERNEL_OBJECT),
+    )?;
+    fill(range.start + PAGE_SIZE..range.end)?;
+    Ok(KernelStack { top: range.end })
 }

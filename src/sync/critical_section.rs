@@ -24,6 +24,19 @@ impl CriticalSection {
     }
 }
 
+impl CriticalSection {
+    /// The critical section this CPU is in that no guard holds, such as
+    /// the one a switch to a new thread was made in.
+    ///
+    /// # Safety
+    ///
+    /// The CPU is in such a section, and only this guard leaves it.
+    #[must_use = "dropping it leaves the critical section"]
+    pub const unsafe fn inherit() -> Self {
+        Self { _cpu: PhantomData }
+    }
+}
+
 impl Drop for CriticalSection {
     fn drop(&mut self) {
         crit_exit();

@@ -7,6 +7,9 @@ use super::address::PhysAddr;
 /// Bytes per page.
 pub const PAGE_SIZE: usize = 4096;
 
+/// Bytes of a thread's kernel stack.
+pub const KERNEL_STACK_SIZE: usize = 16 << 10;
+
 /// The PML4 maps itself here, showing every page table.
 pub const PAGE_TABLE_BASE: usize = 0xffff_8000_0000_0000;
 

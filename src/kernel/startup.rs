@@ -34,5 +34,8 @@ pub fn start() -> ! {
         .unwrap_or_else(|error| panic!("startup: thread_create: {error:?}"));
     startup.set_name("startup");
     startup.start(start_kernel_threads);
+    startup
+        .allocate_stack()
+        .unwrap_or_else(|error| panic!("startup: thread_doswapin: {error:?}"));
     arch::Current::halt()
 }

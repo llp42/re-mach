@@ -52,7 +52,7 @@ use crate::sync::OnceLock;
 pub use address::PhysAddr;
 use boot_memory::Retention;
 use memory_layout::KERNEL_BASE;
-pub use memory_layout::{MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE};
+pub use memory_layout::{KERNEL_STACK_SIZE, MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE};
 pub use pcb::Pcb;
 pub use per_cpu::PerCpu;
 pub use pmap::Pmap;
