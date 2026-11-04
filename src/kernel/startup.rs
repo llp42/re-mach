@@ -16,5 +16,6 @@ pub fn start() -> ! {
     ipc::bootstrap();
     vm::init();
     ipc::init();
+    arch::Current::init();
     arch::Current::halt()
 }
