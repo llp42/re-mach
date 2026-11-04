@@ -4,7 +4,7 @@
 //! Processors and processor sets.
 
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
@@ -26,8 +26,10 @@ const MEMBER_SHARDS: usize = 64;
 /// A processor: one per CPU, in that CPU's data.
 #[expect(dead_code, reason = "the dispatcher and processor_info read them")]
 pub struct Processor {
-    /// What it is doing.
-    state: State,
+    /// What it is doing, a `State`.
+    state: AtomicU8,
+    /// The processor set it is in, once it comes up.
+    set: AtomicPtr<ProcessorSet>,
     /// Its runnable threads, by priority; only its CPU touches them, inside
     /// a critical section.
     run_queues: [RunQueue; RUN_QUEUES],
@@ -47,17 +49,31 @@ intrusive_adapter!(
     pub ActionQueueAdapter = &'static Processor: Processor { action_link => LinkedListAtomicLink }
 );
 
-/// What a processor is doing; only the states used here.
+/// What a processor is doing, as Mach numbers it; only the states used
+/// here.
 enum State {
     /// Not in the system.
-    Offline,
+    Offline = 0,
+    /// Running a thread.
+    Running = 1,
+}
+
+impl State {
+    /// Its number.
+    const fn number(self) -> u8 {
+        match self {
+            Self::Offline => 0,
+            Self::Running => 1,
+        }
+    }
 }
 
 impl Processor {
     /// One not yet in the system.
     pub const fn new() -> Self {
         Self {
-            state: State::Offline,
+            state: AtomicU8::new(State::Offline.number()),
+            set: AtomicPtr::new(ptr::null_mut()),
             run_queues: [const { RunQueue::new(RunQueueAdapter::NEW) }; RUN_QUEUES],
             action_link: LinkedListAtomicLink::new(),
             port: AtomicPtr::new(ptr::null_mut()),
@@ -72,7 +88,9 @@ pub struct ProcessorSet {
     /// Whether it is in use; a destroyed set is not.
     pub(super) active: bool,
     /// Whether it has no processor; threads created in it start suspended.
-    pub(super) empty: bool,
+    pub(super) empty: AtomicBool,
+    /// How many processors it has.
+    processor_count: AtomicU32,
     /// How many references it has.
     pub(super) references: AtomicU32,
     /// The highest priority its threads may take.
@@ -80,7 +98,10 @@ pub struct ProcessorSet {
     /// The policies its threads may use.
     policies: Policies,
     /// Its processors' quantum, in ticks.
-    quantum: u32,
+    quantum: AtomicU32,
+    /// The quantum for each count of threads waiting, up to its processor
+    /// count; at 0, twice the quantum of 1.
+    machine_quantum: [AtomicU32; MAX_CPUS + 1],
     /// Its load, scaled by `SCHEDULER_SCALE`.
     load: u32,
     /// Its port, for controlling it.
@@ -129,11 +150,13 @@ impl ProcessorSet {
     const fn new() -> Self {
         Self {
             active: false,
-            empty: true,
+            empty: AtomicBool::new(true),
+            processor_count: AtomicU32::new(0),
             references: AtomicU32::new(1),
             max_priority: SYSTEM_PRIORITY,
             policies: Policies::TIMESHARE,
-            quantum: MIN_QUANTUM,
+            quantum: AtomicU32::new(MIN_QUANTUM),
+            machine_quantum: [const { AtomicU32::new(MIN_QUANTUM) }; MAX_CPUS + 1],
             load: SCHEDULER_SCALE,
             port: AtomicPtr::new(ptr::null_mut()),
             name_port: AtomicPtr::new(ptr::null_mut()),
@@ -175,6 +198,31 @@ impl ProcessorSet {
             .set
             .store(ptr::from_ref(self).cast_mut(), Ordering::Release);
         self.thread_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Takes `processor`, coming up, and sets its quanta again.
+    pub(super) fn add_processor(&'static self, processor: &'static Processor) {
+        processor
+            .set
+            .store(ptr::from_ref(self).cast_mut(), Ordering::Release);
+        let count = self.processor_count.fetch_add(1, Ordering::Relaxed) + 1;
+        self.empty.store(false, Ordering::Relaxed);
+        self.set_quantum(count);
+    }
+
+    /// Sets its quanta for `count` processors: an even share of the
+    /// shortest quantum each, by threads waiting; with no set-wide run
+    /// queue, the quantum for none waiting.
+    fn set_quantum(&self, count: u32) {
+        for waiting in 1..=count {
+            self.machine_quantum[usize::try_from(waiting).unwrap()].store(
+                (MIN_QUANTUM * count + waiting / 2) / waiting,
+                Ordering::Relaxed,
+            );
+        }
+        let one = self.machine_quantum[1].load(Ordering::Relaxed);
+        self.machine_quantum[0].store(2 * one, Ordering::Relaxed);
+        self.quantum.store(2 * one, Ordering::Relaxed);
     }
 
     /// Adds it to the list of all sets.
@@ -233,4 +281,19 @@ pub fn init() {
     DEFAULT_SET.join_all();
     let set = ProcessorSet::create().unwrap_or_else(|error| panic!("pset_sys_init: {error:?}"));
     assert!(SLAVE_SET.set(set).is_ok(), "pset_sys_init: twice");
+}
+
+/// Brings the current CPU's processor up, on that CPU: it joins the
+/// default set, or the slave set for a CPU but the boot CPU's, and runs.
+pub fn up(cpu: usize) {
+    let processor = smp::current().processor();
+    let set = if cpu == 0 {
+        &DEFAULT_SET
+    } else {
+        SLAVE_SET.get().expect("cpu_up: no slave set")
+    };
+    set.add_processor(processor);
+    processor
+        .state
+        .store(State::Running.number(), Ordering::Release);
 }

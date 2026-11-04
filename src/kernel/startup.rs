@@ -5,7 +5,7 @@
 
 use super::{clock, machine, processor, radix_tree, sched, task, thread};
 use crate::arch::{self, Machine as _};
-use crate::{ipc, vm};
+use crate::{ipc, smp, vm};
 
 /// The startup thread's work: starting the other kernel threads and the
 /// bootstrap tasks; so far it only stops its CPU.
@@ -43,5 +43,11 @@ pub fn start() -> ! {
     startup
         .resume()
         .unwrap_or_else(|error| panic!("startup: thread_resume: {error:?}"));
+    launch_first_thread()
+}
+
+/// Brings the current CPU up and starts its first thread on it.
+fn launch_first_thread() -> ! {
+    machine::cpu_up(smp::current().id());
     arch::Current::halt()
 }
