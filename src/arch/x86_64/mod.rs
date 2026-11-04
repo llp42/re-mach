@@ -16,6 +16,7 @@ mod gdt;
 mod idt;
 mod interrupt;
 mod memory_layout;
+mod mmio;
 mod per_cpu;
 mod pic;
 mod pmap;
@@ -268,6 +269,9 @@ impl Machine for X86_64 {
     fn init() {
         boot_memory::free_usable();
         fpu::init();
+        if let Err(error) = acpi::init_apics() {
+            panic!("acpi_apic_init failed with {error:?}");
+        }
     }
 
     fn kernel_command_line() -> &'static CStr {
