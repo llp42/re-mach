@@ -288,6 +288,7 @@ impl Machine for X86_64 {
             panic!("acpi_apic_init failed with {error:?}");
         }
         init_slots();
+        apic::configure_io_apics();
     }
 
     fn kernel_command_line() -> &'static CStr {

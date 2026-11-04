@@ -9,7 +9,9 @@ use core::ops::Range;
 use core::{ptr, slice};
 
 use super::address::PhysAddr;
-use super::apic::{self, IoApic, MAX_IO_APICS, MAX_OVERRIDES, Override, Polarity, Trigger};
+use super::apic::{
+    self, IO_APIC_VERSION, IoApic, MAX_IO_APICS, MAX_OVERRIDES, Override, Polarity, Trigger,
+};
 use super::mmio::Registers;
 use super::per_cpu::PerCpu;
 use super::serial::Serial;
@@ -198,9 +200,6 @@ const REGISTERS_SIZE: usize = 0x400;
 /// Size of an IO APIC's register block: its select and window registers.
 const IO_APIC_SIZE: usize = 0x20;
 
-/// The IO APIC's version register, which holds its last input's number.
-const IO_APIC_VERSION: u32 = 1;
-
 /// Finds the CPUs, the local APIC, the IO APICs, their overrides and the
 /// HPET in the ACPI tables, on the boot CPU, and maps their registers; the
 /// boot CPU is numbered 0, the others in the firmware's order.
@@ -352,14 +351,14 @@ fn parse_madt(madt: &Table) -> Result<Madt, Error> {
                 let registers =
                     Registers::map(PhysAddr(usize::try_from(word(4)).unwrap()), IO_APIC_SIZE)
                         .map_err(|_| Error::NoMapping)?;
-                registers.write(0, IO_APIC_VERSION);
-                let inputs = (registers.read(0x10) >> 16 & 0xff) + 1;
-                io_apics.push(IoApic {
+                let mut io_apic = IoApic {
                     id: entry[2],
                     gsi_base: word(8),
-                    inputs,
+                    inputs: 0,
                     registers,
-                });
+                };
+                io_apic.inputs = (io_apic.read(IO_APIC_VERSION) >> 16 & 0xff) + 1;
+                io_apics.push(io_apic);
             }
             2 => {
                 let flags = u16::from_le_bytes(entry[8..10].try_into().unwrap());
