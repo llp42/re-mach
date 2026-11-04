@@ -12,6 +12,8 @@ use super::sched::{MIN_QUANTUM, Policies, RUN_QUEUES, RunQueue, SCHEDULER_SCALE,
 use super::slab::Cache;
 use super::task::{SetTaskAdapter, Task};
 use super::thread::RunQueueAdapter;
+use super::{ipc_host, machine};
+use crate::config::MAX_CPUS;
 use crate::ipc::port::Port;
 use crate::smp;
 use crate::sync::{OnceLock, Token};
@@ -146,7 +148,11 @@ pub fn bootstrap() {
     );
 }
 
-/// Sets up processor sets, on the boot CPU.
+/// Sets up processor sets, on the boot CPU, and gives every processor but
+/// the boot CPU's its ports.
 pub fn init() {
     SET_CACHE.register();
+    for cpu in (1..MAX_CPUS).filter(|&cpu| machine::has_processor(cpu)) {
+        ipc_host::init_processor(smp::of(cpu).processor());
+    }
 }

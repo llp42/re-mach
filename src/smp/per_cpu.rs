@@ -125,6 +125,8 @@ fn lower(count: &AtomicU32) -> u32 {
 pub trait MachinePerCpu: Sync + 'static {
     /// The current CPU's.
     fn current() -> &'static Self;
+    /// CPU `cpu`'s.
+    fn of(cpu: usize) -> &'static Self;
 
     /// Its machine-independent part.
     fn common(&self) -> &PerCpu;
@@ -136,4 +138,9 @@ pub trait MachinePerCpu: Sync + 'static {
 /// The current CPU's machine-independent data.
 pub fn current() -> &'static PerCpu {
     arch::PerCpu::current().common()
+}
+
+/// CPU `cpu`'s machine-independent data.
+pub fn of(cpu: usize) -> &'static PerCpu {
+    arch::PerCpu::of(cpu).common()
 }
