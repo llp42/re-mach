@@ -88,7 +88,6 @@ pub fn map_device(physical: PhysAddr, size: usize) -> Result<NonNull<u8>, Error>
 /// # Panics
 ///
 /// If the kernel map is not set up.
-#[expect(dead_code, reason = "mapable_time_init takes the mapped time with it")]
 pub fn allocate_wired(size: usize) -> Result<NonNull<u8>, Error> {
     let map = KERNEL_MAP.get().expect("kmem_alloc_wired: no kernel map");
     let range = map.enter_anywhere(
