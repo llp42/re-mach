@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use super::sched::{MIN_QUANTUM, Policies, RUN_QUEUES, RunQueue, SCHEDULER_SCALE, SYSTEM_PRIORITY};
+use super::slab::Cache;
 use super::task::{SetTaskAdapter, Task};
 use super::thread::RunQueueAdapter;
 use crate::ipc::port::Port;
@@ -90,6 +91,24 @@ pub struct ProcessorSet {
 }
 
 impl ProcessorSet {
+    /// A new set, not in use yet, with one reference, no processor and no
+    /// task.
+    const fn new() -> Self {
+        Self {
+            active: false,
+            empty: true,
+            references: AtomicU32::new(1),
+            max_priority: SYSTEM_PRIORITY,
+            policies: Policies::TIMESHARE,
+            quantum: MIN_QUANTUM,
+            load: SCHEDULER_SCALE,
+            port: AtomicPtr::new(ptr::null_mut()),
+            name_port: AtomicPtr::new(ptr::null_mut()),
+            tasks: [const { Token::new(LinkedList::new(SetTaskAdapter::NEW)) }; MEMBER_SHARDS],
+            task_count: AtomicU32::new(0),
+        }
+    }
+
     /// Takes `task`, new and in no set, with a reference for it.
     pub(super) fn add_task(&'static self, task: &'static Task) {
         self.references.fetch_add(1, Ordering::Relaxed);
@@ -103,19 +122,14 @@ impl ProcessorSet {
 }
 
 /// The default set, where every processor and thread starts.
-pub(super) static DEFAULT_SET: ProcessorSet = ProcessorSet {
-    active: true,
-    empty: true,
-    references: AtomicU32::new(1),
-    max_priority: SYSTEM_PRIORITY,
-    policies: Policies::TIMESHARE,
-    quantum: MIN_QUANTUM,
-    load: SCHEDULER_SCALE,
-    port: AtomicPtr::new(ptr::null_mut()),
-    name_port: AtomicPtr::new(ptr::null_mut()),
-    tasks: [const { Token::new(LinkedList::new(SetTaskAdapter::NEW)) }; MEMBER_SHARDS],
-    task_count: AtomicU32::new(0),
+pub(super) static DEFAULT_SET: ProcessorSet = {
+    let mut set = ProcessorSet::new();
+    set.active = true;
+    set
 };
+
+/// The cache processor sets other than the default come from.
+static SET_CACHE: Cache<ProcessorSet> = Cache::new("processor_set");
 
 /// The boot CPU's processor.
 pub(super) static BOOT_PROCESSOR: OnceLock<&'static Processor> = OnceLock::new();
@@ -130,4 +144,9 @@ pub fn bootstrap() {
         BOOT_PROCESSOR.set(smp::current().processor()).is_ok(),
         "processor: bootstrapped twice"
     );
+}
+
+/// Sets up processor sets, on the boot CPU.
+pub fn init() {
+    SET_CACHE.register();
 }
