@@ -3,6 +3,9 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Machine slots: what the host knows of each processor.
 
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+use super::processor;
 use crate::config::MAX_CPUS;
 use crate::sync::OnceLock;
 use crate::vm;
@@ -29,6 +32,19 @@ impl CpuSubtype {
 pub struct Slot {
     pub ty: CpuType,
     pub subtype: CpuSubtype,
+    /// Whether the processor is up.
+    pub running: AtomicBool,
+}
+
+impl Slot {
+    /// A slot holding a processor of `ty` and `subtype`, not up yet.
+    pub const fn new(ty: CpuType, subtype: CpuSubtype) -> Self {
+        Self {
+            ty,
+            subtype,
+            running: AtomicBool::new(false),
+        }
+    }
 }
 
 /// One per processor, set once it is found.
@@ -85,4 +101,20 @@ pub fn init_info() {
         memory_size: vm::page::memory_size(),
     };
     assert!(INFO.set(info).is_ok(), "machine: information filled twice");
+}
+
+/// How many processors are up.
+static AVAILABLE_CPUS: AtomicU32 = AtomicU32::new(0);
+
+/// Brings processor `cpu` up, on its CPU: its slot says it runs, it counts
+/// as available, and its processor joins its set.
+///
+/// # Panics
+///
+/// If slot `cpu` holds no processor.
+pub fn cpu_up(cpu: usize) {
+    let slot = SLOTS[cpu].get().expect("cpu_up: no processor in the slot");
+    slot.running.store(true, Ordering::Release);
+    AVAILABLE_CPUS.fetch_add(1, Ordering::Relaxed);
+    processor::up(cpu);
 }

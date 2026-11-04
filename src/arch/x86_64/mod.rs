@@ -170,13 +170,7 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe { tss::init() };
     PerCpu::store_apic_id();
     PerCpu::current().store_gdt(&gdt::GDT);
-    machine::store_slot(
-        0,
-        Slot {
-            ty: CpuType::X86_64,
-            subtype: CpuSubtype::AT386,
-        },
-    );
+    machine::store_slot(0, Slot::new(CpuType::X86_64, CpuSubtype::AT386));
     startup::start()
 }
 
@@ -275,13 +269,7 @@ fn init_time_of_day() {
 fn init_slots() {
     let count = apic::APIC_IDS.get().map_or(1, |ids| ids.len());
     for cpu in 1..count {
-        machine::store_slot(
-            cpu,
-            Slot {
-                ty: CpuType::X86_64,
-                subtype: CpuSubtype::AT386,
-            },
-        );
+        machine::store_slot(cpu, Slot::new(CpuType::X86_64, CpuSubtype::AT386));
     }
 }
 

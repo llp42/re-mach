@@ -253,7 +253,9 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
     let sched_usage = TIMER_RATE * SCHEDULER_SCALE;
     let sched_pri = (priority + (sched_usage >> (sched::PRIORITY_SHIFT + sched::SCHEDULER_SHIFT)))
         .min(u32::try_from(RUN_QUEUES).unwrap() - 1);
-    let suspend_count = task.suspend_count.load(Ordering::Relaxed) + 1 + u32::from(set.empty);
+    let suspend_count = task.suspend_count.load(Ordering::Relaxed)
+        + 1
+        + u32::from(set.empty.load(Ordering::Relaxed));
     let thread = CACHE.allocate(Thread {
         sleep_link: LinkedListAtomicLink::new(),
         run_link: LinkedListAtomicLink::new(),
