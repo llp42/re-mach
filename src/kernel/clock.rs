@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
-//! The clock: timeouts.
+//! The clock: the time of day and timeouts.
+
+use core::sync::atomic::{AtomicI64, Ordering, fence};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
@@ -38,4 +40,50 @@ impl Wheel {
             slots: [const { LinkedList::new(TimeoutAdapter::NEW) }; WHEEL_SLOTS],
         }
     }
+}
+
+/// A time, in seconds and nanoseconds since 1970 or since boot.
+#[derive(Clone, Copy)]
+pub struct TimeValue {
+    pub seconds: i64,
+    pub nanoseconds: i64,
+}
+
+/// A time one CPU writes and any reads without a lock: the seconds are
+/// written before and after the rest, so a reader that sees both the same
+/// read a whole time.
+struct SharedTime {
+    /// The seconds, written first.
+    check_seconds: AtomicI64,
+    nanoseconds: AtomicI64,
+    /// The seconds, written last.
+    seconds: AtomicI64,
+}
+
+impl SharedTime {
+    /// Zero.
+    const fn new() -> Self {
+        Self {
+            check_seconds: AtomicI64::new(0),
+            nanoseconds: AtomicI64::new(0),
+            seconds: AtomicI64::new(0),
+        }
+    }
+
+    /// Sets it to `time`; only one CPU writes it.
+    fn set(&self, time: TimeValue) {
+        self.check_seconds.store(time.seconds, Ordering::Relaxed);
+        fence(Ordering::Release);
+        self.nanoseconds.store(time.nanoseconds, Ordering::Relaxed);
+        fence(Ordering::Release);
+        self.seconds.store(time.seconds, Ordering::Relaxed);
+    }
+}
+
+/// The time of day, as the clock keeps it; the boot CPU writes it.
+static TIME: SharedTime = SharedTime::new();
+
+/// Sets the time of day, on the boot CPU.
+pub fn set_time(time: TimeValue) {
+    TIME.set(time);
 }
