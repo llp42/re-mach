@@ -35,6 +35,9 @@ static SCHEDULER_TICK: AtomicU32 = AtomicU32::new(0);
 /// The priority of system threads, and the default set's highest.
 pub const SYSTEM_PRIORITY: u32 = 6;
 
+/// The priority of user threads.
+pub const USER_PRIORITY: u32 = 25;
+
 /// The shortest quantum, in ticks: 33 context switches a second.
 pub const MIN_QUANTUM: u32 = HZ / 33;
 

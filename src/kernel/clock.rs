@@ -103,6 +103,11 @@ impl SharedTime {
 /// The time of day, as the clock keeps it; the boot CPU writes it.
 static TIME: SharedTime = SharedTime::new();
 
+/// A time stamp: the time of day now.
+pub fn stamp() -> TimeValue {
+    TIME.get()
+}
+
 /// Sets the time of day, on the boot CPU.
 pub fn set_time(time: TimeValue) {
     TIME.set(time);
