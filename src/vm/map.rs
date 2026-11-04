@@ -4,12 +4,14 @@
 //! Address maps.
 
 use core::ops::Range;
+use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use intrusive_collections::{
     Bound, KeyAdapter, RBTree, RBTreeAtomicLink, UnsafeRef, intrusive_adapter,
 };
 
+use super::object::Object;
 use super::pmap::MachinePmap as _;
 use super::{Inheritance, Protection};
 use crate::arch::Pmap;
@@ -155,8 +157,9 @@ impl Map {
         Ok(())
     }
 
-    /// Maps `size` bytes wherever they fit, wired, with nothing behind them,
-    /// allowing `protection` now and at most `max_protection`; returns where.
+    /// Maps `size` bytes wherever they fit, wired, allowing `protection`
+    /// now and at most `max_protection`; returns where. They are backed by
+    /// `object` at the offset of their address in the map, or by nothing.
     ///
     /// # Errors
     ///
@@ -167,6 +170,7 @@ impl Map {
         size: usize,
         protection: Protection,
         max_protection: Protection,
+        object: Option<&'static Object>,
     ) -> Result<Range<usize>, Error> {
         let mut contents = self.contents.write();
         let (previous, start) = contents.find_space(self.bounds.start, size)?;
@@ -184,7 +188,11 @@ impl Map {
             protection,
             max_protection,
             inheritance: Inheritance::Copy,
-            backing: None,
+            backing: object.map(|object| Backing::Object {
+                // SAFETY: the object is static.
+                object: unsafe { UnsafeRef::from_raw(ptr::from_ref(object)) },
+                offset: start - self.bounds.start,
+            }),
             wire_count: 1,
             wired_access: Protection::READ | Protection::WRITE,
         })?;
@@ -280,6 +288,12 @@ pub enum Backing {
     /// A map of its own over the same physical map, such as the kernel's
     /// IPC buffers.
     Submap(#[expect(dead_code, reason = "vm_map_lookup descends into it")] &'static Map),
+    /// An object, from `offset` on.
+    #[expect(dead_code, reason = "vm_map_lookup and vm_fault read them")]
+    Object {
+        object: UnsafeRef<Object>,
+        offset: usize,
+    },
 }
 
 intrusive_adapter!(

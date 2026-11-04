@@ -6,6 +6,8 @@
 use core::ptr::{self, NonNull};
 
 use super::map::Map;
+use super::object::KERNEL_OBJECT;
+use super::page;
 use super::pmap::MachinePmap as _;
 use super::{Inheritance, Protection};
 use crate::arch::{self, MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE, PhysAddr};
@@ -69,7 +71,36 @@ pub fn map_device(physical: PhysAddr, size: usize) -> Result<NonNull<u8>, Error>
         (offset + size).next_multiple_of(PAGE_SIZE),
         Protection::READ | Protection::WRITE,
         Protection::all(),
+        None,
     )?;
     arch::Pmap::enter_device(range.clone(), PhysAddr(physical.0 - offset));
     Ok(NonNull::new(ptr::with_exposed_provenance_mut(range.start + offset)).unwrap())
+}
+
+/// Takes `size` bytes of wired kernel memory, rounded up to pages, from the
+/// kernel object, zeroed; returns where it is mapped.
+///
+/// # Errors
+///
+/// `NoSpace` if the kernel map has no room for it, and `ResourceShortage`
+/// if no entry or page can be allocated, which leaves what was taken.
+///
+/// # Panics
+///
+/// If the kernel map is not set up.
+#[expect(dead_code, reason = "mapable_time_init takes the mapped time with it")]
+pub fn allocate_wired(size: usize) -> Result<NonNull<u8>, Error> {
+    let map = KERNEL_MAP.get().expect("kmem_alloc_wired: no kernel map");
+    let range = map.enter_anywhere(
+        size.next_multiple_of(PAGE_SIZE),
+        Protection::READ | Protection::WRITE,
+        Protection::all(),
+        Some(&KERNEL_OBJECT),
+    )?;
+    for address in range.clone().step_by(PAGE_SIZE) {
+        let page = page::allocate_zeroed().ok_or(Error::ResourceShortage)?;
+        KERNEL_OBJECT.insert(page, address - MIN_KERNEL_ADDRESS);
+        arch::Pmap::enter_kernel(address, page.address());
+    }
+    Ok(NonNull::new(ptr::with_exposed_provenance_mut(range.start)).unwrap())
 }

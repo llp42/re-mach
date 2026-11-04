@@ -5,11 +5,14 @@
 
 use core::mem::MaybeUninit;
 use core::ops::Range;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use core::{ptr, slice};
 
-use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
+use intrusive_collections::{
+    KeyAdapter, LinkedList, LinkedListAtomicLink, RBTreeAtomicLink, intrusive_adapter,
+};
 
+use super::object::Object;
 use super::pmap::MachinePmap as _;
 use crate::arch::{self, PAGE_SIZE, PhysAddr};
 use crate::config::MAX_CPUS;
@@ -21,14 +24,32 @@ use crate::{println, smp};
 pub struct Page {
     /// Its place in the page queue it is on.
     queue_link: LinkedListAtomicLink,
+    /// Its place in its object's tree, while it belongs to one.
+    object_link: RBTreeAtomicLink,
+    /// The object it belongs to; null while it belongs to none. Changed
+    /// only behind the object's token.
+    object: AtomicPtr<Object>,
+    /// Where it is in its object, in bytes; changed as `object` is.
+    offset: AtomicUsize,
 }
 
 impl Page {
-    /// One on no queue.
+    /// One on no queue, in no object.
     const fn new() -> Self {
         Self {
             queue_link: LinkedListAtomicLink::new(),
+            object_link: RBTreeAtomicLink::new(),
+            object: AtomicPtr::new(ptr::null_mut()),
+            offset: AtomicUsize::new(0),
         }
+    }
+
+    /// Records that it belongs to `object` at `offset`, behind the object's
+    /// token.
+    pub(super) fn set_object(&self, object: &Object, offset: usize) {
+        self.offset.store(offset, Ordering::Relaxed);
+        self.object
+            .store(ptr::from_ref(object).cast_mut(), Ordering::Relaxed);
     }
 
     /// Where the page is.
@@ -40,6 +61,22 @@ impl Page {
         let array = PAGES.get().expect("vm_page: not set up");
         let index = (ptr::from_ref(self).addr() - array.pages.as_ptr().addr()) / size_of::<Self>();
         array.start + index * PAGE_SIZE
+    }
+}
+
+intrusive_adapter!(
+    #[expect(
+        clippy::expl_impl_clone_on_copy,
+        reason = "intrusive_adapter! writes Clone by hand"
+    )]
+    pub PageTreeAdapter = &'static Page: Page { object_link => RBTreeAtomicLink }
+);
+
+impl<'a> KeyAdapter<'a> for PageTreeAdapter {
+    type Key = usize;
+
+    fn get_key(&self, page: &'a Page) -> usize {
+        page.offset.load(Ordering::Relaxed)
     }
 }
 
@@ -304,4 +341,17 @@ pub fn allocate() -> Option<&'static Page> {
         first
     };
     (0..COLORS).find_map(|offset| QUEUES.free[(first + offset) % COLORS].pop())
+}
+
+/// Takes a free page and fills it with zeros; `None` when no page is free.
+pub fn allocate_zeroed() -> Option<&'static Page> {
+    let page = allocate()?;
+    // SAFETY: the page is free, so the kernel's alone, and the direct map
+    // reaches all of it.
+    unsafe {
+        page.address()
+            .direct_map_ptr::<u8>()
+            .write_bytes(0, PAGE_SIZE);
+    }
+    Some(page)
 }

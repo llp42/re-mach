@@ -61,6 +61,9 @@ const DIRECT_MAP_PAGE: PageTableFlags = LARGE_PAGE
     .union(PageTableFlags::ACCESSED)
     .union(PageTableFlags::DIRTY);
 
+/// Kernel memory's page: global and writable.
+const KERNEL_PAGE: PageTableFlags = TABLE.union(PageTableFlags::GLOBAL);
+
 /// Device memory's page: global, writable, uncached (PAT entry 3).
 const DEVICE_PAGE: PageTableFlags = TABLE
     .union(PageTableFlags::WRITE_THROUGH)
@@ -103,6 +106,10 @@ impl MachinePmap for Pmap {
 
     fn reference(&self) {
         self.reference_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn enter_kernel(address: usize, physical: PhysAddr) {
+        enter_kernel_page(address, physical, KERNEL_PAGE);
     }
 
     fn enter_device(address: Range<usize>, physical: PhysAddr) {

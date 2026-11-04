@@ -9,6 +9,7 @@ mod critical_section;
 mod once_lock;
 mod sleep_lock;
 mod spinlock;
+mod token;
 
 pub use boot_cell::BootCell;
 pub use cache_padded::CachePadded;
@@ -17,3 +18,4 @@ pub use critical_section::CriticalSection;
 pub use once_lock::OnceLock;
 pub use sleep_lock::SleepLock;
 pub use spinlock::Spinlock;
+pub use token::Token;
