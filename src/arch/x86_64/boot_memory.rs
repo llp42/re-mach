@@ -439,21 +439,40 @@ pub fn heap_end() -> PhysAddr {
     memory.heap.as_ref().expect("boot_memory: no heap yet").end
 }
 
-/// Takes `count` pages from the end of the largest free area of all
-/// memory, for good; the direct map reaches them.
+/// Takes `count` pages for good from the end of the largest free area of
+/// all memory, the boot heap's free part among them, then closes the boot
+/// heap, whose free part `vm::page` takes; the direct map reaches them.
 ///
 /// # Panics
 ///
-/// If that area is smaller.
+/// If that area is smaller, or the boot heap is not open.
 pub fn steal_pages(count: usize) -> PhysAddr {
     let mut memory = BOOT_MEMORY.borrow_mut();
     let size = count * PAGE_SIZE;
-    let area = memory
+    let mut free = memory
+        .heap_free
+        .take()
+        .expect("boot_memory: the boot heap is not open");
+    let gap = memory
         .largest_gap(HIGH_MEMORY_LIMIT)
-        .filter(|area| area.end - area.start >= size)
-        .expect("boot_memory: unable to steal memory");
+        .filter(|area| area.end - area.start > free.end - free.start);
+    let area = gap.clone().unwrap_or_else(|| free.clone());
+    assert!(
+        area.end - area.start >= size,
+        "boot_memory: unable to steal memory"
+    );
     let start = PhysAddr(area.end.0 - size);
-    memory.register(start..area.end, Retention::Permanent);
+    if gap.is_some() {
+        memory.register(start..area.end, Retention::Permanent);
+    } else {
+        // The heap is boot data kept for good already.
+        free.end = start;
+    }
+    for Range { start, end } in memory.segments.iter().map_while(Clone::clone) {
+        if free.start < end && free.end > start {
+            page::load_heap(free.start.max(start)..free.end.min(end));
+        }
+    }
     start
 }
 
@@ -479,23 +498,11 @@ pub fn free_usable() {
     }
 }
 
-/// Shows the physical memory map and loads its segments into `vm::page`;
-/// closes the boot heap, whose free part `vm::page` takes.
-///
-/// # Panics
-///
-/// Before `bootstrap`, or on a second call.
+/// Shows the physical memory map and loads its segments into `vm::page`.
 pub fn setup() {
-    let mut memory = BOOT_MEMORY.borrow_mut();
+    let memory = BOOT_MEMORY.borrow();
     memory.show_map();
-    let free = memory
-        .heap_free
-        .take()
-        .expect("boot_memory: the boot heap is not open");
     for Range { start, end } in memory.segments.iter().map_while(Clone::clone) {
         page::load(start..end);
-        if free.start < end && free.end > start {
-            page::load_heap(free.start.max(start)..free.end.min(end));
-        }
     }
 }
