@@ -16,7 +16,7 @@ use super::slab::{Cache, CacheBox};
 use super::task::{self, Task};
 use crate::arch;
 use crate::ipc::port::{self, KernelObject, Port};
-use crate::sync::Token;
+use crate::sync::{OnceLock, Token};
 
 bitflags::bitflags! {
     /// What a thread is doing, as Mach numbers it; only the states used
@@ -83,6 +83,8 @@ pub struct Thread {
     self_port: AtomicPtr<Port>,
     /// The send right for its port it hands out.
     self_send: AtomicPtr<Port>,
+    /// The function it starts in, once given.
+    start: OnceLock<fn() -> !>,
 }
 
 intrusive_adapter!(
@@ -139,6 +141,15 @@ pub fn init() {
 }
 
 impl Thread {
+    /// Makes it start in `function` once it first runs.
+    ///
+    /// # Panics
+    ///
+    /// If it has a function to start in already.
+    pub fn start(&self, function: fn() -> !) {
+        assert!(self.start.set(function).is_ok(), "thread_start: twice");
+    }
+
     /// Names it `name`, cut to fit with its final NUL.
     pub fn set_name(&self, name: &str) {
         let mut stored = self.name.lock();
@@ -198,6 +209,7 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         pcb: unsafe { UnsafeRef::from_raw(CacheBox::into_raw(pcb).as_ptr()) },
         self_port: AtomicPtr::new(ptr::null_mut()),
         self_send: AtomicPtr::new(ptr::null_mut()),
+        start: OnceLock::new(),
     })?;
     // SAFETY: a thread lives until the reaper frees it, which comes later.
     let thread = unsafe { CacheBox::into_raw(thread).as_ref() };

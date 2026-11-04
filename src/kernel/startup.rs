@@ -7,6 +7,12 @@ use super::{clock, machine, processor, radix_tree, sched, task, thread};
 use crate::arch::{self, Machine as _};
 use crate::{ipc, vm};
 
+/// The startup thread's work: starting the other kernel threads and the
+/// bootstrap tasks; so far it only stops its CPU.
+fn start_kernel_threads() -> ! {
+    arch::Current::halt()
+}
+
 /// Starts the machine-independent kernel, on the boot CPU, once the
 /// machine is set up.
 pub fn start() -> ! {
@@ -27,5 +33,6 @@ pub fn start() -> ! {
     let startup = thread::create(kernel_task)
         .unwrap_or_else(|error| panic!("startup: thread_create: {error:?}"));
     startup.set_name("startup");
+    startup.start(start_kernel_threads);
     arch::Current::halt()
 }
