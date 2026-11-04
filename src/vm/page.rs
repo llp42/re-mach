@@ -184,8 +184,7 @@ fn widen(area: Option<Range<PhysAddr>>, range: Range<PhysAddr>) -> Range<PhysAdd
 }
 
 /// Builds the page array over the loaded span and frees the boot heap's
-/// unused pages, on the boot CPU: those below a quarter of the span, up to
-/// `DMA_RESERVE_LIMIT`, are kept for DMA.
+/// unused pages, on the boot CPU.
 ///
 /// # Panics
 ///
@@ -223,16 +222,25 @@ pub fn setup() {
         "vm_page: set up twice"
     );
     if let Some(heap) = heap {
-        let first = span.start.0 / PAGE_SIZE;
-        let reserved = reserve_end(span.end - span.start);
-        let range = (heap.start - span.start) / PAGE_SIZE..(heap.end - span.start) / PAGE_SIZE;
-        for (page, index) in pages[range.clone()].iter().zip(range) {
-            let frame = first + index;
-            if frame < reserved {
-                DMA_RESERVE.lock()[frame / 64] |= 1 << (frame % 64);
-            } else {
-                QUEUES.free[frame % COLORS].push(page);
-            }
+        release(heap);
+    }
+}
+
+/// Frees the whole pages of `range`, which boot memory kept: those below a
+/// quarter of the span, up to `DMA_RESERVE_LIMIT`, are kept for DMA.
+///
+/// # Panics
+///
+/// If the page array is not set up, or does not cover `range`.
+pub fn release(range: Range<PhysAddr>) {
+    let array = PAGES.get().expect("vm_page: not set up");
+    let first = array.start.0 / PAGE_SIZE;
+    let reserved = reserve_end(array.pages.len() * PAGE_SIZE);
+    for frame in range.start.0.div_ceil(PAGE_SIZE)..range.end.0 / PAGE_SIZE {
+        if frame < reserved {
+            DMA_RESERVE.lock()[frame / 64] |= 1 << (frame % 64);
+        } else {
+            QUEUES.free[frame % COLORS].push(&array.pages[frame - first]);
         }
     }
 }
