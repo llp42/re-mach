@@ -48,6 +48,12 @@ SPDX-FileCopyrightText: 1991 IBM Corporation
 SPDX-FileCopyrightText: 1994 The University of Utah and the Computer Systems Laboratory (CSL)
 SPDX-License-Identifier: LicenseRef-CMU-IBM-CSL
 
+SPDX-FileName: i386/i386/machine_task.c
+SPDX-FileCopyrightText: 2002, 2007 Free Software Foundation, Inc.
+SPDX-FileContributor: Marcus Brinkmann
+SPDX-FileContributor: Thomas Schwinge
+SPDX-License-Identifier: GPL-2.0-or-later
+
 SPDX-FileName: i386/i386/trap.c
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach

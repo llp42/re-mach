@@ -17,6 +17,7 @@ mod gdt;
 mod hpet;
 mod idt;
 mod interrupt;
+mod machine_task;
 mod memory_layout;
 mod mmio;
 mod per_cpu;
@@ -311,6 +312,10 @@ impl Machine for X86_64 {
         init_time_of_day();
         hpet::init();
         counter::init();
+    }
+
+    fn task_module_init() {
+        machine_task::module_init();
     }
 
     fn kernel_command_line() -> &'static CStr {
