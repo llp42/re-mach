@@ -8,6 +8,7 @@ use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, AtomicU64, Ordering, fe
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
+use super::machine::{self, CpuState};
 use crate::arch::PAGE_SIZE;
 use crate::sync::{OnceLock, Spinlock};
 use crate::{smp, vm};
@@ -239,10 +240,20 @@ pub fn map_time() {
 }
 
 /// Takes a clock tick on the current CPU, `microseconds` after the one
-/// before, with the thread it interrupted in user mode or not; so far the
-/// CPU only counts it.
-pub fn interrupt(_microseconds: u32, _user_mode: bool) {
-    let wheel = smp::current().timeouts();
+/// before, with the thread it interrupted in user mode or not: the tick is
+/// the thread's, and the CPU's in that state.
+pub fn interrupt(microseconds: u32, user_mode: bool) {
+    let cpu = smp::current();
+    if let Some(thread) = cpu.active_thread() {
+        thread.add_time(microseconds, user_mode);
+    }
+    let state = if user_mode {
+        CpuState::User
+    } else {
+        CpuState::System
+    };
+    machine::count_tick(cpu.id(), state);
+    let wheel = cpu.timeouts();
     wheel
         .ticks
         .store(wheel.ticks.load(Ordering::Relaxed) + 1, Ordering::Relaxed);

@@ -83,6 +83,12 @@ impl PerCpu {
         &self.timeouts
     }
 
+    /// The thread it runs, once it runs one.
+    pub fn active_thread(&self) -> Option<&'static Thread> {
+        // SAFETY: a thread lives while a CPU runs it.
+        unsafe { self.active_thread.load(Ordering::Acquire).as_ref() }
+    }
+
     /// Makes `thread` the one it runs, as it switches to it.
     pub fn set_active_thread(&self, thread: &'static Thread) {
         self.active_thread

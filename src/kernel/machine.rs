@@ -34,6 +34,31 @@ pub struct Slot {
     pub subtype: CpuSubtype,
     /// Whether the processor is up.
     pub running: AtomicBool,
+    /// Its ticks, by `CpuState`.
+    pub cpu_ticks: [AtomicU32; CPU_STATES],
+}
+
+/// How many states a CPU's ticks are counted in.
+const CPU_STATES: usize = 3;
+
+/// What a CPU spent a tick on, as Mach numbers it; only the states used
+/// here.
+#[derive(Clone, Copy)]
+pub enum CpuState {
+    /// User code.
+    User = 0,
+    /// The kernel.
+    System = 1,
+}
+
+impl CpuState {
+    /// Its number, the index of its ticks.
+    const fn index(self) -> usize {
+        match self {
+            Self::User => 0,
+            Self::System => 1,
+        }
+    }
 }
 
 impl Slot {
@@ -43,6 +68,7 @@ impl Slot {
             ty,
             subtype,
             running: AtomicBool::new(false),
+            cpu_ticks: [const { AtomicU32::new(0) }; CPU_STATES],
         }
     }
 }
@@ -117,4 +143,12 @@ pub fn cpu_up(cpu: usize) {
     slot.running.store(true, Ordering::Release);
     AVAILABLE_CPUS.fetch_add(1, Ordering::Relaxed);
     processor::up(cpu);
+}
+
+/// Counts a tick processor `cpu` spent in `state`, on its CPU.
+pub fn count_tick(cpu: usize, state: CpuState) {
+    if let Some(slot) = SLOTS[cpu].get() {
+        let ticks = &slot.cpu_ticks[state.index()];
+        ticks.store(ticks.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+    }
 }
