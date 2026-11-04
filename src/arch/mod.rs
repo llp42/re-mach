@@ -11,8 +11,8 @@ mod x86_64;
 
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::{
-    MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE, Pcb, PerCpu, PhysAddr, Pmap,
-    X86_64 as Current,
+    KERNEL_STACK_SIZE, MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE, Pcb, PerCpu, PhysAddr,
+    Pmap, X86_64 as Current,
 };
 
 /// What machine-independent code asks of the machine.

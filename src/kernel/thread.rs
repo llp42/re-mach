@@ -16,7 +16,9 @@ use super::slab::{Cache, CacheBox};
 use super::task::{self, Task};
 use crate::arch;
 use crate::ipc::port::{self, KernelObject, Port};
-use crate::sync::{OnceLock, Token};
+use crate::sync::{CriticalSection, OnceLock, Token};
+use crate::vm;
+use crate::vm::kernel::KernelStack;
 
 bitflags::bitflags! {
     /// What a thread is doing, as Mach numbers it; only the states used
@@ -85,6 +87,8 @@ pub struct Thread {
     self_send: AtomicPtr<Port>,
     /// The function it starts in, once given.
     start: OnceLock<fn() -> !>,
+    /// Its kernel stack, once it has one.
+    kernel_stack: OnceLock<KernelStack>,
 }
 
 intrusive_adapter!(
@@ -129,6 +133,17 @@ pub trait MachineThread: Sized {
     ///
     /// `ResourceShortage` if none can be allocated.
     fn new() -> Result<CacheBox<Self>, Error>;
+    /// Sets `stack` up to start its thread in `start`, which the thread
+    /// enters by calling `begin`, once the switch to it is made.
+    fn attach_stack(&self, stack: &KernelStack, start: fn() -> !);
+}
+
+/// Where a new thread begins, before its function: it leaves the critical
+/// section the switch to it was made in.
+pub extern "sysv64" fn begin() {
+    // SAFETY: a switch is made in a critical section no guard holds, and
+    // this thread runs its first instructions in it.
+    drop(unsafe { CriticalSection::inherit() });
 }
 
 /// The cache threads come from.
@@ -148,6 +163,29 @@ impl Thread {
     /// If it has a function to start in already.
     pub fn start(&self, function: fn() -> !) {
         assert!(self.start.set(function).is_ok(), "thread_start: twice");
+    }
+
+    /// Gives it its kernel stack, set to start it in its function.
+    ///
+    /// # Errors
+    ///
+    /// As `vm::kernel::allocate_stack`.
+    ///
+    /// # Panics
+    ///
+    /// If it has no function to start in, or a stack already.
+    pub fn allocate_stack(&self) -> Result<(), Error> {
+        let start = *self
+            .start
+            .get()
+            .expect("thread_doswapin: no start function");
+        let stack = vm::kernel::allocate_stack()?;
+        self.pcb.attach_stack(&stack, start);
+        assert!(
+            self.kernel_stack.set(stack).is_ok(),
+            "thread_doswapin: twice"
+        );
+        Ok(())
     }
 
     /// Names it `name`, cut to fit with its final NUL.
@@ -210,6 +248,7 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         self_port: AtomicPtr::new(ptr::null_mut()),
         self_send: AtomicPtr::new(ptr::null_mut()),
         start: OnceLock::new(),
+        kernel_stack: OnceLock::new(),
     })?;
     // SAFETY: a thread lives until the reaper frees it, which comes later.
     let thread = unsafe { CacheBox::into_raw(thread).as_ref() };
