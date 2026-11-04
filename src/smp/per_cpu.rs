@@ -32,7 +32,6 @@ pub struct PerCpu {
     #[expect(dead_code, reason = "thread_terminate and the reaper use them")]
     dead_threads: Token<LinkedList<RunQueueAdapter>>,
     /// Its timeouts; only it runs them.
-    #[expect(dead_code, reason = "set_timeout and the softclock thread use them")]
     timeouts: Wheel,
     /// The ASTs pending on it, a bit per reason.
     #[expect(dead_code, reason = "the first AST posts them")]
@@ -66,6 +65,11 @@ impl PerCpu {
     /// Its processor.
     pub const fn processor(&self) -> &Processor {
         &self.processor
+    }
+
+    /// Its timeouts.
+    pub const fn timeouts(&self) -> &Wheel {
+        &self.timeouts
     }
 
     /// Enters an interrupt handler on this CPU; dropping the guard leaves it.

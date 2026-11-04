@@ -22,5 +22,6 @@ pub fn start() -> ! {
     task::init();
     thread::init();
     processor::init();
+    sched::recompute_priorities(&sched::RECOMPUTE_PRIORITIES);
     arch::Current::halt()
 }
