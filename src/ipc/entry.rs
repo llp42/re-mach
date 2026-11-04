@@ -12,5 +12,8 @@ pub struct Entry {
     user_references: u16,
 }
 
+/// The entry of name 0, which every space reserves.
+pub static ZERO_ENTRY: Entry = Entry { user_references: 0 };
+
 /// The cache entries come from.
 pub(super) static CACHE: Cache<Entry> = Cache::new("ipc_entry");

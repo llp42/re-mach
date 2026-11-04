@@ -67,7 +67,7 @@ pub struct ProcessorSet {
     /// How many references it has.
     pub(super) references: AtomicU32,
     /// The highest priority its threads may take.
-    max_priority: u32,
+    pub(super) max_priority: u32,
     /// The policies its threads may use.
     policies: Policies,
     /// Its processors' quantum, in ticks.

@@ -10,10 +10,11 @@ use crate::kernel::Error;
 use crate::kernel::host::Host;
 use crate::kernel::processor::{Processor, ProcessorSet};
 use crate::kernel::slab::{Cache, CacheBox};
+use crate::kernel::task::Task;
 use crate::vm::object::Object;
 
 /// A port; so far only its reference count, whether it is alive, its
-/// receiver and what it stands for.
+/// receiver, its send rights and what it stands for.
 #[expect(dead_code, reason = "the port calls and ipc_kobject_server read them")]
 pub struct Port {
     /// How many references it has.
@@ -22,6 +23,10 @@ pub struct Port {
     active: bool,
     /// The space that holds its receive right.
     receiver: NonNull<Space>,
+    /// How many send rights for it there are.
+    send_rights: u32,
+    /// How many send rights have been made from its receive right.
+    make_send_count: u32,
     /// What it stands for, when the kernel receives on it.
     kernel_object: Option<KernelObject>,
 }
@@ -30,6 +35,14 @@ impl Port {
     /// Makes it stand for `object`; it isn't shared yet, so no lock.
     pub const fn set_kernel_object(&mut self, object: KernelObject) {
         self.kernel_object = Some(object);
+    }
+
+    /// Makes a send right for it from its receive right, which holds a
+    /// reference; it isn't shared yet, so no lock.
+    pub const fn make_send(&mut self) {
+        self.make_send_count += 1;
+        self.send_rights += 1;
+        self.references += 1;
     }
 }
 
@@ -57,6 +70,8 @@ pub enum KernelObject {
     ),
     /// A processor's name port.
     ProcessorName(#[expect(dead_code, reason = "processor_info reads it")] &'static Processor),
+    /// A task's port.
+    Task(#[expect(dead_code, reason = "convert_port_to_task reads it")] NonNull<Task>),
 }
 
 /// The cache ports come from.
@@ -72,6 +87,8 @@ pub fn allocate_kernel() -> Result<CacheBox<Port>, Error> {
         references: 1,
         active: true,
         receiver: NonNull::from(&space::KERNEL_SPACE),
+        send_rights: 0,
+        make_send_count: 0,
         kernel_object: None,
     })
 }
