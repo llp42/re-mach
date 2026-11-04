@@ -34,6 +34,11 @@ pub struct Slot {
 /// One per processor, set once it is found.
 static SLOTS: [OnceLock<Slot>; MAX_CPUS] = [const { OnceLock::new() }; MAX_CPUS];
 
+/// Whether slot `cpu` holds a processor.
+pub fn has_processor(cpu: usize) -> bool {
+    SLOTS[cpu].get().is_some()
+}
+
 /// Stores processor `cpu`'s slot.
 ///
 /// # Panics

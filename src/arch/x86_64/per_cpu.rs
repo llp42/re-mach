@@ -176,6 +176,10 @@ impl MachinePerCpu for PerCpu {
         }
     }
 
+    fn of(cpu: usize) -> &'static Self {
+        &PER_CPU[cpu]
+    }
+
     fn common(&self) -> &smp::PerCpu {
         &self.common
     }
