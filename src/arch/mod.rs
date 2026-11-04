@@ -24,7 +24,8 @@ pub trait Machine {
 
     /// Sets up the machine once the VM and IPC are up, on the boot CPU:
     /// frees usable memory, sets up the FPU, finds the APICs and the CPUs,
-    /// sets the APICs up, and reads the time of day.
+    /// sets the APICs up, reads the time of day, and starts the time
+    /// counter.
     fn init();
     /// The kernel's command line, as the loader gave it; empty if none.
     #[expect(dead_code, reason = "the console and the bootstrap read it")]

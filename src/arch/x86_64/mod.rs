@@ -10,9 +10,11 @@ mod apic;
 mod boot_header;
 mod boot_memory;
 mod boot_stack;
+mod counter;
 mod cpuid;
 mod fpu;
 mod gdt;
+mod hpet;
 mod idt;
 mod interrupt;
 mod memory_layout;
@@ -307,6 +309,8 @@ impl Machine for X86_64 {
         init_slots();
         apic::configure_io_apics();
         init_time_of_day();
+        hpet::init();
+        counter::init();
     }
 
     fn kernel_command_line() -> &'static CStr {
