@@ -5,7 +5,7 @@
 
 use core::mem;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
@@ -61,15 +61,15 @@ pub struct Thread {
     /// The highest priority it may take.
     max_priority: u32,
     /// The priority it is scheduled at, its base aged by its use.
-    sched_pri: u32,
+    sched_pri: AtomicU32,
     /// Its scheduling policy.
-    policy: Policies,
+    pub(super) policy: Policies,
     /// Its recent processor use, scaled.
-    cpu_usage: u32,
+    cpu_usage: AtomicU32,
     /// Its use, as its priority ages it.
-    sched_usage: u32,
+    sched_usage: AtomicU32,
     /// The scheduler tick its use was last aged at.
-    sched_stamp: u32,
+    sched_stamp: AtomicU32,
     /// Whether it is alive.
     active: AtomicBool,
     /// The processor set it runs on; set as the set takes it.
@@ -99,6 +99,80 @@ pub struct Thread {
     user_time: AtomicU64,
     /// Its time in the kernel, in microseconds.
     system_time: AtomicU64,
+    /// Its time in user mode when its use was last charged.
+    charged_user_time: AtomicU64,
+    /// Its time in the kernel when its use was last charged.
+    charged_system_time: AtomicU64,
+    /// Its CPU time since its use was last aged, in microseconds.
+    cpu_delta: AtomicU32,
+    /// The same, scaled by its set's load.
+    sched_delta: AtomicU32,
+    /// The priority its depression ends at; negative when not depressed.
+    depressed_from: AtomicI32,
+    /// Its quantum, in ticks, under the fixed-priority policy.
+    fixed_quantum: u32,
+    /// Its ASTs, which the CPU running it takes.
+    pub(super) asts: AtomicU32,
+}
+
+/// 5/8 to the power of a number of seconds, as two shifts: `x >> first`,
+/// plus `x >> second`, or minus `x >> -second` when negative.
+const AGING: [(u32, i32); 32] = [
+    (1, 1),
+    (1, 3),
+    (1, -3),
+    (2, -7),
+    (3, 5),
+    (3, -5),
+    (4, -8),
+    (5, 7),
+    (5, -7),
+    (6, -10),
+    (7, 10),
+    (7, -9),
+    (8, -11),
+    (9, 12),
+    (9, -11),
+    (10, -13),
+    (11, 14),
+    (11, -13),
+    (12, -15),
+    (13, 17),
+    (13, -15),
+    (14, -17),
+    (15, 19),
+    (16, 18),
+    (16, -19),
+    (17, 22),
+    (18, 20),
+    (18, -20),
+    (19, 26),
+    (20, 22),
+    (20, -22),
+    (21, -27),
+];
+
+/// `usage` aged by `shifts`, one of `AGING`.
+const fn aged(usage: u32, (first, second): (u32, i32)) -> u32 {
+    if second > 0 {
+        (usage >> first) + (usage >> second)
+    } else {
+        (usage >> first) - (usage >> second.unsigned_abs())
+    }
+}
+
+/// The priority a thread of base priority `priority` is scheduled at after
+/// `usage`, within the run queues.
+fn computed_priority(priority: u32, usage: u32) -> u32 {
+    (priority + (usage >> (sched::PRIORITY_SHIFT + sched::SCHEDULER_SHIFT)))
+        .min(u32::try_from(RUN_QUEUES).unwrap() - 1)
+}
+
+/// The time `time` gained since `charged`, which takes it now.
+fn take_delta(time: &AtomicU64, charged: &AtomicU64) -> u32 {
+    let now = time.load(Ordering::Relaxed);
+    let delta = now - charged.swap(now, Ordering::Relaxed);
+    u32::try_from(delta).unwrap_or(u32::MAX)
 }
 
 intrusive_adapter!(
@@ -249,6 +323,104 @@ impl Thread {
         );
     }
 
+    /// Charges its use at a tick on the CPU running it, its quantum having
+    /// run out or not: it catches up with the scheduler's aging, or, when
+    /// timeshared, gathers the time it ran, and its priority follows once
+    /// its quantum runs out or it gathered enough.
+    pub fn charge_tick(&self, quantum_expired: bool) {
+        if self.sched_stamp.load(Ordering::Relaxed) != sched::scheduler_tick() {
+            self.update_priority();
+        } else if self.usage_sets_priority() {
+            self.take_time_delta();
+            let delta = self.sched_delta.load(Ordering::Relaxed);
+            if quantum_expired || delta >= sched::USAGE_THRESHOLD {
+                let usage = self.sched_usage.load(Ordering::Relaxed);
+                self.sched_usage
+                    .store(usage.wrapping_add(delta), Ordering::Relaxed);
+                self.sched_delta.store(0, Ordering::Relaxed);
+                self.compute_my_priority();
+            }
+        }
+    }
+
+    /// Its next quantum: `quantum` when timeshared, else its own.
+    pub fn next_quantum(&self, quantum: u32) -> u32 {
+        if self.policy == Policies::TIMESHARE {
+            quantum
+        } else {
+            self.fixed_quantum
+        }
+    }
+
+    /// Whether its use sets its priority: it is timeshared and not
+    /// depressed.
+    fn usage_sets_priority(&self) -> bool {
+        self.policy == Policies::TIMESHARE && self.depressed_from.load(Ordering::Relaxed) < 0
+    }
+
+    /// Adds the CPU time it ran since its use was last charged to its
+    /// deltas, the scheduler's scaled by its set's load. Use counts wrap,
+    /// as Mach's do.
+    fn take_time_delta(&self) {
+        let delta = take_delta(&self.system_time, &self.charged_system_time)
+            .wrapping_add(take_delta(&self.user_time, &self.charged_user_time));
+        // SAFETY: a thread's set lives while the thread is in it.
+        let set = unsafe { &*self.set.load(Ordering::Acquire) };
+        let cpu_delta = self.cpu_delta.load(Ordering::Relaxed);
+        self.cpu_delta
+            .store(cpu_delta.wrapping_add(delta), Ordering::Relaxed);
+        let sched_delta = self.sched_delta.load(Ordering::Relaxed);
+        self.sched_delta.store(
+            sched_delta.wrapping_add(delta.wrapping_mul(set.load)),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// Schedules it at the priority its base priority and use give.
+    fn compute_my_priority(&self) {
+        let usage = self.sched_usage.load(Ordering::Relaxed);
+        self.sched_pri
+            .store(computed_priority(self.priority, usage), Ordering::Relaxed);
+    }
+
+    /// Catches its use up with the scheduler's aging: each second missed
+    /// ages it by 5/8, and more than 30 forget it.
+    ///
+    /// # Panics
+    ///
+    /// If it missed none.
+    fn update_priority(&self) {
+        let tick = sched::scheduler_tick();
+        let ticks = tick.wrapping_sub(self.sched_stamp.load(Ordering::Relaxed));
+        assert!(ticks != 0, "update_priority: no tick missed");
+        self.sched_stamp.store(tick, Ordering::Relaxed);
+        self.take_time_delta();
+        let (cpu_usage, sched_usage) = if ticks > 30 {
+            (0, 0)
+        } else {
+            let shifts = AGING[usize::try_from(ticks).unwrap()];
+            let cpu_usage = self.cpu_usage.load(Ordering::Relaxed);
+            let sched_usage = self.sched_usage.load(Ordering::Relaxed);
+            (
+                aged(
+                    cpu_usage.wrapping_add(self.cpu_delta.load(Ordering::Relaxed)),
+                    shifts,
+                ),
+                aged(
+                    sched_usage.wrapping_add(self.sched_delta.load(Ordering::Relaxed)),
+                    shifts,
+                ),
+            )
+        };
+        self.cpu_usage.store(cpu_usage, Ordering::Relaxed);
+        self.sched_usage.store(sched_usage, Ordering::Relaxed);
+        self.cpu_delta.store(0, Ordering::Relaxed);
+        self.sched_delta.store(0, Ordering::Relaxed);
+        if self.usage_sets_priority() {
+            self.compute_my_priority();
+        }
+    }
+
     /// Marks it running, as a thread that is about to be switched to.
     pub fn mark_running(&self) {
         self.state
@@ -312,8 +484,7 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
     let priority = task.priority.max(max_priority);
     // A full share of a processor; a set's load average is at least 1.
     let sched_usage = TIMER_RATE * SCHEDULER_SCALE;
-    let sched_pri = (priority + (sched_usage >> (sched::PRIORITY_SHIFT + sched::SCHEDULER_SHIFT)))
-        .min(u32::try_from(RUN_QUEUES).unwrap() - 1);
+    let sched_pri = computed_priority(priority, sched_usage);
     let suspend_count = task.suspend_count.load(Ordering::Relaxed)
         + 1
         + u32::from(set.empty.load(Ordering::Relaxed));
@@ -330,11 +501,11 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         user_stop_count: AtomicU32::new(1),
         priority,
         max_priority,
-        sched_pri,
+        sched_pri: AtomicU32::new(sched_pri),
         policy: Policies::TIMESHARE,
-        cpu_usage: TIMER_RATE,
-        sched_usage,
-        sched_stamp: sched::scheduler_tick(),
+        cpu_usage: AtomicU32::new(TIMER_RATE),
+        sched_usage: AtomicU32::new(sched_usage),
+        sched_stamp: AtomicU32::new(sched::scheduler_tick()),
         active: AtomicBool::new(true),
         set: AtomicPtr::new(ptr::null_mut()),
         may_assign: true,
@@ -350,6 +521,13 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         critical_nesting: AtomicU32::new(1),
         user_time: AtomicU64::new(0),
         system_time: AtomicU64::new(0),
+        charged_user_time: AtomicU64::new(0),
+        charged_system_time: AtomicU64::new(0),
+        cpu_delta: AtomicU32::new(0),
+        sched_delta: AtomicU32::new(0),
+        depressed_from: AtomicI32::new(-1),
+        fixed_quantum: 0,
+        asts: AtomicU32::new(0),
     })?;
     // SAFETY: a thread lives until the reaper frees it, which comes later.
     let thread = unsafe { CacheBox::into_raw(thread).as_ref() };

@@ -4,7 +4,7 @@
 //! Processors and processor sets.
 
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
@@ -28,6 +28,14 @@ const MEMBER_SHARDS: usize = 64;
 pub struct Processor {
     /// What it is doing, a `State`.
     state: AtomicU8,
+    /// How many threads wait on its run queues.
+    pub(super) queued: AtomicU32,
+    /// The ticks left of its thread's quantum.
+    pub(super) quantum: AtomicI32,
+    /// Whether its thread runs its first quantum in succession.
+    pub(super) first_quantum: AtomicBool,
+    /// The quantum it last gave out, before adjustment.
+    pub(super) last_quantum: AtomicU32,
     /// The processor set it is in, once it comes up.
     set: AtomicPtr<ProcessorSet>,
     /// Its runnable threads, by priority; only its CPU touches them, inside
@@ -51,7 +59,7 @@ intrusive_adapter!(
 
 /// What a processor is doing, as Mach numbers it; only the states used
 /// here.
-enum State {
+pub(super) enum State {
     /// Not in the system.
     Offline = 0,
     /// Running a thread.
@@ -73,12 +81,35 @@ impl Processor {
     pub const fn new() -> Self {
         Self {
             state: AtomicU8::new(State::Offline.number()),
+            queued: AtomicU32::new(0),
+            quantum: AtomicI32::new(0),
+            first_quantum: AtomicBool::new(false),
+            last_quantum: AtomicU32::new(0),
             set: AtomicPtr::new(ptr::null_mut()),
             run_queues: [const { RunQueue::new(RunQueueAdapter::NEW) }; RUN_QUEUES],
             action_link: LinkedListAtomicLink::new(),
             port: AtomicPtr::new(ptr::null_mut()),
             name_port: AtomicPtr::new(ptr::null_mut()),
         }
+    }
+
+    /// What it is doing.
+    ///
+    /// # Panics
+    ///
+    /// If its state is not one used here.
+    pub(super) fn state(&self) -> State {
+        match self.state.load(Ordering::Acquire) {
+            0 => State::Offline,
+            1 => State::Running,
+            state => panic!("processor: bad state {state}"),
+        }
+    }
+
+    /// The set it is in, once it comes up.
+    pub(super) fn set(&self) -> Option<&'static ProcessorSet> {
+        // SAFETY: a set lives while it has processors.
+        unsafe { self.set.load(Ordering::Acquire).as_ref() }
     }
 }
 
@@ -90,20 +121,22 @@ pub struct ProcessorSet {
     /// Whether it has no processor; threads created in it start suspended.
     pub(super) empty: AtomicBool,
     /// How many processors it has.
-    processor_count: AtomicU32,
+    pub(super) processor_count: AtomicU32,
+    /// Which of its processors the next quantum adjustment falls to.
+    adjust_index: AtomicU32,
     /// How many references it has.
     pub(super) references: AtomicU32,
     /// The highest priority its threads may take.
     pub(super) max_priority: u32,
     /// The policies its threads may use.
-    policies: Policies,
+    pub(super) policies: Policies,
     /// Its processors' quantum, in ticks.
     quantum: AtomicU32,
     /// The quantum for each count of threads waiting, up to its processor
     /// count; at 0, twice the quantum of 1.
     machine_quantum: [AtomicU32; MAX_CPUS + 1],
     /// Its load, scaled by `SCHEDULER_SCALE`.
-    load: u32,
+    pub(super) load: u32,
     /// Its port, for controlling it.
     pub(super) port: AtomicPtr<Port>,
     /// Its name port, for information about it.
@@ -152,6 +185,7 @@ impl ProcessorSet {
             active: false,
             empty: AtomicBool::new(true),
             processor_count: AtomicU32::new(0),
+            adjust_index: AtomicU32::new(0),
             references: AtomicU32::new(1),
             max_priority: SYSTEM_PRIORITY,
             policies: Policies::TIMESHARE,
@@ -223,6 +257,27 @@ impl ProcessorSet {
         let one = self.machine_quantum[1].load(Ordering::Relaxed);
         self.machine_quantum[0].store(2 * one, Ordering::Relaxed);
         self.quantum.store(2 * one, Ordering::Relaxed);
+    }
+
+    /// Its quantum for the threads waiting now: with no set-wide run queue,
+    /// for none.
+    pub(super) fn current_quantum(&self) -> u32 {
+        let quantum = self.machine_quantum[0].load(Ordering::Relaxed);
+        self.quantum.store(quantum, Ordering::Relaxed);
+        quantum
+    }
+
+    /// `quantum` adjusted at run time: its processors take turns at
+    /// quanta spread from the shortest to it, so theirs do not run out
+    /// together. It has more than one processor.
+    pub(super) fn adjust_quantum(&self, quantum: u32) -> u32 {
+        let count = self.processor_count.load(Ordering::Relaxed);
+        let index = self
+            .adjust_index
+            .update(Ordering::Relaxed, Ordering::Relaxed, |index| {
+                if index + 1 >= count { 0 } else { index + 1 }
+            });
+        MIN_QUANTUM + index * (quantum - MIN_QUANTUM) / (count - 1)
     }
 
     /// Adds it to the list of all sets.

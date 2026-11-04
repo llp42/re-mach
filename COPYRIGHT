@@ -181,6 +181,16 @@ SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Syste
 SPDX-FileContributor: Rich Draves
 SPDX-License-Identifier: LicenseRef-CMU-CSL
 
+SPDX-FileName: kern/ast.c
+SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
+SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
+SPDX-License-Identifier: LicenseRef-CMU-CSL
+
+SPDX-FileName: kern/ast.h
+SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
+SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
+SPDX-License-Identifier: LicenseRef-CMU-CSL
+
 SPDX-FileName: kern/debug.c
 SPDX-FileCopyrightText: 1993 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
@@ -225,6 +235,11 @@ SPDX-FileContributor: Avadis Tevanian, Jr.
 SPDX-License-Identifier: LicenseRef-CMU-CSL
 
 SPDX-FileName: kern/machine.c
+SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
+SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
+SPDX-License-Identifier: LicenseRef-CMU-CSL
+
+SPDX-FileName: kern/priority.c
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
 SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
 SPDX-License-Identifier: LicenseRef-CMU-CSL
