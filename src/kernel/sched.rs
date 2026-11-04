@@ -3,10 +3,11 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The scheduler.
 
-use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use intrusive_collections::LinkedList;
 
+use super::clock::{self, Timeout};
 use super::processor::{self, ActionQueueAdapter};
 use super::thread::{RunQueueAdapter, SleepQueueAdapter};
 use crate::config::HZ;
@@ -29,8 +30,17 @@ pub const RUN_QUEUES: usize = 65;
 static ACTION_QUEUE: LinkedList<ActionQueueAdapter> = LinkedList::new(ActionQueueAdapter::NEW);
 
 /// How many times threads' priorities have been recomputed, once a second.
-#[expect(dead_code, reason = "recompute_priorities advances it")]
 static SCHEDULER_TICK: AtomicU32 = AtomicU32::new(0);
+
+/// What recomputes threads' priorities each second.
+pub static RECOMPUTE_PRIORITIES: Timeout = Timeout::new(recompute_priorities);
+
+/// Ages threads' use once more and sets itself again for a second later,
+/// on the boot CPU, then once a second.
+pub fn recompute_priorities(_: &'static Timeout) {
+    SCHEDULER_TICK.fetch_add(1, Ordering::Relaxed);
+    clock::set_timeout(&RECOMPUTE_PRIORITIES, u64::from(HZ));
+}
 
 /// The priority of system threads, and the default set's highest.
 pub const SYSTEM_PRIORITY: u32 = 6;
