@@ -138,6 +138,17 @@ pub fn init() {
     arch::Pcb::module_init();
 }
 
+impl Thread {
+    /// Names it `name`, cut to fit with its final NUL.
+    pub fn set_name(&self, name: &str) {
+        let mut stored = self.name.lock();
+        let length = name.len().min(task::NAME_SIZE - 1);
+        stored.fill(0);
+        stored[..length].copy_from_slice(&name.as_bytes()[..length]);
+        drop(stored);
+    }
+}
+
 /// A new thread of `task`, suspended, in its task's set, at its task's
 /// priority aged by a full share of a processor, with a port and a send
 /// right for it; a thread made in a set with no processor is suspended
