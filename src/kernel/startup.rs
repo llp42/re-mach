@@ -6,6 +6,7 @@
 use super::thread::{self, Thread};
 use super::{clock, machine, processor, radix_tree, sched, task};
 use crate::arch::{self, Machine as _};
+use crate::sync::CriticalSection;
 use crate::{ipc, smp, vm};
 
 /// The startup thread's work: starting the other kernel threads and the
@@ -50,7 +51,8 @@ pub fn start() -> ! {
 /// Brings the current CPU up and starts `thread` on it, its first.
 fn launch_first_thread(thread: &'static Thread) -> ! {
     machine::cpu_up(smp::current().id());
+    let section = CriticalSection::enter();
     thread.run_here();
     arch::Current::start_clock();
-    arch::Current::halt()
+    thread.load(section)
 }

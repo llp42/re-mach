@@ -20,8 +20,13 @@ pub struct PerCpu {
     id: usize,
     /// How deep its interrupt handlers nest.
     interrupt_nesting: AtomicU32,
-    /// How deep its critical sections nest, until threads hold the count.
-    critical_nesting: AtomicU32,
+    /// How deep its critical sections nest before its first thread runs.
+    boot_nesting: AtomicU32,
+    /// The count of the thread it runs, once it runs one: a thread keeps
+    /// how deep its own critical sections nest.
+    nesting: AtomicPtr<AtomicU32>,
+    /// How many spinlocks it holds.
+    spinlocks: AtomicU32,
     /// Its sleep queues, by event hash; only it touches them, inside a
     /// critical section.
     #[expect(dead_code, reason = "assert_wait and thread_wakeup use them")]
@@ -51,7 +56,9 @@ impl PerCpu {
         Self {
             id,
             interrupt_nesting: AtomicU32::new(0),
-            critical_nesting: AtomicU32::new(0),
+            boot_nesting: AtomicU32::new(0),
+            nesting: AtomicPtr::new(ptr::null_mut()),
+            spinlocks: AtomicU32::new(0),
             sleep_queues: [const { SleepQueue::new(SleepQueueAdapter::NEW) }; SLEEP_QUEUES],
             processor: Processor::new(),
             active_thread: AtomicPtr::new(ptr::null_mut()),
@@ -82,6 +89,35 @@ impl PerCpu {
             .store(ptr::from_ref(thread).cast_mut(), Ordering::Release);
     }
 
+    /// How deep the critical sections of what it runs nest: its thread's,
+    /// or its own before its first thread.
+    fn nesting(&self) -> &AtomicU32 {
+        // SAFETY: a thread lives while a CPU runs it.
+        unsafe { self.nesting.load(Ordering::Relaxed).as_ref() }.unwrap_or(&self.boot_nesting)
+    }
+
+    /// Makes `count` its nesting, as it switches to the thread that keeps
+    /// it, inside a critical section.
+    pub fn switch_nesting(&self, count: &'static AtomicU32) {
+        self.nesting
+            .store(ptr::from_ref(count).cast_mut(), Ordering::Relaxed);
+    }
+
+    /// Notes a spinlock taken on this CPU, inside a critical section.
+    pub fn take_spinlock(&self) {
+        raise(&self.spinlocks);
+    }
+
+    /// Notes a spinlock released on this CPU.
+    pub fn release_spinlock(&self) {
+        lower(&self.spinlocks);
+    }
+
+    /// How many spinlocks this CPU holds.
+    pub fn spinlocks(&self) -> u32 {
+        self.spinlocks.load(Ordering::Relaxed)
+    }
+
     /// Enters an interrupt handler on this CPU; dropping the guard leaves it.
     pub fn enter_interrupt(&self) -> InterruptGuard<'_> {
         raise(&self.interrupt_nesting);
@@ -90,7 +126,7 @@ impl PerCpu {
 
     /// Enters a critical section on this CPU.
     pub fn enter_critical(&self) {
-        raise(&self.critical_nesting);
+        raise(self.nesting());
         compiler_fence(Ordering::SeqCst);
     }
 
@@ -98,12 +134,12 @@ impl PerCpu {
     /// outermost.
     pub fn leave_critical(&self) -> bool {
         compiler_fence(Ordering::SeqCst);
-        lower(&self.critical_nesting) == 0
+        lower(self.nesting()) == 0
     }
 
     /// Whether this CPU is in a critical section.
     pub fn in_critical_section(&self) -> bool {
-        self.critical_nesting.load(Ordering::Relaxed) != 0
+        self.nesting().load(Ordering::Relaxed) != 0
     }
 
     /// Whether this CPU is in an interrupt handler.
