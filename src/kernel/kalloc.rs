@@ -6,7 +6,7 @@
 use super::slab::{MIN_ALIGN, RawCache};
 
 /// The size of a kalloc cache's slabs, each aligned to it.
-const SLAB_SIZE: usize = 128 << 10;
+pub const SLAB_SIZE: usize = 128 << 10;
 
 /// The kalloc caches, from 32 bytes to 16 KiB, a power of two each; larger
 /// sizes go straight to the kernel map.
