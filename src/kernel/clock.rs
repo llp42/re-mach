@@ -68,6 +68,9 @@ pub struct Wheel {
     slots: [Spinlock<LinkedList<TimeoutAdapter>>; WHEEL_SLOTS],
     /// How many ticks its CPU has taken since boot.
     ticks: AtomicU64,
+    /// The last tick whose timeouts have been checked for: those of a tick
+    /// with none are at once, the rest by the softclock thread.
+    checked_ticks: AtomicU64,
 }
 
 impl Wheel {
@@ -76,7 +79,13 @@ impl Wheel {
         Self {
             slots: [const { Spinlock::new(LinkedList::new(TimeoutAdapter::NEW)) }; WHEEL_SLOTS],
             ticks: AtomicU64::new(0),
+            checked_ticks: AtomicU64::new(0),
         }
+    }
+
+    /// The slot of the timeouts due at `tick`.
+    fn slot(&self, tick: u64) -> &Spinlock<LinkedList<TimeoutAdapter>> {
+        &self.slots[usize::try_from(tick % u64::try_from(WHEEL_SLOTS).unwrap()).unwrap()]
     }
 }
 
@@ -95,9 +104,7 @@ pub fn set_timeout(timeout: &'static Timeout, ticks: u64) {
     let wheel = smp::current().timeouts();
     // Counting from the next tick leaves out the one under way.
     let deadline = wheel.ticks.load(Ordering::Relaxed) + ticks + 1;
-    let mut slot = wheel.slots
-        [usize::try_from(deadline % u64::try_from(WHEEL_SLOTS).unwrap()).unwrap()]
-    .lock();
+    let mut slot = wheel.slot(deadline).lock();
     timeout.deadline.store(deadline, Ordering::Relaxed);
     timeout.flags.store(
         (TimeoutFlags::ACTIVE | TimeoutFlags::PENDING).bits(),
@@ -114,6 +121,27 @@ pub struct TimeValue {
     pub seconds: i64,
     pub nanoseconds: i64,
 }
+
+impl TimeValue {
+    /// It later by `nanoseconds`, under a second.
+    const fn add_nanoseconds(self, nanoseconds: i64) -> Self {
+        let nanoseconds = self.nanoseconds + nanoseconds;
+        if nanoseconds >= NANOSECONDS_PER_SECOND {
+            Self {
+                seconds: self.seconds + 1,
+                nanoseconds: nanoseconds - NANOSECONDS_PER_SECOND,
+            }
+        } else {
+            Self {
+                seconds: self.seconds,
+                nanoseconds,
+            }
+        }
+    }
+}
+
+/// Nanoseconds in a second.
+const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
 
 /// A time one CPU writes and any reads without a lock: the seconds are
 /// written before and after the rest, so a reader that sees both the same
@@ -165,6 +193,9 @@ impl SharedTime {
 /// The time of day, as the clock keeps it; the boot CPU writes it.
 static TIME: SharedTime = SharedTime::new();
 
+/// The time since boot, which the boot CPU's ticks advance.
+static UPTIME: SharedTime = SharedTime::new();
+
 /// A time stamp: the time of day now.
 pub fn stamp() -> TimeValue {
     TIME.get()
@@ -199,6 +230,20 @@ pub struct MappedTime {
 }
 
 impl MappedTime {
+    /// Writes `uptime` as the time since boot; only one CPU writes it.
+    fn set_uptime(&self, uptime: TimeValue) {
+        self.check_upseconds64
+            .store(uptime.seconds, Ordering::Relaxed);
+        fence(Ordering::Release);
+        self.uptime_value
+            .nanoseconds
+            .store(uptime.nanoseconds, Ordering::Relaxed);
+        fence(Ordering::Release);
+        self.uptime_value
+            .seconds
+            .store(uptime.seconds, Ordering::Relaxed);
+    }
+
     /// Writes `time` as the time of day; only one CPU writes it.
     fn set_time(&self, time: TimeValue) {
         // The 32-bit fields keep the low half, as Mach's do.
@@ -242,7 +287,8 @@ pub fn map_time() {
 
 /// Takes a clock tick on the current CPU, `microseconds` after the one
 /// before, with the thread it interrupted in user mode or not: the tick is
-/// the thread's, and the CPU's in that state.
+/// the thread's, and the CPU's in that state; it advances the CPU's
+/// timeouts, and on the boot CPU the time of day and the uptime.
 pub fn interrupt(microseconds: u32, user_mode: bool) {
     let cpu = smp::current();
     let thread = cpu.active_thread();
@@ -259,7 +305,24 @@ pub fn interrupt(microseconds: u32, user_mode: bool) {
         sched::quantum_update(thread, 1);
     }
     let wheel = cpu.timeouts();
-    wheel
-        .ticks
-        .store(wheel.ticks.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+    let ticks = wheel.ticks.load(Ordering::Relaxed) + 1;
+    wheel.ticks.store(ticks, Ordering::Relaxed);
+    // The softclock thread runs the timeouts due; with none due, and none
+    // behind, the tick is checked already.
+    if wheel.slot(ticks).lock().is_empty()
+        && wheel.checked_ticks.load(Ordering::Relaxed) + 1 == ticks
+    {
+        wheel.checked_ticks.store(ticks, Ordering::Relaxed);
+    }
+    if cpu.id() == 0 {
+        let nanoseconds = i64::from(microseconds) * 1000;
+        let time = TIME.get().add_nanoseconds(nanoseconds);
+        TIME.set(time);
+        let uptime = UPTIME.get().add_nanoseconds(nanoseconds);
+        UPTIME.set(uptime);
+        if let Some(mapped) = MAPPED_TIME.get() {
+            mapped.set_time(time);
+            mapped.set_uptime(uptime);
+        }
+    }
 }
