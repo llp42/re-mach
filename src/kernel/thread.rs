@@ -5,7 +5,7 @@
 
 use core::mem;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
@@ -95,6 +95,10 @@ pub struct Thread {
     /// How deep its critical sections nest; a new thread starts inside the
     /// one the switch to it is made in.
     critical_nesting: AtomicU32,
+    /// Its time in user mode, in microseconds.
+    user_time: AtomicU64,
+    /// Its time in the kernel, in microseconds.
+    system_time: AtomicU64,
 }
 
 intrusive_adapter!(
@@ -231,6 +235,20 @@ impl Thread {
         unsafe { self.pcb.load() }
     }
 
+    /// Adds `microseconds` to its time in user mode or in the kernel, on the
+    /// CPU it runs on.
+    pub fn add_time(&self, microseconds: u32, user_mode: bool) {
+        let time = if user_mode {
+            &self.user_time
+        } else {
+            &self.system_time
+        };
+        time.store(
+            time.load(Ordering::Relaxed) + u64::from(microseconds),
+            Ordering::Relaxed,
+        );
+    }
+
     /// Marks it running, as a thread that is about to be switched to.
     pub fn mark_running(&self) {
         self.state
@@ -330,6 +348,8 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         kernel_stack: OnceLock::new(),
         last_processor: AtomicPtr::new(ptr::null_mut()),
         critical_nesting: AtomicU32::new(1),
+        user_time: AtomicU64::new(0),
+        system_time: AtomicU64::new(0),
     })?;
     // SAFETY: a thread lives until the reaper frees it, which comes later.
     let thread = unsafe { CacheBox::into_raw(thread).as_ref() };
