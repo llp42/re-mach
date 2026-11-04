@@ -74,6 +74,10 @@ SPDX-FileCopyrightText: 2010-2014 Free Software Foundation, Inc.
 SPDX-FileContributor: Richard Braun
 SPDX-License-Identifier: GPL-2.0-or-later
 
+SPDX-FileName: i386/i386at/ioapic.c
+SPDX-FileCopyrightText: 2019 Free Software Foundation, Inc.
+SPDX-License-Identifier: GPL-2.0-or-later
+
 SPDX-FileName: i386/i386at/model_dep.c
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988 Carnegie Mellon University
 SPDX-FileCopyrightText: 1986 Avadis Tevanian, Jr., Michael Wayne Young
