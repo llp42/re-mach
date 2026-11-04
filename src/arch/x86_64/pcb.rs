@@ -3,6 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Threads' machine state: their process control blocks.
 
+use super::fpu;
 use super::trap::TrapFrame;
 use crate::kernel::slab::Cache;
 use crate::kernel::thread::MachineThread;
@@ -20,5 +21,6 @@ static CACHE: Cache<Pcb> = Cache::new("pcb");
 impl MachineThread for Pcb {
     fn module_init() {
         CACHE.register();
+        fpu::module_init();
     }
 }

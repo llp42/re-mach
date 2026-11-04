@@ -76,7 +76,11 @@ impl RawCache {
 
     /// Hands out a buffer from this CPU's slab, taking a new slab when it is
     /// used up.
-    fn allocate(&self) -> Result<NonNull<u8>, Error> {
+    ///
+    /// # Errors
+    ///
+    /// `ResourceShortage` if it needs a new slab and no page is free.
+    pub fn allocate(&self) -> Result<NonNull<u8>, Error> {
         let (page, offset) = {
             let mut cpu = self.cpus.lock();
             let slab = match cpu.active {
