@@ -190,11 +190,11 @@ fn widen(area: Option<Range<PhysAddr>>, range: Range<PhysAddr>) -> Range<PhysAdd
 ///
 /// If no memory is loaded, or on a second call.
 pub fn setup() {
-    let (span, heap) = {
-        let loaded = LOADED.borrow();
-        (loaded.span.clone(), loaded.heap.clone())
-    };
-    let span = span.expect("vm_page: no physical memory loaded");
+    let span = LOADED
+        .borrow()
+        .span
+        .clone()
+        .expect("vm_page: no physical memory loaded");
     let count = (span.end - span.start) / PAGE_SIZE;
     let size = (count * size_of::<Page>()).next_multiple_of(PAGE_SIZE);
     println!(
@@ -221,6 +221,8 @@ pub fn setup() {
             .is_ok(),
         "vm_page: set up twice"
     );
+    // Stealing the array closed the boot heap.
+    let heap = LOADED.borrow().heap.clone();
     if let Some(heap) = heap {
         release(heap);
     }
