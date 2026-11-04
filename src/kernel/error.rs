@@ -10,6 +10,8 @@ pub enum Error {
     InvalidAddress = 1,
     /// The range is in use, or no free range is large enough.
     NoSpace = 3,
+    /// The call does not apply to the object as it stands.
+    Failure = 5,
     /// A resource it needed could not be allocated, perhaps for now only.
     ResourceShortage = 6,
 }

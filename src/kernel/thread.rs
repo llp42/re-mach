@@ -188,6 +188,40 @@ impl Thread {
         Ok(())
     }
 
+    /// Marks it running, as a thread that is about to be switched to.
+    pub fn mark_running(&self) {
+        self.state
+            .fetch_or(ThreadState::RUN.bits(), Ordering::Relaxed);
+    }
+
+    /// Lifts one stop users asked for, and the suspension it holds; a thread
+    /// no longer suspended at all runs.
+    ///
+    /// # Errors
+    ///
+    /// `Failure` if users have not stopped it.
+    ///
+    /// # Panics
+    ///
+    /// If it would go on a run queue: that comes with `thread_setrun`.
+    pub fn resume(&self) -> Result<(), Error> {
+        if self.user_stop_count.load(Ordering::Relaxed) == 0 {
+            return Err(Error::Failure);
+        }
+        if self.user_stop_count.fetch_sub(1, Ordering::Relaxed) == 1
+            && self.suspend_count.fetch_sub(1, Ordering::Relaxed) == 1
+        {
+            let state = self
+                .state
+                .fetch_and(!ThreadState::SUSPENDED.bits(), Ordering::Relaxed);
+            assert!(
+                state & ThreadState::RUN.bits() != 0,
+                "thread_resume: thread_setrun comes with the scheduler"
+            );
+        }
+        Ok(())
+    }
+
     /// Names it `name`, cut to fit with its final NUL.
     pub fn set_name(&self, name: &str) {
         let mut stored = self.name.lock();

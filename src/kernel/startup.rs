@@ -37,5 +37,11 @@ pub fn start() -> ! {
     startup
         .allocate_stack()
         .unwrap_or_else(|error| panic!("startup: thread_doswapin: {error:?}"));
+    // It looks as if it runs already, so resuming it puts it on no run
+    // queue.
+    startup.mark_running();
+    startup
+        .resume()
+        .unwrap_or_else(|error| panic!("startup: thread_resume: {error:?}"));
     arch::Current::halt()
 }
