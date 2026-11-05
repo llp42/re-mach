@@ -91,7 +91,8 @@ impl RawCache {
                         self.slab_size == PAGE_SIZE,
                         "slab: only one-page slabs are carved yet"
                     );
-                    let page = page::allocate().ok_or(Error::ResourceShortage)?;
+                    // A CPU's slabs index their pages, at colour 0.
+                    let page = page::allocate(cpu.slabs).ok_or(Error::ResourceShortage)?;
                     cpu.slabs += 1;
                     Slab { page, carved: 0 }
                 }

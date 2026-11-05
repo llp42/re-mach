@@ -81,6 +81,11 @@ pub fn has_processor(cpu: usize) -> bool {
     SLOTS[cpu].get().is_some()
 }
 
+/// How many slots hold a processor.
+pub fn processor_count() -> usize {
+    SLOTS.iter().filter(|slot| slot.get().is_some()).count()
+}
+
 /// Stores processor `cpu`'s slot.
 ///
 /// # Panics
