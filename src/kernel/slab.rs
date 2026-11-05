@@ -7,11 +7,12 @@ use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
 
 use super::Error;
-use crate::arch::PAGE_SIZE;
+use crate::arch::{PAGE_SIZE, PhysAddr};
 use crate::sync::{CpuLocal, Spinlock};
 use crate::vm::page::{self, Page};
 
@@ -64,6 +65,8 @@ impl RawCache {
             cpus: CpuLocal::new(CpuSlabs {
                 active: None,
                 carved: 0,
+                taken: 0,
+                taken_count: 0,
                 slabs: 0,
                 objects: 0,
             }),
@@ -75,8 +78,9 @@ impl RawCache {
         CACHES.lock().push_back(self);
     }
 
-    /// Hands out a buffer from this CPU's slab, taking a new slab when it is
-    /// used up.
+    /// Hands out a buffer from this CPU's slab: the next of those it took
+    /// from the slab's free list, else the first of that list, taken whole,
+    /// else the next uncarved one; a used-up slab gives way to a new one.
     ///
     /// # Errors
     ///
@@ -84,8 +88,29 @@ impl RawCache {
     pub fn allocate(&self) -> Result<NonNull<u8>, Error> {
         let (page, offset) = {
             let mut cpu = self.cpus.lock();
-            let page = match cpu.active {
-                Some(page) if cpu.carved < self.buffers_per_slab => page,
+            if cpu.taken == 0
+                && let Some(page) = cpu.active
+                && page.slab.free.load(Ordering::Relaxed) != 0
+            {
+                // Acquire, to see the links the frees wrote.
+                let free = page.slab.free.swap(0, Ordering::Acquire);
+                cpu.taken = free & 0xffff_ffff;
+                cpu.taken_count = free >> 32;
+            }
+            let (page, offset) = match cpu.active {
+                Some(page) if cpu.taken != 0 => {
+                    let offset = usize::try_from(cpu.taken - 1).unwrap();
+                    // SAFETY: a taken buffer is free and this CPU's alone, and
+                    // starts with the link to the next.
+                    cpu.taken = unsafe { (page.address() + offset).direct_map_ptr::<u64>().read() };
+                    cpu.taken_count -= 1;
+                    (page, offset)
+                }
+                Some(page) if cpu.carved < self.buffers_per_slab => {
+                    let carved = cpu.carved;
+                    cpu.carved += 1;
+                    (page, carved * self.buffer_size)
+                }
                 _ => {
                     // Kalloc's larger slabs come with kalloc.
                     assert!(
@@ -94,19 +119,73 @@ impl RawCache {
                     );
                     // A CPU's slabs index their pages, at colour 0.
                     let page = page::allocate(cpu.slabs).ok_or(Error::ResourceShortage)?;
+                    // A new slab has nothing freed to it.
+                    page.slab.free.store(0, Ordering::Relaxed);
                     cpu.slabs += 1;
+                    // Frees into the slab replaced are lost until slabs are
+                    // kept on lists.
                     cpu.active = Some(page);
-                    cpu.carved = 0;
-                    page
+                    cpu.carved = 1;
+                    (page, 0)
                 }
             };
-            let carved = cpu.carved;
-            cpu.carved += 1;
             cpu.objects += 1;
             drop(cpu);
-            (page, carved * self.buffer_size)
+            (page, offset)
         };
         Ok(NonNull::new((page.address() + offset).direct_map_ptr()).expect("slab: buffer at null"))
+    }
+
+    /// Gives `buffer` back to its slab's free list, from any CPU, with a
+    /// lock-free push.
+    ///
+    /// # Safety
+    ///
+    /// `buffer` came from this cache, and is not used again.
+    ///
+    /// # Panics
+    ///
+    /// If the page array does not cover `buffer`.
+    pub unsafe fn free(&self, buffer: NonNull<u8>) {
+        let address = PhysAddr::from_direct_map(buffer.as_ptr());
+        let page = page::lookup(address).expect("slab: buffer outside the page array");
+        let head = u64::try_from(address - page.address() + 1).unwrap();
+        let mut free = page.slab.free.load(Ordering::Relaxed);
+        loop {
+            // SAFETY: the buffer is the caller's to give up, and at least 8
+            // bytes, 8-aligned.
+            unsafe { buffer.cast::<u64>().write(free & 0xffff_ffff) };
+            // Release, so the swap that takes the list sees the link. Frees
+            // only push and the owner takes the whole list, so a word that
+            // compares equal is the list as it stands: no ABA.
+            match page.slab.free.compare_exchange_weak(
+                free,
+                (((free >> 32) + 1) << 32) | head,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(current) => free = current,
+            }
+        }
+        self.cpus.lock().objects -= 1;
+    }
+}
+
+/// A slab's state, in its page.
+pub struct Slab {
+    /// The buffers freed to it: in the low 32 bits the first one's offset
+    /// in the slab plus one, 0 for none, and in the high 32 bits how many.
+    /// Each starts with the next one's offset plus one, as a `u64`.
+    free: AtomicU64,
+}
+
+impl Slab {
+    /// One with no buffers freed to it.
+    pub const fn new() -> Self {
+        Self {
+            free: AtomicU64::new(0),
+        }
     }
 }
 
@@ -117,10 +196,17 @@ struct CpuSlabs {
     active: Option<&'static Page>,
     /// How many of the active slab's objects were handed out, from its start.
     carved: usize,
+    /// The first of the buffers it took from the active slab's free list
+    /// and has not handed out, linked as there: its offset plus one, 0 for
+    /// none.
+    taken: u64,
+    /// How many of those buffers there are.
+    taken_count: u64,
     /// How many of the cache's slabs it made.
     slabs: usize,
-    /// How many of the cache's objects it handed out.
-    objects: usize,
+    /// How many of the cache's objects it handed out, less those freed on
+    /// it; a free can come from a CPU that didn't hand the object out.
+    objects: isize,
 }
 
 intrusive_adapter!(
@@ -166,12 +252,18 @@ impl<T> Cache<T> {
         // SAFETY: the buffer is this object's alone, and aligned and large
         // enough for a `T`.
         unsafe { object.write(value) };
-        Ok(CacheBox { object })
+        Ok(CacheBox {
+            cache: self,
+            object,
+        })
     }
 }
 
-/// An object from a cache, which it owns.
-pub struct CacheBox<T> {
+/// An object from a cache, which it owns, and frees to the cache when
+/// dropped.
+pub struct CacheBox<T: 'static> {
+    /// The cache it came from.
+    cache: &'static Cache<T>,
     object: NonNull<T>,
 }
 
@@ -180,6 +272,17 @@ impl<T> CacheBox<T> {
     /// pointer.
     pub fn into_raw(this: Self) -> NonNull<T> {
         ManuallyDrop::new(this).object
+    }
+}
+
+impl<T> Drop for CacheBox<T> {
+    fn drop(&mut self) {
+        // SAFETY: the box owns the object, which nothing uses after, and its
+        // buffer came from the cache.
+        unsafe {
+            self.object.drop_in_place();
+            self.cache.raw.free(self.object.cast());
+        }
     }
 }
 
