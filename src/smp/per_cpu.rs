@@ -150,7 +150,9 @@ impl PerCpu {
     /// outermost.
     pub fn leave_critical(&self) -> bool {
         compiler_fence(Ordering::SeqCst);
-        lower(self.nesting()) == 0
+        let outermost = lower(self.nesting()) == 0;
+        compiler_fence(Ordering::SeqCst);
+        outermost
     }
 
     /// Whether this CPU is in a critical section.
