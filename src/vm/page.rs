@@ -15,9 +15,9 @@ use intrusive_collections::{
 use super::object::Object;
 use super::pmap::MachinePmap as _;
 use crate::arch::{self, PAGE_SIZE, PhysAddr};
-use crate::config::MAX_CPUS;
+use crate::kernel::machine;
 use crate::kernel::slab::Cache;
-use crate::sync::{BootCell, CachePadded, CpuLocal, OnceLock, Spinlock};
+use crate::sync::{BootCell, CachePadded, OnceLock, Spinlock};
 use crate::{println, smp};
 
 /// A physical page.
@@ -177,12 +177,6 @@ static QUEUES: PageQueues = PageQueues {
     active: [const { CachePadded::new(PageQueue::new()) }; COLORS],
 };
 
-/// How many colours each CPU looks at first.
-const CPU_COLORS: usize = COLORS / MAX_CPUS;
-
-/// Each CPU's count of pages taken, which picks its next colour.
-static NEXT_COLOR: CpuLocal<usize> = CpuLocal::new(0);
-
 /// The cache fictitious pages come from: pages outside the page array, such
 /// as placeholders.
 static CACHE: Cache<Page> = Cache::new("vm_page");
@@ -341,21 +335,19 @@ pub fn init() {
     CACHE.register();
 }
 
-/// Takes a free page, from this CPU's own colours first; `None` when no page
-/// is free.
-pub fn allocate() -> Option<&'static Page> {
-    let first = {
-        let mut next = NEXT_COLOR.lock();
-        let first = smp::current().id() * CPU_COLORS + *next % CPU_COLORS;
-        *next += 1;
-        first
-    };
+/// Takes a free page, from this CPU's own colours first, starting at the one
+/// `index` picks: the page's index in its object plus the object's colour;
+/// `None` when no page is free.
+pub fn allocate(index: usize) -> Option<&'static Page> {
+    let cpu_colors = COLORS / machine::processor_count();
+    let first = smp::current().id() * cpu_colors + index % cpu_colors;
     (0..COLORS).find_map(|offset| QUEUES.free[(first + offset) % COLORS].pop())
 }
 
-/// Takes a free page and fills it with zeros; `None` when no page is free.
-pub fn allocate_zeroed() -> Option<&'static Page> {
-    let page = allocate()?;
+/// Takes a free page as `allocate` does for `index`, and fills it with
+/// zeros; `None` when no page is free.
+pub fn allocate_zeroed(index: usize) -> Option<&'static Page> {
+    let page = allocate(index)?;
     // SAFETY: the page is free, so the kernel's alone, and the direct map
     // reaches all of it.
     unsafe {

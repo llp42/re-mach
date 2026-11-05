@@ -108,8 +108,10 @@ pub fn allocate_wired(size: usize) -> Result<NonNull<u8>, Error> {
 /// offset of its address in the kernel map.
 fn fill(range: Range<usize>) -> Result<(), Error> {
     for address in range.step_by(PAGE_SIZE) {
-        let page = page::allocate_zeroed().ok_or(Error::ResourceShortage)?;
-        KERNEL_OBJECT.insert(page, address - MIN_KERNEL_ADDRESS);
+        let offset = address - MIN_KERNEL_ADDRESS;
+        // The kernel object's colour is 0.
+        let page = page::allocate_zeroed(offset / PAGE_SIZE).ok_or(Error::ResourceShortage)?;
+        KERNEL_OBJECT.insert(page, offset);
         arch::Pmap::enter_kernel(address, page.address());
     }
     Ok(())
