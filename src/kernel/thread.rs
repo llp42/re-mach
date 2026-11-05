@@ -531,11 +531,11 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
     })?;
     // SAFETY: a thread lives until the reaper frees it, which comes later.
     let thread = unsafe { CacheBox::into_raw(thread).as_ref() };
-    set.add_thread(thread);
-    task.add_thread(thread);
     port.set_kernel_object(KernelObject::Thread(NonNull::from(thread)));
     let port = CacheBox::into_raw(port).as_ptr();
     thread.self_port.store(port, Ordering::Release);
     thread.self_send.store(port, Ordering::Release);
+    set.add_thread(thread);
+    task.add_thread(thread);
     Ok(thread)
 }
