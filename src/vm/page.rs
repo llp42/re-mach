@@ -110,6 +110,11 @@ struct PageQueue {
     pages: AtomicUsize,
     /// The pages.
     list: Spinlock<LinkedList<PageQueueAdapter>>,
+    /// Where a search from it last found a page after passing 8 or more
+    /// empty queues, as that colour plus one; 0 for none, or once a page is
+    /// found on it first. A hint, so Relaxed: it only moves where a search
+    /// starts.
+    last: AtomicUsize,
 }
 
 impl PageQueue {
@@ -118,6 +123,7 @@ impl PageQueue {
         Self {
             pages: AtomicUsize::new(0),
             list: Spinlock::new(LinkedList::new(PageQueueAdapter::NEW)),
+            last: AtomicUsize::new(0),
         }
     }
 
@@ -335,13 +341,44 @@ pub fn init() {
     CACHE.register();
 }
 
-/// Takes a free page, from this CPU's own colours first, starting at the one
-/// `index` picks: the page's index in its object plus the object's colour;
-/// `None` when no page is free.
+/// Takes a free page from the colour `index` picks among this CPU's, else
+/// from the aligned groups of 16, 32, … colours around it, or around its
+/// hint, up to all; `None` when no page is free. `index` is the page's index
+/// in its object plus the object's colour.
 pub fn allocate(index: usize) -> Option<&'static Page> {
     let cpu_colors = COLORS / machine::processor_count();
     let first = smp::current().id() * cpu_colors + index % cpu_colors;
-    (0..COLORS).find_map(|offset| QUEUES.free[(first + offset) % COLORS].pop())
+    let queue = &QUEUES.free[first];
+    if let Some(page) = queue.pop() {
+        queue.last.store(0, Ordering::Relaxed);
+        return Some(page);
+    }
+    let start = match queue.last.load(Ordering::Relaxed) {
+        0 => first,
+        last => last - 1,
+    };
+    // Each group from the start, wrapping, skipping the group before it.
+    let mut searched = start..start;
+    let mut looked = 0;
+    let mut size = 16;
+    while size <= COLORS {
+        let group = start - start % size;
+        for color in (0..size).map(|offset| group + (start + offset) % size) {
+            if searched.contains(&color) {
+                continue;
+            }
+            if let Some(page) = QUEUES.free[color].pop() {
+                if looked >= 8 {
+                    queue.last.store(color + 1, Ordering::Relaxed);
+                }
+                return Some(page);
+            }
+            looked += 1;
+        }
+        searched = group..group + size;
+        size *= 2;
+    }
+    None
 }
 
 /// Takes a free page as `allocate` does for `index`, and fills it with
