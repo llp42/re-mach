@@ -3,9 +3,12 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Threads.
 
+use core::iter;
 use core::mem;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering,
+};
 
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
@@ -16,7 +19,7 @@ use super::sched::{self, Policies, RUN_QUEUES, SCHEDULER_SCALE};
 use super::slab::{Cache, CacheBox};
 use super::task::{self, Task};
 use crate::ipc::port::{self, KernelObject, Port};
-use crate::sync::{CriticalSection, OnceLock, Token};
+use crate::sync::{CriticalSection, OnceLock};
 use crate::vm;
 use crate::vm::kernel::KernelStack;
 use crate::{arch, smp};
@@ -79,7 +82,7 @@ pub struct Thread {
     /// When it was created.
     creation_time: TimeValue,
     /// Its name, ending with a NUL.
-    name: Token<[u8; task::NAME_SIZE]>,
+    name: [AtomicU8; task::NAME_SIZE],
     /// Its machine state.
     pcb: UnsafeRef<arch::Pcb>,
     /// Its port, which controls it.
@@ -457,11 +460,11 @@ impl Thread {
 
     /// Names it `name`, cut to fit with its final NUL.
     pub fn set_name(&self, name: &str) {
-        let mut stored = self.name.lock();
-        let length = name.len().min(task::NAME_SIZE - 1);
-        stored.fill(0);
-        stored[..length].copy_from_slice(&name.as_bytes()[..length]);
-        drop(stored);
+        // Unlocked, as in GNU Mach: racing calls may mix two names.
+        let bytes = name.bytes().chain(iter::repeat(0));
+        for (stored, byte) in self.name[..task::NAME_SIZE - 1].iter().zip(bytes) {
+            stored.store(byte, Ordering::Relaxed);
+        }
     }
 }
 
@@ -510,7 +513,7 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         set: AtomicPtr::new(ptr::null_mut()),
         may_assign: true,
         creation_time: clock::stamp(),
-        name: Token::new(task.name),
+        name: task.name.map(AtomicU8::new),
         // SAFETY: the thread takes its machine state for good.
         pcb: unsafe { UnsafeRef::from_raw(CacheBox::into_raw(pcb).as_ptr()) },
         self_port: AtomicPtr::new(ptr::null_mut()),
