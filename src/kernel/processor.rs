@@ -215,8 +215,8 @@ impl ProcessorSet {
         set.active = true;
         // SAFETY: a set lives until it is destroyed, which comes later.
         let set = unsafe { CacheBox::into_raw(set).as_ref() };
-        set.join_all();
         ipc_host::init_set(set);
+        set.join_all();
         Ok(set)
     }
 
