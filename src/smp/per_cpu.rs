@@ -14,7 +14,7 @@ use crate::kernel::clock::Wheel;
 use crate::kernel::processor::Processor;
 use crate::kernel::sched::{SLEEP_QUEUES, SleepQueue};
 use crate::kernel::thread::{RunQueueAdapter, SleepQueueAdapter, Thread};
-use crate::sync::Token;
+use crate::sync::Spinlock;
 
 /// One CPU's machine-independent data, held in the machine's part.
 pub struct PerCpu {
@@ -39,7 +39,7 @@ pub struct PerCpu {
     /// The threads that ended on it, waiting for the reaper, linked as on
     /// a run queue.
     #[expect(dead_code, reason = "thread_terminate and the reaper use them")]
-    dead_threads: Token<LinkedList<RunQueueAdapter>>,
+    dead_threads: Spinlock<LinkedList<RunQueueAdapter>>,
     /// Its timeouts; only it runs them.
     timeouts: Wheel,
     /// The ASTs pending on it, a bit per reason.
@@ -62,7 +62,7 @@ impl PerCpu {
             sleep_queues: [const { SleepQueue::new(SleepQueueAdapter::NEW) }; SLEEP_QUEUES],
             processor: Processor::new(),
             active_thread: AtomicPtr::new(ptr::null_mut()),
-            dead_threads: Token::new(LinkedList::new(RunQueueAdapter::NEW)),
+            dead_threads: Spinlock::new(LinkedList::new(RunQueueAdapter::NEW)),
             timeouts: Wheel::new(),
             pending_asts: AtomicU32::new(0),
         }
