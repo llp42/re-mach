@@ -12,7 +12,7 @@ use super::machine::{self, CpuState};
 use super::sched;
 use crate::arch::{Current, Machine as _, PAGE_SIZE};
 use crate::config::HZ;
-use crate::sync::{OnceLock, Spinlock};
+use crate::sync::{CriticalSection, OnceLock, Spinlock};
 use crate::{smp, vm};
 
 bitflags::bitflags! {
@@ -102,6 +102,9 @@ pub fn set_timeout(timeout: &'static Timeout, ticks: u64) {
             .contains(TimeoutFlags::PENDING),
         "set_timeout: pending already"
     );
+    // A tick waits, and the thread stays on this CPU, until the timeout is
+    // in its slot.
+    let _section = CriticalSection::enter();
     let wheel = smp::current().timeouts();
     // Counting from the next tick leaves out the one under way.
     let deadline = wheel.ticks.load(Ordering::Relaxed) + ticks + 1;
