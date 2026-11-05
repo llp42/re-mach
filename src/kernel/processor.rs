@@ -19,10 +19,6 @@ use crate::ipc::port::Port;
 use crate::smp;
 use crate::sync::{OnceLock, Token};
 
-/// How many lists a set's tasks are spread over by address, each behind
-/// its own token, so no lock covers all of them.
-const MEMBER_SHARDS: usize = 64;
-
 /// A processor: one per CPU, in that CPU's data.
 #[expect(dead_code, reason = "the dispatcher and processor_info read them")]
 pub struct Processor {
@@ -119,8 +115,10 @@ pub struct ProcessorSet {
     /// Whether it is in use; a destroyed set is not.
     pub(super) active: bool,
     /// Whether it has no processor; threads created in it start suspended.
+    /// Changed only under `members`' token.
     pub(super) empty: AtomicBool,
-    /// How many processors it has.
+    /// How many processors it has; changed only under `members`' token, and
+    /// read without it at each tick.
     pub(super) processor_count: AtomicU32,
     /// Which of its processors the next quantum adjustment falls to.
     adjust_index: AtomicU32,
@@ -133,7 +131,8 @@ pub struct ProcessorSet {
     /// Its processors' quantum, in ticks.
     quantum: AtomicU32,
     /// The quantum for each count of threads waiting, up to its processor
-    /// count; at 0, twice the quantum of 1.
+    /// count; at 0, twice the quantum of 1. Changed only under `members`'
+    /// token, and read without it at each tick.
     machine_quantum: [AtomicU32; MAX_CPUS + 1],
     /// Its load, scaled by `SCHEDULER_SCALE`.
     pub(super) load: u32,
@@ -141,14 +140,8 @@ pub struct ProcessorSet {
     pub(super) port: AtomicPtr<Port>,
     /// Its name port, for information about it.
     pub(super) name_port: AtomicPtr<Port>,
-    /// Its tasks, by address.
-    tasks: [Token<LinkedList<SetTaskAdapter>>; MEMBER_SHARDS],
-    /// How many tasks it has.
-    task_count: AtomicU32,
-    /// Its threads, by address.
-    threads: [Token<LinkedList<SetThreadAdapter>>; MEMBER_SHARDS],
-    /// How many threads it has.
-    thread_count: AtomicU32,
+    /// Its tasks and threads, and how many of each.
+    members: Token<Members>,
     /// Its place in the list of all sets.
     all_link: LinkedListAtomicLink,
 }
@@ -160,6 +153,18 @@ intrusive_adapter!(
     )]
     AllSetsAdapter = UnsafeRef<ProcessorSet>: ProcessorSet { all_link => LinkedListAtomicLink }
 );
+
+/// A set's tasks and threads, and how many of each.
+struct Members {
+    /// The tasks, in the order the set took them.
+    tasks: LinkedList<SetTaskAdapter>,
+    /// How many tasks there are.
+    task_count: u32,
+    /// The threads, in the order the set took them.
+    threads: LinkedList<SetThreadAdapter>,
+    /// How many threads there are.
+    thread_count: u32,
+}
 
 /// Every processor set, and how many there are.
 struct AllSets {
@@ -194,10 +199,12 @@ impl ProcessorSet {
             load: SCHEDULER_SCALE,
             port: AtomicPtr::new(ptr::null_mut()),
             name_port: AtomicPtr::new(ptr::null_mut()),
-            tasks: [const { Token::new(LinkedList::new(SetTaskAdapter::NEW)) }; MEMBER_SHARDS],
-            task_count: AtomicU32::new(0),
-            threads: [const { Token::new(LinkedList::new(SetThreadAdapter::NEW)) }; MEMBER_SHARDS],
-            thread_count: AtomicU32::new(0),
+            members: Token::new(Members {
+                tasks: LinkedList::new(SetTaskAdapter::NEW),
+                task_count: 0,
+                threads: LinkedList::new(SetThreadAdapter::NEW),
+                thread_count: 0,
+            }),
             all_link: LinkedListAtomicLink::new(),
         }
     }
@@ -223,18 +230,20 @@ impl ProcessorSet {
     /// Takes `thread`, new and in no set, with a reference for it.
     pub(super) fn add_thread(&'static self, thread: &'static Thread) {
         self.references.fetch_add(1, Ordering::Relaxed);
-        let shard = &self.threads[ptr::from_ref(thread).addr() / 64 % MEMBER_SHARDS];
+        let mut members = self.members.lock();
         // SAFETY: threads are never freed while a set holds them.
-        shard
-            .lock()
+        members
+            .threads
             .push_back(unsafe { UnsafeRef::from_raw(thread) });
         thread
             .set
             .store(ptr::from_ref(self).cast_mut(), Ordering::Release);
-        self.thread_count.fetch_add(1, Ordering::Relaxed);
+        members.thread_count += 1;
+        drop(members);
     }
 
-    /// Takes `processor`, coming up, and sets its quanta again.
+    /// Takes `processor`, coming up, and sets its quanta again; the caller
+    /// holds `members`' token.
     pub(super) fn add_processor(&'static self, processor: &'static Processor) {
         processor
             .set
@@ -292,12 +301,15 @@ impl ProcessorSet {
     /// Takes `task`, new and in no set, with a reference for it.
     pub(super) fn add_task(&'static self, task: &'static Task) {
         self.references.fetch_add(1, Ordering::Relaxed);
-        let shard = &self.tasks[ptr::from_ref(task).addr() / 64 % MEMBER_SHARDS];
+        let mut members = self.members.lock();
         // SAFETY: tasks are never freed while a set holds them.
-        shard.lock().push_back(unsafe { UnsafeRef::from_raw(task) });
+        members
+            .tasks
+            .push_back(unsafe { UnsafeRef::from_raw(task) });
         task.set
             .store(ptr::from_ref(self).cast_mut(), Ordering::Release);
-        self.task_count.fetch_add(1, Ordering::Relaxed);
+        members.task_count += 1;
+        drop(members);
     }
 }
 
@@ -338,17 +350,19 @@ pub fn init() {
     assert!(SLAVE_SET.set(set).is_ok(), "pset_sys_init: twice");
 }
 
-/// Brings the current CPU's processor up, on that CPU: it joins the
-/// default set, or the slave set for a CPU but the boot CPU's, and runs.
+/// Brings the current CPU's processor up, on that CPU, under the default
+/// set's token and the slave set's: it joins the default set, or the slave
+/// set for a CPU but the boot CPU's, and runs.
 pub fn up(cpu: usize) {
     let processor = smp::current().processor();
-    let set = if cpu == 0 {
-        &DEFAULT_SET
-    } else {
-        SLAVE_SET.get().expect("cpu_up: no slave set")
-    };
+    let slave_set = SLAVE_SET.get().expect("cpu_up: no slave set");
+    let default_members = DEFAULT_SET.members.lock();
+    let slave_members = slave_set.members.lock();
+    let set = if cpu == 0 { &DEFAULT_SET } else { slave_set };
     set.add_processor(processor);
     processor
         .state
         .store(State::Running.number(), Ordering::Release);
+    drop(slave_members);
+    drop(default_members);
 }
