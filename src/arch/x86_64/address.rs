@@ -43,6 +43,11 @@ impl PhysAddr {
     pub const fn direct_map_ptr<T>(self) -> *mut T {
         ptr::with_exposed_provenance_mut(self.0 + DIRECT_MAP_BASE)
     }
+
+    /// The address the direct map maps at `pointer`.
+    pub fn from_direct_map<T>(pointer: *const T) -> Self {
+        Self(pointer.addr() - DIRECT_MAP_BASE)
+    }
 }
 
 impl Add<usize> for PhysAddr {

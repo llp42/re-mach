@@ -16,7 +16,7 @@ use super::object::Object;
 use super::pmap::MachinePmap as _;
 use crate::arch::{self, PAGE_SIZE, PhysAddr};
 use crate::kernel::machine;
-use crate::kernel::slab::Cache;
+use crate::kernel::slab::{Cache, Slab};
 use crate::sync::{BootCell, CachePadded, OnceLock, Spinlock};
 use crate::{println, smp};
 
@@ -31,6 +31,8 @@ pub struct Page {
     object: AtomicPtr<Object>,
     /// Where it is in its object, in bytes; changed as `object` is.
     offset: AtomicUsize,
+    /// Its state while it is a slab.
+    pub slab: Slab,
 }
 
 impl Page {
@@ -41,6 +43,7 @@ impl Page {
             object_link: RBTreeAtomicLink::new(),
             object: AtomicPtr::new(ptr::null_mut()),
             offset: AtomicUsize::new(0),
+            slab: Slab::new(),
         }
     }
 
@@ -334,6 +337,18 @@ pub fn print_pools() {
 /// If the page array is not set up.
 pub fn span_size() -> usize {
     PAGES.get().expect("vm_page: not set up").pages.len() * PAGE_SIZE
+}
+
+/// The page holding `address`; `None` if the page array does not cover it.
+///
+/// # Panics
+///
+/// If the page array is not set up.
+pub fn lookup(address: PhysAddr) -> Option<&'static Page> {
+    let array = PAGES.get().expect("vm_page: not set up");
+    array
+        .pages
+        .get(address.checked_sub(array.start)? / PAGE_SIZE)
 }
 
 /// Sets up the pages' second pass, once the VM is up, on the boot CPU.
