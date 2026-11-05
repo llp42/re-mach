@@ -63,6 +63,7 @@ impl RawCache {
             buffers_per_slab: slab_size / buffer_size,
             cpus: CpuLocal::new(CpuSlabs {
                 active: None,
+                carved: 0,
                 slabs: 0,
                 objects: 0,
             }),
@@ -83,8 +84,8 @@ impl RawCache {
     pub fn allocate(&self) -> Result<NonNull<u8>, Error> {
         let (page, offset) = {
             let mut cpu = self.cpus.lock();
-            let slab = match cpu.active {
-                Some(slab) if slab.carved < self.buffers_per_slab => slab,
+            let page = match cpu.active {
+                Some(page) if cpu.carved < self.buffers_per_slab => page,
                 _ => {
                     // Kalloc's larger slabs come with kalloc.
                     assert!(
@@ -94,16 +95,16 @@ impl RawCache {
                     // A CPU's slabs index their pages, at colour 0.
                     let page = page::allocate(cpu.slabs).ok_or(Error::ResourceShortage)?;
                     cpu.slabs += 1;
-                    Slab { page, carved: 0 }
+                    cpu.active = Some(page);
+                    cpu.carved = 0;
+                    page
                 }
             };
-            cpu.active = Some(Slab {
-                carved: slab.carved + 1,
-                ..slab
-            });
+            let carved = cpu.carved;
+            cpu.carved += 1;
             cpu.objects += 1;
             drop(cpu);
-            (slab.page, slab.carved * self.buffer_size)
+            (page, carved * self.buffer_size)
         };
         Ok(NonNull::new((page.address() + offset).direct_map_ptr()).expect("slab: buffer at null"))
     }
@@ -113,20 +114,13 @@ impl RawCache {
 #[derive(Clone, Copy)]
 struct CpuSlabs {
     /// The slab it hands objects out from.
-    active: Option<Slab>,
+    active: Option<&'static Page>,
+    /// How many of the active slab's objects were handed out, from its start.
+    carved: usize,
     /// How many of the cache's slabs it made.
     slabs: usize,
     /// How many of the cache's objects it handed out.
     objects: usize,
-}
-
-/// A page of a cache's objects.
-#[derive(Clone, Copy)]
-struct Slab {
-    /// The page.
-    page: &'static Page,
-    /// How many of its objects were handed out first, from its start.
-    carved: usize,
 }
 
 intrusive_adapter!(
