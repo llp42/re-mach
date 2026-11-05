@@ -322,10 +322,20 @@ pub struct CacheBox<T: 'static> {
 }
 
 impl<T> CacheBox<T> {
-    /// Gives the object up for good, to a structure that holds objects by
-    /// pointer.
+    /// Gives the object up, to a structure that holds objects by pointer;
+    /// `from_raw` takes it back.
     pub fn into_raw(this: Self) -> NonNull<T> {
         ManuallyDrop::new(this).object
+    }
+
+    /// Takes back an object `into_raw` gave up.
+    ///
+    /// # Safety
+    ///
+    /// `object` came from `into_raw` of a box of `cache`, and nothing but
+    /// the new box uses it after.
+    pub const unsafe fn from_raw(cache: &'static Cache<T>, object: NonNull<T>) -> Self {
+        Self { cache, object }
     }
 }
 

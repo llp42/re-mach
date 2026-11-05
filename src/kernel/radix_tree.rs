@@ -118,9 +118,7 @@ impl<T> RadixTree<T> {
         }
     }
 
-    /// Stores `pointer`, two-byte aligned, under `key`. When a node cannot
-    /// be allocated, those this call made stay, empty, until nodes can be
-    /// freed.
+    /// Stores `pointer`, two-byte aligned, under `key`.
     ///
     /// # Errors
     ///
@@ -141,13 +139,14 @@ impl<T> RadixTree<T> {
         // `&mut self` makes this the only use.
         unsafe {
             if self.root.is_null() {
-                self.root = child(Node::create(self.height - 1)?);
+                // Back to an empty tree's height 0 if this fails.
+                self.root = child(Node::create(self.height - 1).inspect_err(|_| self.height = 0)?);
             }
             let mut node = node_of(self.root);
             for level in (1..self.height).rev() {
                 let index = digit(key, level);
                 if (*node).entries[index].is_null() {
-                    let next = Node::create(level - 1)?;
+                    let next = Node::create(level - 1).inspect_err(|_| self.cleanup(node))?;
                     (*next).parent = node;
                     (*next).index = u16::try_from(index).unwrap();
                     (*node).entries[index] = child(next);
@@ -186,7 +185,7 @@ impl<T> RadixTree<T> {
             return Ok(());
         }
         while self.height < height {
-            let node = Node::create(self.height)?;
+            let node = Node::create(self.height).inspect_err(|_| self.shrink())?;
             // SAFETY: the new node is only this tree's, and so is its root.
             unsafe {
                 if self.height == 0 {
@@ -207,5 +206,58 @@ impl<T> RadixTree<T> {
             self.root = child(node);
         }
         Ok(())
+    }
+
+    /// Frees the top nodes that hold their entry 0 alone, lowering the tree.
+    fn shrink(&mut self) {
+        // SAFETY: the tree's nodes are live and only it reaches them, and
+        // `&mut self` makes this the only use.
+        unsafe {
+            while self.height > 0 {
+                let node = node_of(self.root);
+                let entry = (*node).entries[0];
+                if (*node).count != 1 || entry.is_null() {
+                    break;
+                }
+                self.height -= 1;
+                if self.height > 0 {
+                    (*node_of(entry)).parent = ptr::null_mut();
+                }
+                self.root = entry;
+                drop(CacheBox::from_raw(&NODE_CACHE, NonNull::from(&mut *node)));
+            }
+        }
+    }
+
+    /// Frees the empty nodes from `node` up; reaching the top, lowers the
+    /// tree as `shrink` does.
+    ///
+    /// # Safety
+    ///
+    /// `node` is one of the tree's nodes.
+    unsafe fn cleanup(&mut self, mut node: *mut Node) {
+        // SAFETY: the caller's; the tree's nodes are live and only it
+        // reaches them, and `&mut self` makes this the only use.
+        unsafe {
+            loop {
+                let parent = (*node).parent;
+                if (*node).count != 0 {
+                    if parent.is_null() {
+                        self.shrink();
+                    }
+                    break;
+                }
+                if parent.is_null() {
+                    self.height = 0;
+                    self.root = ptr::null_mut();
+                    drop(CacheBox::from_raw(&NODE_CACHE, NonNull::from(&mut *node)));
+                    break;
+                }
+                (*parent).entries[usize::from((*node).index)] = ptr::null_mut();
+                (*parent).count -= 1;
+                drop(CacheBox::from_raw(&NODE_CACHE, NonNull::from(&mut *node)));
+                node = parent;
+            }
+        }
     }
 }
