@@ -4,7 +4,7 @@
 //! The clock: the time of day and timeouts.
 
 use core::ptr;
-use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, AtomicU64, Ordering, fence};
+use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, AtomicU64, AtomicUsize, Ordering, fence};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
@@ -147,79 +147,99 @@ impl TimeValue {
 /// Nanoseconds in a second.
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
 
-/// A time one CPU writes and any reads without a lock: the seconds are
-/// written before and after the rest, so a reader that sees both the same
-/// read a whole time.
-struct SharedTime {
-    /// The seconds, written first.
-    check_seconds: AtomicI64,
-    nanoseconds: AtomicI64,
-    /// The seconds, written last.
+/// A time in two atomics, read and written apart.
+struct AtomicTimeValue {
     seconds: AtomicI64,
+    nanoseconds: AtomicI64,
 }
 
-impl SharedTime {
+impl AtomicTimeValue {
     /// Zero.
     const fn new() -> Self {
         Self {
-            check_seconds: AtomicI64::new(0),
-            nanoseconds: AtomicI64::new(0),
             seconds: AtomicI64::new(0),
+            nanoseconds: AtomicI64::new(0),
         }
     }
 
-    /// Sets it to `time`; only one CPU writes it.
-    fn set(&self, time: TimeValue) {
-        self.check_seconds.store(time.seconds, Ordering::Relaxed);
-        fence(Ordering::Release);
-        self.nanoseconds.store(time.nanoseconds, Ordering::Relaxed);
-        fence(Ordering::Release);
-        self.seconds.store(time.seconds, Ordering::Relaxed);
+    /// Its value.
+    fn load(&self) -> TimeValue {
+        TimeValue {
+            seconds: self.seconds.load(Ordering::Relaxed),
+            nanoseconds: self.nanoseconds.load(Ordering::Relaxed),
+        }
     }
 
-    /// Its value, read again while a write overlaps the read.
-    fn get(&self) -> TimeValue {
-        loop {
-            let seconds = self.seconds.load(Ordering::Relaxed);
-            fence(Ordering::Acquire);
-            let nanoseconds = self.nanoseconds.load(Ordering::Relaxed);
-            fence(Ordering::Acquire);
-            if self.check_seconds.load(Ordering::Relaxed) == seconds {
-                return TimeValue {
-                    seconds,
-                    nanoseconds,
-                };
-            }
+    /// Sets it to `time`.
+    fn store(&self, time: TimeValue) {
+        self.seconds.store(time.seconds, Ordering::Relaxed);
+        self.nanoseconds.store(time.nanoseconds, Ordering::Relaxed);
+    }
+}
+
+/// The clock at one moment, written whole on the boot CPU, then published.
+struct Snapshot {
+    /// The time of day.
+    time: AtomicTimeValue,
+    /// The time since boot, which the boot CPU's ticks advance.
+    uptime: AtomicTimeValue,
+    /// The time counter at the boot CPU's last tick.
+    counter: AtomicU64,
+}
+
+impl Snapshot {
+    /// Zero.
+    const fn new() -> Self {
+        Self {
+            time: AtomicTimeValue::new(),
+            uptime: AtomicTimeValue::new(),
+            counter: AtomicU64::new(0),
         }
     }
 }
 
-/// The time of day, as the clock keeps it; the boot CPU writes it.
-static TIME: SharedTime = SharedTime::new();
+/// The clock's snapshots, a ring only the boot CPU writes; a reader stalled
+/// across 16 publications can see its slot rewritten.
+static SNAPSHOTS: [Snapshot; 16] = [const { Snapshot::new() }; _];
 
-/// The time since boot, which the boot CPU's ticks advance.
-static UPTIME: SharedTime = SharedTime::new();
+/// The slot of the published snapshot, the one readers take.
+static SNAPSHOT_INDEX: AtomicUsize = AtomicUsize::new(0);
 
-/// The time counter at the boot CPU's last tick.
-static LAST_TICK: AtomicU64 = AtomicU64::new(0);
+/// The published snapshot.
+fn snapshot() -> &'static Snapshot {
+    &SNAPSHOTS[SNAPSHOT_INDEX.load(Ordering::Acquire)]
+}
+
+/// Writes `time`, `uptime` and `counter` in the next slot, then publishes
+/// it, on the boot CPU.
+fn publish(time: TimeValue, uptime: TimeValue, counter: u64) {
+    let index = (SNAPSHOT_INDEX.load(Ordering::Relaxed) + 1) % SNAPSHOTS.len();
+    let next = &SNAPSHOTS[index];
+    next.time.store(time);
+    next.uptime.store(uptime);
+    next.counter.store(counter, Ordering::Relaxed);
+    SNAPSHOT_INDEX.store(index, Ordering::Release);
+}
 
 /// A time stamp: the time of day now, with the counter's change since the
 /// boot CPU's last tick, kept under a tick.
 pub fn stamp() -> TimeValue {
-    loop {
-        let last = LAST_TICK.load(Ordering::Acquire);
-        let time = TIME.get();
-        if LAST_TICK.load(Ordering::Acquire) == last {
-            let since = Current::counter_nanoseconds().saturating_sub(last);
-            let since = i64::try_from(since).unwrap_or(i64::MAX);
-            return time.add_nanoseconds(since.min(NANOSECONDS_PER_SECOND / i64::from(HZ) - 1));
-        }
-    }
+    let last = snapshot();
+    let since = Current::counter_nanoseconds().saturating_sub(last.counter.load(Ordering::Relaxed));
+    let since = i64::try_from(since).unwrap_or(i64::MAX);
+    last.time
+        .load()
+        .add_nanoseconds(since.min(NANOSECONDS_PER_SECOND / i64::from(HZ) - 1))
 }
 
 /// Sets the time of day, on the boot CPU.
 pub fn set_time(time: TimeValue) {
-    TIME.set(time);
+    let last = snapshot();
+    publish(
+        time,
+        last.uptime.load(),
+        last.counter.load(Ordering::Relaxed),
+    );
 }
 
 /// A time whose halves are written apart, as the mapped time lays it out.
@@ -230,8 +250,8 @@ struct MappedTimeValue {
 }
 
 /// The time, as user tasks map it through the time device: laid out as
-/// Mach's interface gives it, and written as the time of day is, a check
-/// first and the seconds last.
+/// Mach's interface gives it, and written a check first and the seconds
+/// last.
 #[repr(C)]
 pub struct MappedTime {
     /// The time of day's seconds, in 32 bits.
@@ -297,7 +317,7 @@ pub fn map_time() {
     // SAFETY: a zeroed page, the kernel's for good and mapped at `page`,
     // laid out as zeros of `MappedTime`'s atomics.
     let mapped = unsafe { page.cast::<MappedTime>().as_ref() };
-    mapped.set_time(TIME.get());
+    mapped.set_time(snapshot().time.load());
     assert!(MAPPED_TIME.set(mapped).is_ok(), "mapable_time_init: twice");
 }
 
@@ -332,14 +352,13 @@ pub fn interrupt(microseconds: u32, user_mode: bool) {
     drop(slot);
     if cpu.id() == 0 {
         let nanoseconds = i64::from(microseconds) * 1000;
-        let time = TIME.get().add_nanoseconds(nanoseconds);
-        TIME.set(time);
-        let uptime = UPTIME.get().add_nanoseconds(nanoseconds);
-        UPTIME.set(uptime);
+        let last = snapshot();
+        let time = last.time.load().add_nanoseconds(nanoseconds);
+        let uptime = last.uptime.load().add_nanoseconds(nanoseconds);
+        publish(time, uptime, Current::counter_nanoseconds());
         if let Some(mapped) = MAPPED_TIME.get() {
             mapped.set_time(time);
             mapped.set_uptime(uptime);
         }
-        LAST_TICK.store(Current::counter_nanoseconds(), Ordering::Release);
     }
 }
