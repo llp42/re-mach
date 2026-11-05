@@ -110,7 +110,7 @@ pub fn init() {
 /// port with a send right, at the default set's priorities.
 fn create_kernel() -> Result<&'static Task, Error> {
     let map = KERNEL_MAP.get().expect("task_init: no kernel map");
-    let space = Space::create()?;
+    let mut space = Space::create()?;
     let mut port = port::allocate_kernel()?;
     port.make_send();
     let mut name = [0; NAME_SIZE];
@@ -119,8 +119,8 @@ fn create_kernel() -> Result<&'static Task, Error> {
         references: AtomicU32::new(2),
         // SAFETY: the kernel map is static.
         map: unsafe { UnsafeRef::from_raw(ptr::from_ref(map)) },
-        // SAFETY: the task takes the space's first reference.
-        space: unsafe { UnsafeRef::from_raw(CacheBox::into_raw(space).as_ptr()) },
+        // SAFETY: its box, unused until given up below, outlives the task.
+        space: unsafe { UnsafeRef::from_raw(ptr::from_mut(&mut *space)) },
         self_port: AtomicPtr::new(ptr::null_mut()),
         self_send: AtomicPtr::new(ptr::null_mut()),
         may_assign: true,
@@ -138,6 +138,8 @@ fn create_kernel() -> Result<&'static Task, Error> {
         set: AtomicPtr::new(ptr::null_mut()),
         set_link: LinkedListAtomicLink::new(),
     })?;
+    // The task takes the space's first reference.
+    CacheBox::into_raw(space);
     let task = CacheBox::into_raw(task);
     // SAFETY: the task is the kernel's for good.
     let task = unsafe { task.as_ref() };
