@@ -141,7 +141,7 @@ pub struct ProcessorSet {
     /// Its name port, for information about it.
     pub(super) name_port: AtomicPtr<Port>,
     /// Its tasks and threads, and how many of each.
-    members: Token<Members>,
+    pub(super) members: Token<Members>,
     /// Its place in the list of all sets.
     all_link: LinkedListAtomicLink,
 }
@@ -155,7 +155,7 @@ intrusive_adapter!(
 );
 
 /// A set's tasks and threads, and how many of each.
-struct Members {
+pub(super) struct Members {
     /// The tasks, in the order the set took them.
     tasks: LinkedList<SetTaskAdapter>,
     /// How many tasks there are.
@@ -227,10 +227,9 @@ impl ProcessorSet {
         Ok(set)
     }
 
-    /// Takes `thread`, new and in no set, with a reference for it.
-    pub(super) fn add_thread(&'static self, thread: &'static Thread) {
-        self.references.fetch_add(1, Ordering::Relaxed);
-        let mut members = self.members.lock();
+    /// Takes `thread`, new and in no set, into its `members`; the thread
+    /// keeps the reference the caller took for it.
+    pub(super) fn add_thread(&'static self, members: &mut Members, thread: &'static Thread) {
         // SAFETY: threads are never freed while a set holds them.
         members
             .threads
@@ -239,7 +238,6 @@ impl ProcessorSet {
             .set
             .store(ptr::from_ref(self).cast_mut(), Ordering::Release);
         members.thread_count += 1;
-        drop(members);
     }
 
     /// Takes `processor`, coming up, and sets its quanta again; the caller
