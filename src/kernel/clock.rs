@@ -325,11 +325,11 @@ pub fn interrupt(microseconds: u32, user_mode: bool) {
     wheel.ticks.store(ticks, Ordering::Relaxed);
     // The softclock thread runs the timeouts due; with none due, and none
     // behind, the tick is checked already.
-    if wheel.slot(ticks).lock().is_empty()
-        && wheel.checked_ticks.load(Ordering::Relaxed) + 1 == ticks
-    {
+    let slot = wheel.slot(ticks).lock();
+    if slot.is_empty() && wheel.checked_ticks.load(Ordering::Relaxed) + 1 == ticks {
         wheel.checked_ticks.store(ticks, Ordering::Relaxed);
     }
+    drop(slot);
     if cpu.id() == 0 {
         let nanoseconds = i64::from(microseconds) * 1000;
         let time = TIME.get().add_nanoseconds(nanoseconds);
