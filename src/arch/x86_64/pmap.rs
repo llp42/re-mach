@@ -51,7 +51,7 @@ const EARLY_PAGE_TABLES: usize = 128;
 /// Entry of a lower table.
 const TABLE: PageTableFlags = PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE);
 
-/// Global 2 MiB page.
+/// Global 2 MiB page, for mappings never removed.
 const LARGE_PAGE: PageTableFlags = TABLE
     .union(PageTableFlags::HUGE_PAGE)
     .union(PageTableFlags::GLOBAL);
@@ -61,14 +61,13 @@ const DIRECT_MAP_PAGE: PageTableFlags = LARGE_PAGE
     .union(PageTableFlags::ACCESSED)
     .union(PageTableFlags::DIRTY);
 
-/// Kernel memory's page: global and writable.
-const KERNEL_PAGE: PageTableFlags = TABLE.union(PageTableFlags::GLOBAL);
+/// Kernel memory's page: writable.
+const KERNEL_PAGE: PageTableFlags = TABLE;
 
-/// Device memory's page: global, writable, uncached (PAT entry 3).
+/// Device memory's page: writable, uncached (PAT entry 3).
 const DEVICE_PAGE: PageTableFlags = TABLE
     .union(PageTableFlags::WRITE_THROUGH)
-    .union(PageTableFlags::NO_CACHE)
-    .union(PageTableFlags::GLOBAL);
+    .union(PageTableFlags::NO_CACHE);
 
 /// The page attribute table: entries 0 to 3 keep their reset types, so a
 /// PTE's PWT and PCD bits keep their meaning; 5 and 6 add write-protect and
