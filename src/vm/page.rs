@@ -91,8 +91,8 @@ struct PageArray {
 /// The page array, once `setup` builds it.
 static PAGES: OnceLock<PageArray> = OnceLock::new();
 
-/// How many colours each page queue has; a page's colour is its frame
-/// number's lowest bits.
+/// How many colours each page queue has; a page's colour is the exclusive
+/// or of its frame number's three lowest digits in base `COLORS`.
 const COLORS: usize = 1024;
 
 intrusive_adapter!(
@@ -288,7 +288,8 @@ pub fn release(range: Range<PhysAddr>) {
         if frame < reserved {
             DMA_RESERVE.lock()[frame / 64] |= 1 << (frame % 64);
         } else {
-            QUEUES.free[frame % COLORS].push(&array.pages[frame - first]);
+            let color = (frame ^ (frame / COLORS) ^ (frame / (COLORS * COLORS))) % COLORS;
+            QUEUES.free[color].push(&array.pages[frame - first]);
         }
     }
 }
