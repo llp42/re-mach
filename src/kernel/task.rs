@@ -30,8 +30,6 @@ pub const NAME_SIZE: usize = 32;
 pub struct Task {
     /// How many references it has.
     references: AtomicU32,
-    /// Whether it is alive.
-    active: bool,
     /// Its address space.
     map: UnsafeRef<Map>,
     /// Its names for ports and port sets.
@@ -40,22 +38,14 @@ pub struct Task {
     self_port: AtomicPtr<Port>,
     /// The send right for its port it hands out.
     self_send: AtomicPtr<Port>,
-    /// Its threads' priority.
-    pub(super) priority: u32,
-    /// The highest priority its threads may take.
-    pub(super) max_priority: u32,
-    /// How many times it is suspended.
-    pub(super) suspend_count: AtomicU32,
     /// Whether it may be moved to another processor set.
     may_assign: bool,
     /// When it was created.
     creation_time: TimeValue,
     /// Its name, ending with a NUL.
     pub(super) name: [u8; NAME_SIZE],
-    /// Its threads.
-    threads: Token<LinkedList<TaskThreadAdapter>>,
-    /// How many threads it has.
-    thread_count: AtomicU32,
+    /// Whether it is alive, its priorities and suspensions, and its threads.
+    pub(super) members: Token<TaskMembers>,
     /// The processor set its threads run on; set as the set takes it.
     pub(super) set: AtomicPtr<ProcessorSet>,
     /// Its place in its set's tasks.
@@ -70,14 +60,30 @@ intrusive_adapter!(
     pub SetTaskAdapter = UnsafeRef<Task>: Task { set_link => LinkedListAtomicLink }
 );
 
+/// Whether a task is alive, its priorities and suspensions, and its threads.
+pub(super) struct TaskMembers {
+    /// Whether the task is alive.
+    pub(super) active: bool,
+    /// The priority of the task's threads.
+    pub(super) priority: u32,
+    /// The highest priority the task's threads may take.
+    pub(super) max_priority: u32,
+    /// How many times the task is suspended.
+    pub(super) suspend_count: u32,
+    /// The threads, in the order the task took them.
+    threads: LinkedList<TaskThreadAdapter>,
+    /// How many threads there are.
+    thread_count: u32,
+}
+
 impl Task {
-    /// Takes `thread`, new, with a reference for it.
-    pub(super) fn add_thread(&self, thread: &'static Thread) {
+    /// Takes `thread`, new, into its `members`, with a reference for it.
+    pub(super) fn add_thread(&self, members: &mut TaskMembers, thread: &'static Thread) {
         self.references.fetch_add(1, Ordering::Relaxed);
-        self.thread_count.fetch_add(1, Ordering::Relaxed);
+        members.thread_count += 1;
         // SAFETY: a thread leaves its task before it is freed.
-        self.threads
-            .lock()
+        members
+            .threads
             .push_back(unsafe { UnsafeRef::from_raw(thread) });
     }
 }
@@ -111,22 +117,24 @@ fn create_kernel() -> Result<&'static Task, Error> {
     name[..7].copy_from_slice(b"gnumach");
     let task = CACHE.allocate(Task {
         references: AtomicU32::new(2),
-        active: true,
         // SAFETY: the kernel map is static.
         map: unsafe { UnsafeRef::from_raw(ptr::from_ref(map)) },
         // SAFETY: the task takes the space's first reference.
         space: unsafe { UnsafeRef::from_raw(CacheBox::into_raw(space).as_ptr()) },
         self_port: AtomicPtr::new(ptr::null_mut()),
         self_send: AtomicPtr::new(ptr::null_mut()),
-        // No higher than the set allows; a larger number is lower.
-        priority: USER_PRIORITY.max(DEFAULT_SET.max_priority),
-        max_priority: DEFAULT_SET.max_priority,
         may_assign: true,
         creation_time: clock::stamp(),
         name,
-        suspend_count: AtomicU32::new(0),
-        threads: Token::new(LinkedList::new(TaskThreadAdapter::NEW)),
-        thread_count: AtomicU32::new(0),
+        members: Token::new(TaskMembers {
+            active: true,
+            // No higher than the set allows; a larger number is lower.
+            priority: USER_PRIORITY.max(DEFAULT_SET.max_priority),
+            max_priority: DEFAULT_SET.max_priority,
+            suspend_count: 0,
+            threads: LinkedList::new(TaskThreadAdapter::NEW),
+            thread_count: 0,
+        }),
         set: AtomicPtr::new(ptr::null_mut()),
         set_link: LinkedListAtomicLink::new(),
     })?;

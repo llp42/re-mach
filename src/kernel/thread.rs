@@ -14,7 +14,7 @@ use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use super::Error;
 use super::clock::{self, TimeValue};
-use super::processor::{Processor, ProcessorSet};
+use super::processor::{DEFAULT_SET, Processor, ProcessorSet};
 use super::sched::{self, Policies, RUN_QUEUES, SCHEDULER_SCALE};
 use super::slab::{Cache, CacheBox};
 use super::task::{self, Task};
@@ -468,30 +468,22 @@ impl Thread {
     }
 }
 
-/// A new thread of `task`, suspended, in its task's set, at its task's
-/// priority aged by a full share of a processor, with a port and a send
-/// right for it; a thread made in a set with no processor is suspended
-/// once more.
+/// A new thread of `task`, suspended, in its task's set, or the default
+/// set if that one is not in use, at its task's priority aged by a full
+/// share of a processor, with a port and a send right for it; a thread
+/// made in a set with no processor is suspended once more.
 ///
 /// # Errors
 ///
 /// `ResourceShortage` if the thread, its machine state or its port can't
-/// be allocated.
+/// be allocated; `Failure` if the task is not alive.
 pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
     let pcb = arch::Pcb::new()?;
     let mut port = port::allocate_kernel()?;
     port.make_send();
-    // SAFETY: a task's set lives while the task is in it.
-    let set = unsafe { &*task.set.load(Ordering::Acquire) };
-    let max_priority = task.max_priority.max(set.max_priority);
-    let priority = task.priority.max(max_priority);
     // A full share of a processor; a set's load average is at least 1.
     let sched_usage = TIMER_RATE * SCHEDULER_SCALE;
-    let sched_pri = computed_priority(priority, sched_usage);
-    let suspend_count = task.suspend_count.load(Ordering::Relaxed)
-        + 1
-        + u32::from(set.empty.load(Ordering::Relaxed));
-    let thread = CACHE.allocate(Thread {
+    let mut thread = CACHE.allocate(Thread {
         sleep_link: LinkedListAtomicLink::new(),
         run_link: LinkedListAtomicLink::new(),
         task_link: LinkedListAtomicLink::new(),
@@ -500,11 +492,12 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         // SAFETY: a task lives while it has threads.
         task: unsafe { UnsafeRef::from_raw(task) },
         state: AtomicU32::new(ThreadState::SUSPENDED.bits()),
-        suspend_count: AtomicU32::new(suspend_count),
+        // Set below with the priorities, under the set's and task's tokens.
+        suspend_count: AtomicU32::new(0),
         user_stop_count: AtomicU32::new(1),
-        priority,
-        max_priority,
-        sched_pri: AtomicU32::new(sched_pri),
+        priority: 0,
+        max_priority: 0,
+        sched_pri: AtomicU32::new(0),
         policy: Policies::TIMESHARE,
         cpu_usage: AtomicU32::new(TIMER_RATE),
         sched_usage: AtomicU32::new(sched_usage),
@@ -532,13 +525,56 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         fixed_quantum: 0,
         asts: AtomicU32::new(0),
     })?;
+    let members = task.members.lock();
+    // SAFETY: under the task's token its reference keeps its set alive, and
+    // the one taken here does after.
+    let mut set = unsafe { &*task.set.load(Ordering::Acquire) };
+    set.references.fetch_add(1, Ordering::Relaxed);
+    drop(members);
+    // The set's token, then the task's, again if the task changed sets; a
+    // set out of use gives way to the default set.
+    let (mut set_members, mut members) = loop {
+        let set_members = set.members.lock();
+        let members = task.members.lock();
+        // SAFETY: as above; a new set gets its reference before the tokens
+        // drop.
+        let current = unsafe { &*task.set.load(Ordering::Acquire) };
+        let current = if current.active {
+            current
+        } else {
+            &DEFAULT_SET
+        };
+        if ptr::eq(current, set) {
+            break (set_members, members);
+        }
+        current.references.fetch_add(1, Ordering::Relaxed);
+        drop(members);
+        drop(set_members);
+        // Never the last: a set keeps its own reference until destroyed.
+        set.references.fetch_sub(1, Ordering::Relaxed);
+        set = current;
+    };
+    thread.max_priority = members.max_priority.max(set.max_priority);
+    thread.priority = members.priority.max(thread.max_priority);
+    *thread.sched_pri.get_mut() = computed_priority(thread.priority, sched_usage);
+    *thread.suspend_count.get_mut() =
+        members.suspend_count + 1 + u32::from(set.empty.load(Ordering::Relaxed));
+    // Nothing is published yet; only the set's reference is undone.
+    if !members.active {
+        drop(members);
+        drop(set_members);
+        set.references.fetch_sub(1, Ordering::Relaxed);
+        return Err(Error::Failure);
+    }
     // SAFETY: a thread lives until the reaper frees it, which comes later.
     let thread = unsafe { CacheBox::into_raw(thread).as_ref() };
     port.set_kernel_object(KernelObject::Thread(NonNull::from(thread)));
     let port = CacheBox::into_raw(port).as_ptr();
     thread.self_port.store(port, Ordering::Release);
     thread.self_send.store(port, Ordering::Release);
-    set.add_thread(thread);
-    task.add_thread(thread);
+    set.add_thread(&mut set_members, thread);
+    task.add_thread(&mut members, thread);
+    drop(members);
+    drop(set_members);
     Ok(thread)
 }
