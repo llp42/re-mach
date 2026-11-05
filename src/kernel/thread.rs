@@ -478,7 +478,7 @@ impl Thread {
 /// `ResourceShortage` if the thread, its machine state or its port can't
 /// be allocated; `Failure` if the task is not alive.
 pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
-    let pcb = arch::Pcb::new()?;
+    let mut pcb = arch::Pcb::new()?;
     let mut port = port::allocate_kernel()?;
     port.make_send();
     // A full share of a processor; a set's load average is at least 1.
@@ -507,8 +507,8 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         may_assign: true,
         creation_time: clock::stamp(),
         name: task.name.map(AtomicU8::new),
-        // SAFETY: the thread takes its machine state for good.
-        pcb: unsafe { UnsafeRef::from_raw(CacheBox::into_raw(pcb).as_ptr()) },
+        // SAFETY: its box, unused until given up below, outlives the thread.
+        pcb: unsafe { UnsafeRef::from_raw(ptr::from_mut(&mut *pcb)) },
         self_port: AtomicPtr::new(ptr::null_mut()),
         self_send: AtomicPtr::new(ptr::null_mut()),
         start: OnceLock::new(),
@@ -566,6 +566,8 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         set.references.fetch_sub(1, Ordering::Relaxed);
         return Err(Error::Failure);
     }
+    // The thread takes its machine state for good.
+    CacheBox::into_raw(pcb);
     // SAFETY: a thread lives until the reaper frees it, which comes later.
     let thread = unsafe { CacheBox::into_raw(thread).as_ref() };
     port.set_kernel_object(KernelObject::Thread(NonNull::from(thread)));
