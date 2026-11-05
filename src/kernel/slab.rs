@@ -14,7 +14,7 @@ use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter}
 use super::Error;
 use crate::arch::{PAGE_SIZE, PhysAddr};
 use crate::sync::{CpuLocal, Spinlock};
-use crate::vm::page::{self, Page};
+use crate::vm::page::{self, Page, PageQueueAdapter};
 
 /// The smallest alignment of a cache's objects: a free one holds a link to
 /// the next.
@@ -39,6 +39,8 @@ pub struct RawCache {
     buffers_per_slab: usize,
     /// Each CPU's slabs.
     cpus: CpuLocal<CpuSlabs>,
+    /// The slabs no CPU hands objects out from.
+    lists: Spinlock<SlabLists>,
 }
 
 impl RawCache {
@@ -70,6 +72,11 @@ impl RawCache {
                 slabs: 0,
                 objects: 0,
             }),
+            lists: Spinlock::new(SlabLists {
+                partial: LinkedList::new(PageQueueAdapter::NEW),
+                free: LinkedList::new(PageQueueAdapter::NEW),
+                exhausted: LinkedList::new(PageQueueAdapter::NEW),
+            }),
         }
     }
 
@@ -80,7 +87,9 @@ impl RawCache {
 
     /// Hands out a buffer from this CPU's slab: the next of those it took
     /// from the slab's free list, else the first of that list, taken whole,
-    /// else the next uncarved one; a used-up slab gives way to a new one.
+    /// else the next uncarved one. A used-up slab goes on the exhausted list
+    /// and gives way to a partial one, else a free one, else, once up to 16
+    /// exhausted ones are sorted, one of those, else a new one.
     ///
     /// # Errors
     ///
@@ -88,6 +97,42 @@ impl RawCache {
     pub fn allocate(&self) -> Result<NonNull<u8>, Error> {
         let (page, offset) = {
             let mut cpu = self.cpus.lock();
+            if cpu.taken == 0
+                && cpu.active.is_none_or(|page| {
+                    cpu.carved == self.buffers_per_slab
+                        && page.slab.free.load(Ordering::Relaxed) == 0
+                })
+            {
+                // The lists' lock is taken inside the CPU's slot.
+                let mut lists = self.lists.lock();
+                if let Some(page) = cpu.active.take() {
+                    lists.exhausted.push_back(page);
+                }
+                if lists.partial.is_empty() && lists.free.is_empty() {
+                    // Sorts up to 16; those left exhausted go to the end.
+                    let mut left = LinkedList::new(PageQueueAdapter::NEW);
+                    for _ in 0..16 {
+                        let Some(page) = lists.exhausted.pop_front() else {
+                            break;
+                        };
+                        let freed =
+                            usize::try_from(page.slab.free.load(Ordering::Relaxed) >> 32).unwrap();
+                        match freed {
+                            0 => left.push_back(page),
+                            _ if freed == self.buffers_per_slab => lists.free.push_back(page),
+                            _ => lists.partial.push_back(page),
+                        }
+                    }
+                    lists.exhausted.back_mut().splice_after(left);
+                }
+                if let Some(page) = lists.partial.pop_front().or_else(|| lists.free.pop_front()) {
+                    // All carved; while listed only frees change its free word, so it
+                    // is not 0.
+                    cpu.active = Some(page);
+                    cpu.carved = self.buffers_per_slab;
+                }
+                drop(lists);
+            }
             if cpu.taken == 0
                 && let Some(page) = cpu.active
                 && page.slab.free.load(Ordering::Relaxed) != 0
@@ -122,8 +167,6 @@ impl RawCache {
                     // A new slab has nothing freed to it.
                     page.slab.free.store(0, Ordering::Relaxed);
                     cpu.slabs += 1;
-                    // Frees into the slab replaced are lost until slabs are
-                    // kept on lists.
                     cpu.active = Some(page);
                     cpu.carved = 1;
                     (page, 0)
@@ -187,6 +230,17 @@ impl Slab {
             free: AtomicU64::new(0),
         }
     }
+}
+
+/// A cache's slabs no CPU hands objects out from, each carved whole.
+struct SlabLists {
+    /// Those with some objects free.
+    partial: LinkedList<PageQueueAdapter>,
+    /// Those with every object free.
+    free: LinkedList<PageQueueAdapter>,
+    /// Those with no object free when last looked at; frees since are found
+    /// by sorting them.
+    exhausted: LinkedList<PageQueueAdapter>,
 }
 
 /// One CPU's share of a cache.

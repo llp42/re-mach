@@ -22,7 +22,8 @@ use crate::{println, smp};
 
 /// A physical page.
 pub struct Page {
-    /// Its place in the page queue it is on.
+    /// Its place in the page queue it is on, or in its cache's list while it
+    /// is a slab.
     queue_link: LinkedListAtomicLink,
     /// Its place in its object's tree, while it belongs to one.
     object_link: RBTreeAtomicLink,
@@ -103,7 +104,7 @@ intrusive_adapter!(
         clippy::expl_impl_clone_on_copy,
         reason = "intrusive_adapter! writes Clone by hand"
     )]
-    PageQueueAdapter = &'static Page: Page { queue_link => LinkedListAtomicLink }
+    pub PageQueueAdapter = &'static Page: Page { queue_link => LinkedListAtomicLink }
 );
 
 /// The pages of one colour on one queue.
