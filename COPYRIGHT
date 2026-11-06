@@ -37,6 +37,11 @@ as a whole, are below, each with the copyright lines, authors and
 licence it carries at that commit. The licence texts are in LICENSES/,
 named by their identifiers.
 
+SPDX-FileName: device/device_init.c
+SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
+SPDX-FileContributor: David B. Golub
+SPDX-License-Identifier: CMU-Mach
+
 SPDX-FileName: i386/i386/apic.c
 SPDX-FileCopyrightText: 2020 Free Software Foundation, Inc.
 SPDX-FileContributor: Almudena Garcia Jurado-Centurion
