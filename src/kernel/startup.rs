@@ -13,8 +13,9 @@ use crate::sync::CriticalSection;
 use crate::{device, ipc, smp, vm};
 
 /// The startup thread's work: starting the other kernel threads and the
-/// bootstrap tasks; so far only an idle thread for each processor and the
-/// device service, then it becomes the pageout daemon.
+/// bootstrap tasks; so far only an idle thread for each processor, the
+/// device service and the kernel task's creation time, then it becomes the
+/// pageout daemon.
 fn start_kernel_threads() -> ! {
     let kernel_task = task::KERNEL_TASK
         .get()
@@ -46,6 +47,7 @@ fn start_kernel_threads() -> ! {
             .unwrap_or_else(|error| panic!("start_kernel_threads: thread_resume: {error:?}"));
     }
     device::create_service();
+    kernel_task.creation_time.store(clock::stamp());
     smp::current()
         .active_thread()
         .expect("start_kernel_threads: no current thread")

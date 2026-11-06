@@ -149,7 +149,7 @@ impl TimeValue {
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
 
 /// A time in two atomics, read and written apart.
-struct AtomicTimeValue {
+pub(super) struct AtomicTimeValue {
     seconds: AtomicI64,
     nanoseconds: AtomicI64,
 }
@@ -172,9 +172,18 @@ impl AtomicTimeValue {
     }
 
     /// Sets it to `time`.
-    fn store(&self, time: TimeValue) {
+    pub(super) fn store(&self, time: TimeValue) {
         self.seconds.store(time.seconds, Ordering::Relaxed);
         self.nanoseconds.store(time.nanoseconds, Ordering::Relaxed);
+    }
+}
+
+impl From<TimeValue> for AtomicTimeValue {
+    fn from(time: TimeValue) -> Self {
+        Self {
+            seconds: AtomicI64::new(time.seconds),
+            nanoseconds: AtomicI64::new(time.nanoseconds),
+        }
     }
 }
 
