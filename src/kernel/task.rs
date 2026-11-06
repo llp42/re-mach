@@ -12,16 +12,17 @@ use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusi
 use super::Error;
 use super::clock::{self, AtomicTimeValue};
 use super::processor::{DEFAULT_SET, ProcessorSet};
-use super::sched::USER_PRIORITY;
+use super::sched::{RUN_QUEUES, USER_PRIORITY};
 use super::slab::{Cache, CacheBox};
 use super::thread::{TaskThreadAdapter, Thread};
-use crate::arch::{self, Machine as _};
+use crate::arch::{self, MAX_USER_ADDRESS, MIN_USER_ADDRESS, Machine as _};
 use crate::ipc::port::{self, KernelObject, Port};
 use crate::ipc::space::Space;
 use crate::sync::OnceLock;
 use crate::sync::Token;
 use crate::vm::kernel::KERNEL_MAP;
 use crate::vm::map::Map;
+use crate::vm::pmap::MachinePmap as _;
 
 /// The bytes a task's name holds, its final NUL included.
 pub const NAME_SIZE: usize = 32;
@@ -89,12 +90,43 @@ impl Task {
     }
 
     /// Names it `name`, cut to fit with its final NUL.
-    fn set_name(&self, name: &str) {
+    pub(super) fn set_name(&self, name: &str) {
         // Unlocked, as in GNU Mach: racing calls may mix two names.
         let bytes = name.bytes().chain(iter::repeat(0));
         for (stored, byte) in self.name[..NAME_SIZE - 1].iter().zip(bytes) {
             stored.store(byte, Ordering::Relaxed);
         }
+    }
+
+    /// Caps its priority at `max_priority`, as the boot script does with
+    /// `host`, the host's port: its priority set to the cap, and its
+    /// threads' too.
+    ///
+    /// # Panics
+    ///
+    /// If `host` is not a host's port or `max_priority` is not a priority,
+    /// if the cap is raised, or if it has threads: not yet.
+    pub(super) fn set_max_priority(&self, host: &Port, max_priority: u32) {
+        assert!(
+            matches!(
+                host.kernel_object(),
+                Some(KernelObject::Host(_) | KernelObject::HostPrivileged(_))
+            ) && max_priority < u32::try_from(RUN_QUEUES).unwrap(),
+            "task_max_priority: an invalid argument, not yet"
+        );
+        let mut members = self.members.lock();
+        // A larger number is lower.
+        assert!(
+            max_priority >= members.max_priority,
+            "task_max_priority: a raised cap, not yet"
+        );
+        members.max_priority = max_priority;
+        members.priority = max_priority;
+        assert!(
+            members.threads.is_empty(),
+            "thread_override_max_priority: not yet"
+        );
+        drop(members);
     }
 }
 
@@ -104,7 +136,8 @@ pub static KERNEL_TASK: OnceLock<&'static Task> = OnceLock::new();
 /// The cache tasks come from.
 static CACHE: Cache<Task> = Cache::new("task");
 
-/// Sets up tasks and creates the kernel's, on the boot CPU.
+/// Sets up tasks and creates the kernel's, over the kernel map, on the boot
+/// CPU.
 ///
 /// # Panics
 ///
@@ -112,21 +145,45 @@ static CACHE: Cache<Task> = Cache::new("task");
 pub fn init() {
     CACHE.register();
     arch::Current::task_module_init();
-    let task = create_kernel().unwrap_or_else(|error| panic!("task_init: {error:?}"));
+    let map = KERNEL_MAP.get().expect("task_init: no kernel map");
+    let task = create_with_map(map).unwrap_or_else(|error| panic!("task_init: {error:?}"));
     task.set_name("gnumach");
     assert!(KERNEL_TASK.set(task).is_ok(), "task_init: twice");
 }
 
-/// The kernel's task, named by its address: the kernel map, a new space,
-/// and a port with a send right, at the default set's priorities.
-fn create_kernel() -> Result<&'static Task, Error> {
-    let map = KERNEL_MAP.get().expect("task_init: no kernel map");
+/// A new task with no parent, over a new map of user space and its own
+/// physical map, made as `create_with_map` makes it.
+///
+/// # Errors
+///
+/// `ResourceShortage` if the physical map can't be allocated.
+///
+/// # Panics
+///
+/// With a parent: not yet. If the map, the space, the port or the task
+/// can't be allocated: freeing what was taken, not yet.
+pub(super) fn create(parent: Option<&Task>) -> Result<&'static Task, Error> {
+    assert!(parent.is_none(), "task_create_kernel: a parent, not yet");
+    let pmap = arch::Pmap::create()?;
+    let map = Map::create(pmap, MIN_USER_ADDRESS..MAX_USER_ADDRESS)
+        .unwrap_or_else(|error| panic!("task_create_kernel: {error:?}, pmap_destroy not yet"));
+    // SAFETY: a task's map lives until vm_map_deallocate frees it, which
+    // comes later.
+    let map = unsafe { CacheBox::into_raw(map).as_ref() };
+    Ok(create_with_map(map)
+        .unwrap_or_else(|error| panic!("task_create_kernel: {error:?}, vm_map_deallocate not yet")))
+}
+
+/// A new task with no parent over `map`, named by its address: a new
+/// space, and a port with a send right, at the default set's priorities,
+/// in the default set.
+fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
     let mut space = Space::create()?;
     let port = port::allocate_kernel()?;
     port.make_send();
     let task = CACHE.allocate(Task {
         references: AtomicU32::new(2),
-        // SAFETY: the kernel map is static.
+        // SAFETY: a task's map outlives it.
         map: unsafe { UnsafeRef::from_raw(ptr::from_ref(map)) },
         // SAFETY: its box, unused until given up below, outlives the task.
         space: unsafe { UnsafeRef::from_raw(ptr::from_mut(&mut *space)) },
@@ -150,7 +207,8 @@ fn create_kernel() -> Result<&'static Task, Error> {
     // The task takes the space's first reference.
     CacheBox::into_raw(space);
     let task = CacheBox::into_raw(task);
-    // SAFETY: the task is the kernel's for good.
+    // SAFETY: a task lives until task_deallocate frees it, which comes
+    // later.
     let task = unsafe { task.as_ref() };
     // "%p": its address in hex, with no prefix, written from the end.
     let mut name = [0; 2 * size_of::<usize>()];

@@ -46,6 +46,18 @@ impl Port {
         self.state.lock().kernel_object = Some(object);
     }
 
+    /// What it stands for, while it is alive.
+    pub fn kernel_object(&self) -> Option<KernelObject> {
+        let state = self.state.lock();
+        let object = if state.active {
+            state.kernel_object
+        } else {
+            None
+        };
+        drop(state);
+        object
+    }
+
     /// Makes a send right for it from its receive right, which holds a
     /// reference.
     pub fn make_send(&self) {
@@ -58,6 +70,7 @@ impl Port {
 }
 
 /// What a port the kernel receives on stands for; only the kinds used here.
+#[derive(Clone, Copy)]
 pub enum KernelObject {
     /// A memory object's name port, which names it to `vm_region`.
     PagerName(#[expect(dead_code, reason = "vm_object_lookup_name reads it")] NonNull<Object>),

@@ -12,6 +12,7 @@ use intrusive_collections::{
 };
 
 use super::object::Object;
+use super::page;
 use super::pmap::MachinePmap as _;
 use super::{Inheritance, Protection};
 use crate::arch::{PAGE_SIZE, Pmap};
@@ -21,7 +22,10 @@ use crate::sync::{OnceLock, SleepLock};
 
 /// An address map: ranges of virtual memory and what they map; so far only
 /// what a new map sets.
-#[expect(dead_code, reason = "pmap_enter and vm_map_reference read them")]
+#[expect(
+    dead_code,
+    reason = "pmap_enter, vm_map_reference and vm_map_enter read them"
+)]
 pub struct Map {
     /// The addresses it may map.
     bounds: Range<usize>,
@@ -29,6 +33,10 @@ pub struct Map {
     pmap: &'static Pmap,
     /// How many references it has.
     references: u32,
+    /// The most it may map, in bytes.
+    size_limit: usize,
+    /// The most `size_limit` may be raised to.
+    max_size_limit: usize,
     /// What changes as it maps and unmaps, behind its lock.
     contents: SleepLock<Contents>,
 }
@@ -47,13 +55,16 @@ struct Contents {
 }
 
 impl Map {
-    /// An empty map of `bounds` over `pmap`, with one reference.
+    /// An empty map of `bounds` over `pmap`, with one reference and no
+    /// size limit.
     pub const fn new(pmap: &'static Pmap, bounds: Range<usize>) -> Self {
         let leading_gap = bounds.end - bounds.start;
         Self {
             bounds,
             pmap,
             references: 1,
+            size_limit: usize::MAX,
+            max_size_limit: usize::MAX,
             contents: SleepLock::new(Contents {
                 entries: RBTree::new(EntryAdapter::NEW),
                 gaps: RBTree::new(GapAdapter::NEW),
@@ -61,6 +72,21 @@ impl Map {
                 size: 0,
             }),
         }
+    }
+
+    /// A new empty map of `bounds` over `pmap`, a user task's, with one
+    /// reference, its size limited to the memory's.
+    ///
+    /// # Errors
+    ///
+    /// `ResourceShortage` if it can't be allocated.
+    pub fn create(pmap: &'static Pmap, bounds: Range<usize>) -> Result<CacheBox<Self>, Error> {
+        let size = page::memory_size();
+        MAP_CACHE.allocate(Self {
+            size_limit: size,
+            max_size_limit: size,
+            ..Self::new(pmap, bounds)
+        })
     }
 
     /// Maps `range` with nothing behind it yet, allowing `protection` now

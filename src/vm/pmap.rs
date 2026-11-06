@@ -5,6 +5,7 @@
 use core::ops::Range;
 
 use crate::arch::PhysAddr;
+use crate::kernel::Error;
 
 /// The machine's physical maps.
 pub trait MachinePmap {
@@ -14,6 +15,14 @@ pub trait MachinePmap {
 
     /// The kernel's physical map.
     fn kernel() -> &'static Self;
+
+    /// A new physical map for a user task, with one reference, sharing
+    /// kernel space and mapping nothing else.
+    ///
+    /// # Errors
+    ///
+    /// `ResourceShortage` if it can't be allocated.
+    fn create() -> Result<&'static Self, Error>;
 
     /// Takes a reference on it.
     fn reference(&self);
