@@ -35,7 +35,7 @@ pub struct Task {
     /// Its names for ports and port sets.
     space: UnsafeRef<Space>,
     /// Its port, which controls it.
-    self_port: AtomicPtr<Port>,
+    pub(super) self_port: AtomicPtr<Port>,
     /// The send right for its port it hands out.
     self_send: AtomicPtr<Port>,
     /// Whether it may be moved to another processor set.

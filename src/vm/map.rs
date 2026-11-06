@@ -14,7 +14,7 @@ use intrusive_collections::{
 use super::object::Object;
 use super::pmap::MachinePmap as _;
 use super::{Inheritance, Protection};
-use crate::arch::Pmap;
+use crate::arch::{PAGE_SIZE, Pmap};
 use crate::kernel::Error;
 use crate::kernel::slab::{Cache, CacheBox};
 use crate::sync::{OnceLock, SleepLock};
@@ -128,7 +128,7 @@ impl Map {
     /// If `submap` is set already.
     pub fn enter_submap(&self, size: usize, submap: &'static OnceLock<Self>) -> Result<(), Error> {
         let mut contents = self.contents.write();
-        let (previous, start) = contents.find_space(self.bounds.start, size)?;
+        let (previous, start) = contents.find_space(self.bounds.start, size, PAGE_SIZE)?;
         let next = previous
             .as_ref()
             .map_or(self.bounds.start + contents.leading_gap, |entry| {
@@ -157,9 +157,10 @@ impl Map {
         Ok(())
     }
 
-    /// Maps `size` bytes wherever they fit, wired, allowing `protection`
-    /// now and at most `max_protection`; returns where. They are backed by
-    /// `object` at the offset of their address in the map, or by nothing.
+    /// Maps `size` bytes wherever they fit at a multiple of `align`, a
+    /// multiple of the page size, wired, allowing `protection` now and at
+    /// most `max_protection`; returns where. They are backed by `object` at
+    /// the offset of their address in the map, or by nothing.
     ///
     /// # Errors
     ///
@@ -168,12 +169,13 @@ impl Map {
     pub fn enter_anywhere(
         &self,
         size: usize,
+        align: usize,
         protection: Protection,
         max_protection: Protection,
         object: Option<&'static Object>,
     ) -> Result<Range<usize>, Error> {
         let mut contents = self.contents.write();
-        let (previous, start) = contents.find_space(self.bounds.start, size)?;
+        let (previous, start) = contents.find_space(self.bounds.start, size, align)?;
         let next = previous
             .as_ref()
             .map_or(self.bounds.start + contents.leading_gap, |entry| {
@@ -203,18 +205,24 @@ impl Map {
 }
 
 impl Contents {
-    /// Where `size` bytes fit, and the entry they would follow: after the
-    /// smallest gap that holds them, the lowest among equals, or else at the
-    /// map's `start`, if the leading gap holds them.
+    /// Where `size` bytes fit at a multiple of `align`, a multiple of the
+    /// page size, and the entry they would follow: after the smallest gap
+    /// that holds them however far aligning skips, the lowest among equals,
+    /// or else from the map's `start`, if the leading gap holds them.
     fn find_space(
         &self,
         start: usize,
         size: usize,
+        align: usize,
     ) -> Result<(Option<UnsafeRef<Entry>>, usize), Error> {
-        let fit = self.gaps.lower_bound(Bound::Included(&(size, 0)));
+        // Aligning a page boundary skips at most `align - PAGE_SIZE`.
+        let fit = self
+            .gaps
+            .lower_bound(Bound::Included(&(size + align - PAGE_SIZE, 0)));
+        let aligned = start.next_multiple_of(align);
         match fit.get() {
-            Some(entry) => Ok((fit.clone_pointer(), entry.range.end)),
-            None if self.leading_gap >= size => Ok((None, start)),
+            Some(entry) => Ok((fit.clone_pointer(), entry.range.end.next_multiple_of(align))),
+            None if self.leading_gap >= aligned - start + size => Ok((None, aligned)),
             None => Err(Error::NoSpace),
         }
     }

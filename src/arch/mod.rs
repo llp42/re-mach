@@ -39,7 +39,6 @@ pub trait Machine {
     /// Sets up tasks' machine part, on the boot CPU.
     fn task_module_init();
     /// The kernel's command line, as the loader gave it; empty if none.
-    #[expect(dead_code, reason = "the console and the bootstrap read it")]
     fn kernel_command_line() -> &'static CStr;
 
     /// The boot modules, in the loader's order.
