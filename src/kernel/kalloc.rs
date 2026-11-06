@@ -3,6 +3,9 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! General-purpose kernel memory, for sizes no typed cache serves.
 
+use core::ptr::NonNull;
+
+use super::Error;
 use super::slab::{MIN_ALIGN, RawCache};
 
 /// The size of a kalloc cache's slabs, each aligned to it.
@@ -28,4 +31,23 @@ pub fn init() {
     for cache in &CACHES {
         cache.register();
     }
+}
+
+/// Takes a buffer of at least `size` bytes from the smallest cache that
+/// holds it.
+///
+/// # Errors
+///
+/// As `RawCache::allocate`.
+///
+/// # Panics
+///
+/// If `size` is 0, or above 16 KiB, which the kernel map serves: not yet.
+pub fn allocate(size: usize) -> Result<NonNull<u8>, Error> {
+    assert!(size != 0, "kalloc: 0 bytes, not yet");
+    // Each cache's objects are 32 << its index bytes.
+    let index = (0..CACHES.len())
+        .find(|index| 32 << index >= size)
+        .unwrap_or_else(|| panic!("kalloc: {size} bytes, above the caches, not yet"));
+    CACHES[index].allocate()
 }

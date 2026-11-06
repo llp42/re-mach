@@ -7,7 +7,7 @@ use core::ptr::{self, NonNull};
 
 use super::map::Map;
 use super::object::KERNEL_OBJECT;
-use super::page;
+use super::page::{self, Page};
 use super::pmap::MachinePmap as _;
 use super::{Inheritance, Protection};
 use core::ops::Range;
@@ -73,6 +73,7 @@ pub fn map_device(physical: PhysAddr, size: usize) -> Result<NonNull<u8>, Error>
     let offset = physical.0 % PAGE_SIZE;
     let range = map.enter_anywhere(
         (offset + size).next_multiple_of(PAGE_SIZE),
+        PAGE_SIZE,
         Protection::READ | Protection::WRITE,
         Protection::all(),
         None,
@@ -96,12 +97,50 @@ pub fn allocate_wired(size: usize) -> Result<NonNull<u8>, Error> {
     let map = KERNEL_MAP.get().expect("kmem_alloc_wired: no kernel map");
     let range = map.enter_anywhere(
         size.next_multiple_of(PAGE_SIZE),
+        PAGE_SIZE,
         Protection::READ | Protection::WRITE,
         Protection::all(),
         Some(&KERNEL_OBJECT),
     )?;
     fill(range.clone())?;
     Ok(NonNull::new(ptr::with_exposed_provenance_mut(range.start)).unwrap())
+}
+
+/// Takes `size` bytes of wired kernel memory, a power of two rounded up to
+/// pages, aligned to their size, from the kernel object, zeroed; returns
+/// where it is mapped.
+///
+/// # Errors
+///
+/// As `allocate_wired`.
+///
+/// # Panics
+///
+/// If `size` is not a power of two, or the kernel map is not set up.
+pub fn allocate_aligned(size: usize) -> Result<NonNull<u8>, Error> {
+    assert!(size.is_power_of_two(), "kmem_alloc_aligned");
+    let map = KERNEL_MAP.get().expect("kmem_alloc_aligned: no kernel map");
+    let size = size.next_multiple_of(PAGE_SIZE);
+    let range = map.enter_anywhere(
+        size,
+        size,
+        Protection::READ | Protection::WRITE,
+        Protection::all(),
+        Some(&KERNEL_OBJECT),
+    )?;
+    fill(range.clone())?;
+    Ok(NonNull::new(ptr::with_exposed_provenance_mut(range.start)).unwrap())
+}
+
+/// Where `page`, a page of the kernel object, is mapped.
+pub fn address_of(page: &Page) -> usize {
+    MIN_KERNEL_ADDRESS + page.offset()
+}
+
+/// The page kernel `address` is mapped to; `None` if none, or one outside
+/// the page array.
+pub fn page_of(address: usize) -> Option<&'static Page> {
+    arch::Pmap::extract_kernel(address).and_then(page::lookup)
 }
 
 /// Maps a zeroed page of the kernel object at each page of `range`, at the
@@ -145,6 +184,7 @@ pub fn allocate_stack() -> Result<KernelStack, Error> {
     let map = KERNEL_MAP.get().expect("kmem_alloc_stack: no kernel map");
     let range = map.enter_anywhere(
         PAGE_SIZE + KERNEL_STACK_SIZE,
+        PAGE_SIZE,
         Protection::READ | Protection::WRITE,
         Protection::all(),
         Some(&KERNEL_OBJECT),

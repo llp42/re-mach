@@ -6,7 +6,7 @@
 use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
-use core::ptr::NonNull;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
@@ -14,6 +14,7 @@ use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter}
 use super::Error;
 use crate::arch::{PAGE_SIZE, PhysAddr};
 use crate::sync::{CpuLocal, Spinlock};
+use crate::vm;
 use crate::vm::page::{self, Page, PageQueueAdapter};
 
 /// The smallest alignment of a cache's objects: a free one holds a link to
@@ -89,13 +90,17 @@ impl RawCache {
     /// from the slab's free list, else the first of that list, taken whole,
     /// else the next uncarved one. A used-up slab goes on the exhausted list
     /// and gives way to a partial one, else a free one, else, once up to 16
-    /// exhausted ones are sorted, one of those, else a new one.
+    /// exhausted ones are sorted, one of those, else a new one: a page, or a
+    /// zone of the kernel map for larger slabs, made with the slot released,
+    /// put on the free list, then taken from it.
     ///
     /// # Errors
     ///
-    /// `ResourceShortage` if it needs a new slab and no page is free.
+    /// `ResourceShortage` if it needs a new slab and no page or entry can be
+    /// allocated, and `NoSpace` if it needs a new zone and the kernel map
+    /// has no room for one.
     pub fn allocate(&self) -> Result<NonNull<u8>, Error> {
-        let (page, offset) = {
+        loop {
             let mut cpu = self.cpus.lock();
             if cpu.taken == 0
                 && cpu.active.is_none_or(|page| {
@@ -147,7 +152,7 @@ impl RawCache {
                     let offset = usize::try_from(cpu.taken - 1).unwrap();
                     // SAFETY: a taken buffer is free and this CPU's alone, and
                     // starts with the link to the next.
-                    cpu.taken = unsafe { (page.address() + offset).direct_map_ptr::<u64>().read() };
+                    cpu.taken = unsafe { self.buffer::<u64>(page, offset).read() };
                     cpu.taken_count -= 1;
                     (page, offset)
                 }
@@ -156,12 +161,18 @@ impl RawCache {
                     cpu.carved += 1;
                     (page, carved * self.buffer_size)
                 }
+                _ if self.slab_size != PAGE_SIZE => {
+                    // A zone, made with the slot released, goes on the free
+                    // list.
+                    drop(cpu);
+                    let page = self.grow()?;
+                    let mut cpu = self.cpus.lock();
+                    cpu.slabs += 1;
+                    self.lists.lock().free.push_back(page);
+                    drop(cpu);
+                    continue;
+                }
                 _ => {
-                    // Kalloc's larger slabs come with kalloc.
-                    assert!(
-                        self.slab_size == PAGE_SIZE,
-                        "slab: only one-page slabs are carved yet"
-                    );
                     // A CPU's slabs index their pages, at colour 0.
                     let page = page::allocate(cpu.slabs).ok_or(Error::ResourceShortage)?;
                     // A new slab has nothing freed to it.
@@ -174,9 +185,46 @@ impl RawCache {
             };
             cpu.objects += 1;
             drop(cpu);
-            (page, offset)
-        };
-        Ok(NonNull::new((page.address() + offset).direct_map_ptr()).expect("slab: buffer at null"))
+            return Ok(NonNull::new(self.buffer(page, offset)).expect("slab: buffer at null"));
+        }
+    }
+
+    /// Makes a slab larger than a page: a zone of the kernel map, aligned to
+    /// its size, its first page holding its state, with every buffer on its
+    /// free list, in address order.
+    ///
+    /// # Errors
+    ///
+    /// As `vm::kernel::allocate_aligned`.
+    fn grow(&self) -> Result<&'static Page, Error> {
+        let start = vm::kernel::allocate_aligned(self.slab_size)?;
+        let page =
+            vm::kernel::page_of(start.addr().get()).expect("slab: zone outside the page array");
+        let end = self.buffers_per_slab * self.buffer_size;
+        for offset in (0..end).step_by(self.buffer_size) {
+            let next = offset + self.buffer_size;
+            let link = if next < end {
+                u64::try_from(next + 1).unwrap()
+            } else {
+                0
+            };
+            // SAFETY: the zone is this slab's alone, and its buffers at least 8
+            // bytes, 8-aligned.
+            unsafe { start.add(offset).cast::<u64>().write(link) };
+        }
+        let count = u64::try_from(self.buffers_per_slab).unwrap();
+        page.slab.free.store((count << 32) | 1, Ordering::Relaxed);
+        Ok(page)
+    }
+
+    /// Where the buffer at `offset` in the slab `page` starts: in the direct
+    /// map for a slab of a page, else in the kernel map.
+    fn buffer<T>(&self, page: &'static Page, offset: usize) -> *mut T {
+        if self.slab_size == PAGE_SIZE {
+            (page.address() + offset).direct_map_ptr()
+        } else {
+            ptr::with_exposed_provenance_mut(vm::kernel::address_of(page) + offset)
+        }
     }
 
     /// Gives `buffer` back to its slab's free list, from any CPU, with a

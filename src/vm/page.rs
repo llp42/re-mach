@@ -56,6 +56,11 @@ impl Page {
             .store(ptr::from_ref(object).cast_mut(), Ordering::Relaxed);
     }
 
+    /// Where it is in its object, in bytes.
+    pub(super) fn offset(&self) -> usize {
+        self.offset.load(Ordering::Relaxed)
+    }
+
     /// Where the page is.
     ///
     /// # Panics

@@ -111,6 +111,26 @@ impl MachinePmap for Pmap {
         enter_kernel_page(address, physical, KERNEL_PAGE);
     }
 
+    fn extract_kernel(address: usize) -> Option<PhysAddr> {
+        // Kernel space's PML4 entries are always there.
+        for level in [2, 1] {
+            let entry = PageTableFlags::from_bits_truncate(
+                window_entry(address, level).load(Ordering::Relaxed),
+            );
+            if !entry.contains(PageTableFlags::PRESENT) || entry.contains(PageTableFlags::HUGE_PAGE)
+            {
+                return None;
+            }
+        }
+        let entry = window_entry(address, 0).load(Ordering::Relaxed);
+        PageTableFlags::from_bits_truncate(entry)
+            .contains(PageTableFlags::PRESENT)
+            .then(|| {
+                let frame = x86_64::PhysAddr::new_truncate(entry).as_u64();
+                PhysAddr(usize::try_from(frame).unwrap()).align_down()
+            })
+    }
+
     fn enter_device(address: Range<usize>, physical: PhysAddr) {
         for offset in (0..address.end - address.start).step_by(PAGE_SIZE) {
             enter_kernel_page(address.start + offset, physical + offset, DEVICE_PAGE);

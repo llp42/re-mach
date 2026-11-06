@@ -20,6 +20,8 @@ pub trait MachinePmap {
 
     /// Maps kernel `address` to the page at `physical`, read-write.
     fn enter_kernel(address: usize, physical: PhysAddr);
+    /// The page `enter_kernel` mapped kernel `address` to; `None` if none.
+    fn extract_kernel(address: usize) -> Option<PhysAddr>;
     /// Maps the kernel addresses of `address` to the device memory from
     /// `physical` on, uncached.
     fn enter_device(address: Range<usize>, physical: PhysAddr);

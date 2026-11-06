@@ -3,6 +3,7 @@
 //! Machine-independent kernel code.
 
 pub mod ast;
+mod boot_script;
 mod bootstrap;
 pub mod clock;
 pub mod console;
