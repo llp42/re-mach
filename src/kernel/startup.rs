@@ -6,7 +6,7 @@
 use core::str;
 
 use super::thread::{self, Thread};
-use super::{clock, machine, processor, radix_tree, sched, task};
+use super::{bootstrap, clock, machine, processor, radix_tree, sched, task};
 use crate::arch::{self, Machine as _};
 use crate::config::MAX_CPUS;
 use crate::sync::CriticalSection;
@@ -14,8 +14,8 @@ use crate::{device, ipc, smp, vm};
 
 /// The startup thread's work: starting the other kernel threads and the
 /// bootstrap tasks; so far only an idle thread for each processor, the
-/// device service and the kernel task's creation time, then it becomes the
-/// pageout daemon.
+/// device service, the kernel task's creation time and the start of the
+/// bootstrap, then it becomes the pageout daemon.
 fn start_kernel_threads() -> ! {
     let kernel_task = task::KERNEL_TASK
         .get()
@@ -48,6 +48,7 @@ fn start_kernel_threads() -> ! {
     }
     device::create_service();
     kernel_task.creation_time.store(clock::stamp());
+    bootstrap::create();
     smp::current()
         .active_thread()
         .expect("start_kernel_threads: no current thread")

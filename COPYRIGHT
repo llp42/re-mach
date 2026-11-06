@@ -196,6 +196,11 @@ SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
 SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
 SPDX-License-Identifier: LicenseRef-CMU-CSL
 
+SPDX-FileName: kern/bootstrap.c
+SPDX-FileCopyrightText: 1992-1989 Carnegie Mellon University
+SPDX-FileCopyrightText: 1995-1993 The University of Utah and the Computer Systems Laboratory (CSL)
+SPDX-License-Identifier: LicenseRef-CMU-CSL
+
 SPDX-FileName: kern/debug.c
 SPDX-FileCopyrightText: 1993 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
