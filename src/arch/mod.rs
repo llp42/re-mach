@@ -43,7 +43,6 @@ pub trait Machine {
     fn kernel_command_line() -> &'static CStr;
 
     /// The boot modules, in the loader's order.
-    #[expect(dead_code, reason = "the bootstrap reads them")]
     fn boot_modules() -> &'static [BootModule];
 
     /// The EFI system table's physical address, when booted through UEFI.
