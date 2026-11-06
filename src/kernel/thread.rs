@@ -545,7 +545,7 @@ impl Thread {
 /// be allocated; `Failure` if the task is not alive.
 pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
     let mut pcb = arch::Pcb::new()?;
-    let mut port = port::allocate_kernel()?;
+    let port = port::allocate_kernel()?;
     port.make_send();
     // A full share of a processor; a set's load average is at least 1.
     let sched_usage = TIMER_RATE * SCHEDULER_SCALE;
