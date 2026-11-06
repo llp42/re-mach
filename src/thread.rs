@@ -12,14 +12,14 @@ use core::sync::atomic::{
 
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
-use super::Error;
-use super::clock::{self, TimeValue};
-use super::processor::{DEFAULT_SET, Processor, ProcessorSet};
-use super::sched::{self, Policies, Preemption, RUN_QUEUES, SCHEDULER_SCALE};
-use super::slab::{Cache, CacheBox};
-use super::task::{self, Task};
+use crate::clock::{self, TimeValue};
+use crate::error::Error;
 use crate::ipc::port::{self, KernelObject, Port};
+use crate::processor::{DEFAULT_SET, Processor, ProcessorSet};
+use crate::sched::{self, Policies, Preemption, RUN_QUEUES, SCHEDULER_SCALE};
+use crate::slab::{Cache, CacheBox};
 use crate::sync::{CriticalSection, OnceLock};
+use crate::task::{self, Task};
 use crate::vm;
 use crate::vm::kernel::KernelStack;
 use crate::{arch, smp};

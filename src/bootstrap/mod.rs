@@ -3,18 +3,20 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The bootstrap: tasks for the modules the loader brought.
 
+mod script;
+
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use super::Error;
-use super::boot_script::{Script, Value};
-use super::host::HOST;
-use super::sched::USER_PRIORITY;
-use super::task::{self, Task};
 use crate::arch::{self, Machine as _};
+use crate::error::Error;
+use crate::host::HOST;
 use crate::ipc::port::Port;
 use crate::ipc::{MessageType, mach_port};
+use crate::sched::USER_PRIORITY;
+use crate::task::{self, Task};
 use crate::{device, print, println};
+use script::{Script, Value};
 
 /// Starts the boot modules' tasks; so far it finds the modules, sets the
 /// boot script's variables, parses the modules' command lines and runs the
@@ -108,7 +110,7 @@ pub fn create() {
 /// # Panics
 ///
 /// If the task can't be created: the script's cleanup, not yet.
-pub(super) fn create_task(path: &str) -> &'static Task {
+fn create_task(path: &str) -> &'static Task {
     let task = task::create(None).unwrap_or_else(|error| {
         panic!("boot_script_task_create failed with {error:?}, cleanup not yet")
     });
@@ -122,7 +124,7 @@ pub(super) fn create_task(path: &str) -> &'static Task {
 
 /// The boot script's insert of a port argument: a send right made for
 /// `port` and given to `task`; the name it takes there.
-pub(super) fn insert_right(task: &Task, port: &Port) -> u32 {
+fn insert_right(task: &Task, port: &Port) -> u32 {
     port.make_send();
     insert_send_right(task, port)
 }

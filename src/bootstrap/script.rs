@@ -10,10 +10,10 @@ use core::ops::Range;
 use core::ptr::NonNull;
 use core::slice;
 
-use super::task::Task;
-use super::{bootstrap, kalloc};
 use crate::boot::BootModule;
 use crate::ipc::port::Port;
+use crate::task::Task;
+use crate::{bootstrap, kalloc};
 
 /// A variable's value; only the kinds the bootstrap sets.
 #[derive(Clone, Copy)]

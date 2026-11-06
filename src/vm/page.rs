@@ -15,8 +15,8 @@ use intrusive_collections::{
 use super::object::Object;
 use super::pmap::MachinePmap as _;
 use crate::arch::{self, PAGE_SIZE, PhysAddr};
-use crate::kernel::machine;
-use crate::kernel::slab::{Cache, Slab};
+use crate::machine;
+use crate::slab::{Cache, Slab};
 use crate::sync::{BootCell, CachePadded, OnceLock, Spinlock};
 use crate::{println, smp};
 

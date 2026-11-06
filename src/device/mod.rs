@@ -7,7 +7,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::ipc::port::{self, Port};
-use crate::kernel::slab::CacheBox;
+use crate::slab::CacheBox;
 
 /// The master device port, which devices are opened through; once
 /// `create_service` makes it.

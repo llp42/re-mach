@@ -8,7 +8,7 @@
 use core::marker::PhantomData;
 use core::ptr::{self, NonNull};
 
-use super::slab::{Cache, CacheBox};
+use crate::slab::{Cache, CacheBox};
 
 /// The key bits a level takes.
 const RADIX: u32 = 6;

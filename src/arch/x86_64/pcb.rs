@@ -12,10 +12,10 @@ use x86_64::VirtAddr;
 use super::fpu;
 use super::per_cpu::PerCpu;
 use super::trap::TrapFrame;
-use crate::kernel::Error;
-use crate::kernel::slab::{Cache, CacheBox};
-use crate::kernel::thread::{self, MachineThread, Thread};
+use crate::error::Error;
+use crate::slab::{Cache, CacheBox};
 use crate::smp::MachinePerCpu as _;
+use crate::thread::{self, MachineThread, Thread};
 use crate::vm::kernel::KernelStack;
 
 /// A thread's machine state: its user registers, and where its kernel

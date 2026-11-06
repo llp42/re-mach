@@ -7,9 +7,9 @@ use core::ptr::NonNull;
 use core::sync::atomic::AtomicU32;
 
 use super::entry::{self, Entry, EntryBits, Rights, ZERO_ENTRY};
-use crate::kernel::Error;
-use crate::kernel::radix_tree::RadixTree;
-use crate::kernel::slab::{Cache, CacheBox};
+use crate::collections::radix_tree::RadixTree;
+use crate::error::Error;
+use crate::slab::{Cache, CacheBox};
 use crate::sync::SleepLock;
 
 /// A space: the names a task gives ports and port sets.

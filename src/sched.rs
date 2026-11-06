@@ -8,15 +8,15 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use intrusive_collections::{LinkedList, UnsafeRef};
 
-use super::ast::{self, Ast};
-use super::clock::{self, Timeout};
-use super::machine::CpuState;
-use super::processor::{self, ActionQueueAdapter, Processor, State};
-use super::thread::{RunQueueAdapter, SleepQueueAdapter, Thread, ThreadState};
 use crate::arch::{self, Machine as _};
+use crate::ast::{self, Ast};
+use crate::clock::{self, Timeout};
 use crate::config::HZ;
+use crate::machine::CpuState;
+use crate::processor::{self, ActionQueueAdapter, Processor, State};
 use crate::smp;
 use crate::sync::{CriticalSection, SpinlockGuard};
+use crate::thread::{RunQueueAdapter, SleepQueueAdapter, Thread, ThreadState};
 
 /// The threads sleeping on the events that hash to one slot.
 pub type SleepQueue = LinkedList<SleepQueueAdapter>;
@@ -314,7 +314,7 @@ fn invoke(old: &'static Thread, new: &'static Thread) {
 /// # Panics
 ///
 /// If its state is not one of those.
-pub(super) fn dispatch(thread: &'static Thread) {
+pub fn dispatch(thread: &'static Thread) {
     match ThreadState::from_bits_retain(thread.state.load(Ordering::Relaxed)) {
         state if state == ThreadState::RUN => set_run(thread, Preemption::Forbidden),
         state

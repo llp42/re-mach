@@ -13,8 +13,8 @@ use super::per_cpu::PerCpu;
 use super::serial::Serial;
 use super::trap::TrapFrame;
 use super::{apic, idt};
+use crate::clock;
 use crate::config::HZ;
-use crate::kernel::clock;
 use crate::smp::MachinePerCpu as _;
 use crate::sync::CriticalSection;
 

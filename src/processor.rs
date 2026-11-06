@@ -9,16 +9,16 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, 
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
-use super::Error;
-use super::sched::{MIN_QUANTUM, Policies, RUN_QUEUES, RunQueue, SCHEDULER_SCALE, SYSTEM_PRIORITY};
-use super::slab::{Cache, CacheBox};
-use super::task::{SetTaskAdapter, Task};
-use super::thread::{RunQueueAdapter, SetThreadAdapter, Thread};
-use super::{ipc_host, machine};
 use crate::config::MAX_CPUS;
+use crate::error::Error;
 use crate::ipc::port::Port;
+use crate::sched::{MIN_QUANTUM, Policies, RUN_QUEUES, RunQueue, SCHEDULER_SCALE, SYSTEM_PRIORITY};
+use crate::slab::{Cache, CacheBox};
 use crate::smp;
 use crate::sync::{CpuLock, CriticalSection, OnceLock, Token};
+use crate::task::{SetTaskAdapter, Task};
+use crate::thread::{RunQueueAdapter, SetThreadAdapter, Thread};
+use crate::{ipc_host, machine};
 
 /// A processor: one per CPU, in that CPU's data.
 #[expect(dead_code, reason = "the dispatcher and processor_info read them")]
@@ -57,7 +57,7 @@ intrusive_adapter!(
 
 /// What a processor is doing, as Mach numbers it; only the states used
 /// here.
-pub(super) enum State {
+pub enum State {
     /// Not in the system.
     Offline = 0,
     /// Running a thread.
@@ -245,7 +245,7 @@ intrusive_adapter!(
 );
 
 /// A set's tasks and threads, and how many of each.
-pub(super) struct Members {
+pub struct Members {
     /// The tasks, in the order the set took them.
     tasks: LinkedList<SetTaskAdapter>,
     /// How many tasks there are.
@@ -270,7 +270,7 @@ static ALL_SETS: Token<AllSets> = Token::new(AllSets {
 });
 
 /// The set the kernel creates at boot, where the other CPUs go.
-pub(super) static SLAVE_SET: OnceLock<&'static ProcessorSet> = OnceLock::new();
+pub static SLAVE_SET: OnceLock<&'static ProcessorSet> = OnceLock::new();
 
 impl ProcessorSet {
     /// A new set, not in use yet, with one reference, no processor and no
@@ -402,7 +402,7 @@ impl ProcessorSet {
 }
 
 /// The default set, where every processor and thread starts.
-pub(super) static DEFAULT_SET: ProcessorSet = {
+pub static DEFAULT_SET: ProcessorSet = {
     let mut set = ProcessorSet::new();
     set.active = true;
     set
@@ -412,7 +412,7 @@ pub(super) static DEFAULT_SET: ProcessorSet = {
 static SET_CACHE: Cache<ProcessorSet> = Cache::new("processor_set");
 
 /// The boot CPU's processor.
-pub(super) static BOOT_PROCESSOR: OnceLock<&'static Processor> = OnceLock::new();
+pub static BOOT_PROCESSOR: OnceLock<&'static Processor> = OnceLock::new();
 
 /// Records the boot CPU's processor, on the boot CPU.
 ///

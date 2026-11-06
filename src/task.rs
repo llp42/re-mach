@@ -9,17 +9,17 @@ use core::{iter, str};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
-use super::Error;
-use super::clock::{self, AtomicTimeValue};
-use super::processor::{DEFAULT_SET, ProcessorSet};
-use super::sched::{RUN_QUEUES, USER_PRIORITY};
-use super::slab::{Cache, CacheBox};
-use super::thread::{TaskThreadAdapter, Thread};
 use crate::arch::{self, MAX_USER_ADDRESS, MIN_USER_ADDRESS, Machine as _};
+use crate::clock::{self, AtomicTimeValue};
+use crate::error::Error;
 use crate::ipc::port::{self, KernelObject, Port};
 use crate::ipc::space::Space;
+use crate::processor::{DEFAULT_SET, ProcessorSet};
+use crate::sched::{RUN_QUEUES, USER_PRIORITY};
+use crate::slab::{Cache, CacheBox};
 use crate::sync::OnceLock;
 use crate::sync::Token;
+use crate::thread::{TaskThreadAdapter, Thread};
 use crate::vm::kernel::KERNEL_MAP;
 use crate::vm::map::Map;
 use crate::vm::pmap::MachinePmap as _;
@@ -63,7 +63,7 @@ intrusive_adapter!(
 );
 
 /// Whether a task is alive, its priorities and suspensions, and its threads.
-pub(super) struct TaskMembers {
+pub struct TaskMembers {
     /// Whether the task is alive.
     pub(super) active: bool,
     /// The priority of the task's threads.
@@ -162,7 +162,7 @@ pub fn init() {
 ///
 /// With a parent: not yet. If the map, the space, the port or the task
 /// can't be allocated: freeing what was taken, not yet.
-pub(super) fn create(parent: Option<&Task>) -> Result<&'static Task, Error> {
+pub fn create(parent: Option<&Task>) -> Result<&'static Task, Error> {
     assert!(parent.is_none(), "task_create_kernel: a parent, not yet");
     let pmap = arch::Pmap::create()?;
     let map = Map::create(pmap, MIN_USER_ADDRESS..MAX_USER_ADDRESS)

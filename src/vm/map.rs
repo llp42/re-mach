@@ -16,8 +16,8 @@ use super::page;
 use super::pmap::MachinePmap as _;
 use super::{Inheritance, Protection};
 use crate::arch::{PAGE_SIZE, Pmap};
-use crate::kernel::Error;
-use crate::kernel::slab::{Cache, CacheBox};
+use crate::error::Error;
+use crate::slab::{Cache, CacheBox};
 use crate::sync::{OnceLock, SleepLock};
 
 /// An address map: ranges of virtual memory and what they map; so far only

@@ -15,7 +15,7 @@ use core::ops::Range;
 use crate::arch::{
     self, KERNEL_STACK_SIZE, MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE, PhysAddr,
 };
-use crate::kernel::Error;
+use crate::error::Error;
 use crate::sync::OnceLock;
 
 /// The kernel's map, once `init` sets it up.

@@ -13,7 +13,7 @@ use intrusive_collections::{
 use super::page::{Page, PageTreeAdapter};
 use crate::arch::{MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS};
 use crate::ipc::port::{self, KernelObject, Port};
-use crate::kernel::slab::{Cache, CacheBox};
+use crate::slab::{Cache, CacheBox};
 use crate::sync::Token;
 
 /// The kernel's side of a memory object; so far only its first values, its

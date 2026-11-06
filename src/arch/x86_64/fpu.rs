@@ -10,7 +10,7 @@ use x86_64::registers::xcontrol::XCr0;
 
 use super::cpuid;
 use super::memory_layout::PAGE_SIZE;
-use crate::kernel::slab::RawCache;
+use crate::slab::RawCache;
 use crate::sync::OnceLock;
 
 /// How a thread's floating-point state is saved; always in the standard

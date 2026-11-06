@@ -6,12 +6,28 @@
 #![no_main]
 
 mod arch;
+mod ast;
 mod boot;
+mod bootstrap;
+mod clock;
 mod collections;
 mod config;
+mod console;
 mod device;
+mod error;
+mod gsync;
+mod host;
 mod ipc;
-mod kernel;
+mod ipc_host;
+mod kalloc;
+mod machine;
+mod panic;
+mod processor;
+mod sched;
+mod slab;
 mod smp;
+mod startup;
 mod sync;
+mod task;
+mod thread;
 mod vm;

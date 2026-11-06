@@ -5,7 +5,7 @@
 use core::ops::Range;
 
 use crate::arch::PhysAddr;
-use crate::kernel::Error;
+use crate::error::Error;
 
 /// The machine's physical maps.
 pub trait MachinePmap {

@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Port sets.
 
-use crate::kernel::slab::Cache;
+use crate::slab::Cache;
 
 /// A port set; so far only its reference count and whether it is alive.
 #[expect(

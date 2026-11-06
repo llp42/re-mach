@@ -14,7 +14,7 @@ pub mod space;
 
 use crate::sync::OnceLock;
 use crate::vm::map::Map;
-use crate::{kernel, vm};
+use crate::{ipc_host, vm};
 
 /// A right as a message carries it, by Mach's type names; only the ones
 /// used here.
@@ -47,5 +47,5 @@ pub fn init() {
         &KERNEL_MAP,
         MIN_KERNEL_MAP_SIZE.max(vm::page::span_size() / 8),
     );
-    kernel::ipc_host::init();
+    ipc_host::init();
 }
