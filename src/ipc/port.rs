@@ -4,6 +4,7 @@
 //! Ports.
 
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::space::{self, Space};
 use crate::kernel::Error;
@@ -12,14 +13,21 @@ use crate::kernel::processor::{Processor, ProcessorSet};
 use crate::kernel::slab::{Cache, CacheBox};
 use crate::kernel::task::Task;
 use crate::kernel::thread::Thread;
+use crate::sync::Spinlock;
 use crate::vm::object::Object;
 
-/// A port; so far only its reference count, whether it is alive, its
-/// receiver, its send rights and what it stands for.
-#[expect(dead_code, reason = "the port calls and ipc_kobject_server read them")]
+/// A port: its reference count, and its state under its lock.
 pub struct Port {
     /// How many references it has.
-    references: u32,
+    references: AtomicU32,
+    /// Its state.
+    state: Spinlock<PortState>,
+}
+
+/// A port's state under its lock; so far only whether it is alive, its
+/// receiver, its send rights and what it stands for.
+#[expect(dead_code, reason = "the port calls and ipc_kobject_server read them")]
+struct PortState {
     /// Whether it is alive.
     active: bool,
     /// The space that holds its receive right.
@@ -33,17 +41,19 @@ pub struct Port {
 }
 
 impl Port {
-    /// Makes it stand for `object`; it isn't shared yet, so no lock.
-    pub const fn set_kernel_object(&mut self, object: KernelObject) {
-        self.kernel_object = Some(object);
+    /// Makes it stand for `object`.
+    pub fn set_kernel_object(&self, object: KernelObject) {
+        self.state.lock().kernel_object = Some(object);
     }
 
     /// Makes a send right for it from its receive right, which holds a
-    /// reference; it isn't shared yet, so no lock.
-    pub const fn make_send(&mut self) {
-        self.make_send_count += 1;
-        self.send_rights += 1;
-        self.references += 1;
+    /// reference.
+    pub fn make_send(&self) {
+        let mut state = self.state.lock();
+        state.make_send_count += 1;
+        state.send_rights += 1;
+        drop(state);
+        self.references.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -87,11 +97,13 @@ pub(super) static CACHE: Cache<Port> = Cache::new("ipc_port");
 /// `ResourceShortage` if no port can be allocated.
 pub fn allocate_kernel() -> Result<CacheBox<Port>, Error> {
     CACHE.allocate(Port {
-        references: 1,
-        active: true,
-        receiver: NonNull::from(&space::KERNEL_SPACE),
-        send_rights: 0,
-        make_send_count: 0,
-        kernel_object: None,
+        references: AtomicU32::new(1),
+        state: Spinlock::new(PortState {
+            active: true,
+            receiver: NonNull::from(&space::KERNEL_SPACE),
+            send_rights: 0,
+            make_send_count: 0,
+            kernel_object: None,
+        }),
     })
 }

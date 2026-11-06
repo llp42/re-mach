@@ -112,7 +112,7 @@ pub fn bootstrap() {
 ///
 /// If no port can be allocated.
 pub fn init() {
-    let mut port = port::allocate_kernel()
+    let port = port::allocate_kernel()
         .unwrap_or_else(|error| panic!("vm_object_init: ipc_port_alloc_kernel failed: {error:?}"));
     port.set_kernel_object(KernelObject::PagerName(NonNull::from(&KERNEL_OBJECT)));
     KERNEL_OBJECT

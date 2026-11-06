@@ -111,7 +111,7 @@ pub fn init() {
 fn create_kernel() -> Result<&'static Task, Error> {
     let map = KERNEL_MAP.get().expect("task_init: no kernel map");
     let mut space = Space::create()?;
-    let mut port = port::allocate_kernel()?;
+    let port = port::allocate_kernel()?;
     port.make_send();
     let mut name = [0; NAME_SIZE];
     name[..7].copy_from_slice(b"gnumach");

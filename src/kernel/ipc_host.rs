@@ -72,7 +72,7 @@ pub(super) fn init_set(set: &'static ProcessorSet) {
 ///
 /// If the port can't be allocated.
 fn store_port(slot: &AtomicPtr<Port>, object: Option<KernelObject>) {
-    let mut port = port::allocate_kernel()
+    let port = port::allocate_kernel()
         .unwrap_or_else(|error| panic!("ipc_host_init: ipc_port_alloc_kernel failed: {error:?}"));
     if let Some(object) = object {
         port.set_kernel_object(object);
