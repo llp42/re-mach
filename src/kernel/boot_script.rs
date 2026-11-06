@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The boot script, which starts the boot modules' tasks; so far its
-//! variables and the parse of its lines.
+//! variables, the parse of its lines and the start of their run.
 
 use core::fmt;
 use core::mem::MaybeUninit;
@@ -19,9 +19,9 @@ use crate::ipc::port::Port;
 #[derive(Clone, Copy)]
 pub enum Value {
     /// A string.
-    String(#[expect(dead_code, reason = "boot_script_exec reads it")] &'static str),
+    String(#[expect(dead_code, reason = "boot_script_exec's string case reads it")] &'static str),
     /// A port, of which each task the script names it to gets a send right.
-    Port(#[expect(dead_code, reason = "boot_script_exec reads it")] NonNull<Port>),
+    Port(NonNull<Port>),
 }
 
 /// A variable, by name.
@@ -40,9 +40,9 @@ enum Function {
 }
 
 /// A command: a line's program, and what it runs with.
-#[expect(dead_code, reason = "boot_script_exec reads them")]
 struct Command {
     /// The module the line is of.
+    #[expect(dead_code, reason = "boot_script_exec_cmd reads it")]
     module: &'static BootModule,
     /// Its program's path.
     path: &'static str,
@@ -257,5 +257,69 @@ impl Script {
                 }
             }
         }
+    }
+
+    /// Runs the commands, so far up to building each one's command line and
+    /// arguments from kalloc: the line holds the path, then each port
+    /// argument's name in the task, in decimal, each ending with a NUL; the
+    /// arguments are their offsets in it.
+    ///
+    /// # Errors
+    ///
+    /// `NoMemory` if a command line or its arguments can't be allocated.
+    ///
+    /// # Panics
+    ///
+    /// On a command with no task, a string argument, or a command line
+    /// past its room: not yet.
+    pub fn run(&self) -> Result<(), Error> {
+        for command in self.commands.items() {
+            let task = command
+                .task
+                .unwrap_or_else(|| panic!("boot_script_exec: a command with no task, not yet"));
+            // The path and its NUL, with 100 bytes to spare.
+            let mut line = Table::new(command.path.len() + 1 + 100);
+            line.reserve()?;
+            for &byte in command.path.as_bytes() {
+                line.push(byte);
+            }
+            line.push(0);
+            let values = &self.arguments.items()[command.arguments.clone()];
+            // Each argument's offset in the line, the path's first, with room
+            // for GNU Mach's null end.
+            let mut arguments = Table::new(values.len() + 2);
+            arguments.reserve()?;
+            arguments.push(0);
+            for value in values {
+                let Value::Port(port) = *value else {
+                    panic!("boot_script_exec: a string argument, not yet");
+                };
+                // SAFETY: the script's ports are never freed.
+                let name = bootstrap::insert_right(task, unsafe { port.as_ref() });
+                // Its name in decimal, written from the end.
+                let mut digits = [0; 10];
+                let (mut start, mut rest) = (digits.len(), name);
+                loop {
+                    start -= 1;
+                    digits[start] = b'0' + u8::try_from(rest % 10).unwrap();
+                    rest /= 10;
+                    if rest == 0 {
+                        break;
+                    }
+                }
+                let digits = &digits[start..];
+                // Room for the digits and a NUL.
+                assert!(
+                    line.capacity - line.len > digits.len(),
+                    "CHECK_CMDLINE_LEN: a longer command line, not yet"
+                );
+                arguments.push(line.len);
+                for &digit in digits {
+                    line.push(digit);
+                }
+                line.push(0);
+            }
+        }
+        Ok(())
     }
 }

@@ -21,17 +21,16 @@ pub struct Port {
     /// How many references it has.
     references: AtomicU32,
     /// Its state.
-    state: Spinlock<PortState>,
+    pub(super) state: Spinlock<PortState>,
 }
 
 /// A port's state under its lock; so far only whether it is alive, its
 /// receiver, its send rights and what it stands for.
-#[expect(dead_code, reason = "the port calls and ipc_kobject_server read them")]
-struct PortState {
+pub(super) struct PortState {
     /// Whether it is alive.
-    active: bool,
+    pub(super) active: bool,
     /// The space that holds its receive right.
-    receiver: NonNull<Space>,
+    pub(super) receiver: NonNull<Space>,
     /// How many send rights for it there are.
     send_rights: u32,
     /// How many send rights have been made from its receive right.

@@ -3,17 +3,61 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Entries: one name in a space, and the rights it holds.
 
+use core::ptr::NonNull;
+
+use super::port::Port;
 use crate::kernel::slab::Cache;
 
-/// An entry; so far only its user references.
-#[expect(dead_code, reason = "ipc_entry_alloc and the right calls use it")]
+/// An entry: a name, its rights, and the port they are for.
 pub struct Entry {
-    /// How many user references its rights hold.
-    user_references: u16,
+    /// Its name.
+    pub(super) name: u32,
+    /// Its rights, and their user references.
+    pub(super) bits: EntryBits,
+    /// The port its rights are for.
+    pub(super) object: Option<NonNull<Port>>,
+    /// Its dead-name request; 0 for none.
+    #[expect(dead_code, reason = "the dead-name calls read it")]
+    pub(super) request: u32,
+}
+
+// SAFETY: an entry has no interior mutability, and its port pointer is
+// followed only under `unsafe`.
+unsafe impl Sync for Entry {}
+
+impl Entry {
+    /// Whether it holds rights.
+    pub(super) const fn in_use(&self) -> bool {
+        !self.bits.rights.is_empty()
+    }
+}
+
+/// An entry's rights, and the user references they hold.
+pub(super) struct EntryBits {
+    /// Its rights, by kind.
+    pub(super) rights: Rights,
+    /// How many user references they hold.
+    pub(super) user_references: u16,
+}
+
+bitflags::bitflags! {
+    /// The rights a name holds: bit n stands for Mach's type bit 16 + n.
+    pub(super) struct Rights: u16 {
+        /// A send right.
+        const SEND = 1;
+    }
 }
 
 /// The entry of name 0, which every space reserves.
-pub static ZERO_ENTRY: Entry = Entry { user_references: 0 };
+pub static ZERO_ENTRY: Entry = Entry {
+    name: 0,
+    bits: EntryBits {
+        rights: Rights::empty(),
+        user_references: 0,
+    },
+    object: None,
+    request: 0,
+};
 
 /// The cache entries come from.
 pub(super) static CACHE: Cache<Entry> = Cache::new("ipc_entry");

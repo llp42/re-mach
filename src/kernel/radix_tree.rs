@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Radix trees of pointers under 64-bit keys, after GNU Mach's rdxtree;
-//! so far only insertion. A level takes six bits of the key, and a tree is
-//! only as tall as its largest key needs.
+//! so far insertion and lookup. A level takes six bits of the key, and a
+//! tree is only as tall as its largest key needs.
 
 use core::marker::PhantomData;
 use core::ptr::{self, NonNull};
@@ -172,6 +172,23 @@ impl<T> RadixTree<T> {
             }
         }
         Ok(())
+    }
+
+    /// The pointer stored under `key`, if any.
+    pub fn lookup(&self, key: u64) -> Option<NonNull<T>> {
+        if key > max_key(self.height) {
+            return None;
+        }
+        let mut entry = self.root;
+        for level in (0..self.height).rev() {
+            if entry.is_null() {
+                return None;
+            }
+            // SAFETY: the tree's nodes are live and only it reaches them, and
+            // `&self` keeps them so.
+            entry = unsafe { (*node_of(entry)).entries[digit(key, level)] };
+        }
+        NonNull::new(entry.cast())
     }
 
     /// Adds levels on top until `key` fits, the old top below the new one.

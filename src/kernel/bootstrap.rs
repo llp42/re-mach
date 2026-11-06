@@ -6,23 +6,26 @@
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
+use super::Error;
 use super::boot_script::{Script, Value};
 use super::host::HOST;
 use super::sched::USER_PRIORITY;
 use super::task::{self, Task};
 use crate::arch::{self, Machine as _};
 use crate::ipc::port::Port;
+use crate::ipc::{MessageType, mach_port};
 use crate::{device, print, println};
 
 /// Starts the boot modules' tasks; so far it finds the modules, sets the
-/// boot script's variables and parses the modules' command lines.
+/// boot script's variables, parses the modules' command lines and runs the
+/// script up to each command's arguments.
 ///
 /// # Panics
 ///
 /// If the loader brought no module, or a single one with nothing past its
 /// command line's first word: compat mode, not yet. If the kernel command
-/// line or a module's is not UTF-8, a variable can't be set, or a line
-/// can't be parsed.
+/// line or a module's is not UTF-8, a variable can't be set, a line can't
+/// be parsed, or the script can't run.
 pub fn create() {
     let modules = arch::Current::boot_modules();
     assert!(
@@ -94,6 +97,9 @@ pub fn create() {
         "{losers} of {} boot script commands could not be parsed",
         modules.len()
     );
+    script
+        .run()
+        .unwrap_or_else(|error| panic!("ERROR in executing boot script: {error}"));
 }
 
 /// The boot script's task-create: a new task for the program at `path`,
@@ -112,6 +118,33 @@ pub(super) fn create_task(path: &str) -> &'static Task {
         .expect("boot_script_task_create: no host port");
     task.set_max_priority(host, USER_PRIORITY);
     task
+}
+
+/// The boot script's insert of a port argument: a send right made for
+/// `port` and given to `task`; the name it takes there.
+pub(super) fn insert_right(task: &Task, port: &Port) -> u32 {
+    port.make_send();
+    insert_send_right(task, port)
+}
+
+/// Gives `task` a send right for `port` under the first free name from 1;
+/// that name.
+///
+/// # Panics
+///
+/// If an insert fails but for a name in use.
+fn insert_send_right(task: &Task, port: &Port) -> u32 {
+    let mut name = 1;
+    loop {
+        match mach_port::insert_right(&task.space, name, port, MessageType::PortSend) {
+            Ok(()) => return name,
+            Err(error) => assert!(
+                matches!(error, Error::NameExists),
+                "task_insert_send_right: {error:?}"
+            ),
+        }
+        name += 1;
+    }
 }
 
 /// The boot flags and the root device of `command_line`, as the old Hurd's
