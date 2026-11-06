@@ -6,21 +6,23 @@
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use super::boot_script::{Symbols, Value};
+use super::boot_script::{Script, Value};
 use super::host::HOST;
-use super::task;
+use super::sched::USER_PRIORITY;
+use super::task::{self, Task};
 use crate::arch::{self, Machine as _};
-use crate::device;
 use crate::ipc::port::Port;
+use crate::{device, print, println};
 
-/// Starts the boot modules' tasks; so far it only finds the modules and
-/// sets the boot script's variables.
+/// Starts the boot modules' tasks; so far it finds the modules, sets the
+/// boot script's variables and parses the modules' command lines.
 ///
 /// # Panics
 ///
 /// If the loader brought no module, or a single one with nothing past its
 /// command line's first word: compat mode, not yet. If the kernel command
-/// line is not UTF-8, or a variable can't be set.
+/// line or a module's is not UTF-8, a variable can't be set, or a line
+/// can't be parsed.
 pub fn create() {
     let modules = arch::Current::boot_modules();
     assert!(
@@ -49,9 +51,14 @@ pub fn create() {
     let port = |slot: &AtomicPtr<Port>| {
         Value::Port(NonNull::new(slot.load(Ordering::Acquire)).expect("bootstrap_create: no port"))
     };
-    let mut symbols = Symbols::default();
+    // The six variables below, and one per FOO=BAR word.
+    let words = command_line
+        .split([' ', '\t'])
+        .filter(|word| word.contains('='))
+        .count();
+    let mut script = Script::new(6 + words, modules);
     let mut set = |name: &'static str, value| {
-        symbols
+        script
             .set(name, value)
             .unwrap_or_else(|error| panic!("cannot set boot-script variable {name}: {error}"));
     };
@@ -69,6 +76,42 @@ pub fn create() {
             set(name, Value::String(value));
         }
     }
+    let mut losers = 0;
+    for (index, module) in modules.iter().enumerate() {
+        let line = module
+            .command_line
+            .to_str()
+            .expect("bootstrap_create: a module command line not UTF-8");
+        println!("module {index}: {line}");
+        if let Err(error) = script.parse_line(module, line) {
+            print!("\n\tERROR: {error}");
+            losers += 1;
+        }
+    }
+    println!("{} multiboot modules", modules.len());
+    assert!(
+        losers == 0,
+        "{losers} of {} boot script commands could not be parsed",
+        modules.len()
+    );
+}
+
+/// The boot script's task-create: a new task for the program at `path`,
+/// named after it, its priorities capped at user threads'.
+///
+/// # Panics
+///
+/// If the task can't be created: the script's cleanup, not yet.
+pub(super) fn create_task(path: &str) -> &'static Task {
+    let task = task::create(None).unwrap_or_else(|error| {
+        panic!("boot_script_task_create failed with {error:?}, cleanup not yet")
+    });
+    task.set_name(path);
+    // SAFETY: the host's ports are never freed.
+    let host = unsafe { HOST.port.load(Ordering::Acquire).as_ref() }
+        .expect("boot_script_task_create: no host port");
+    task.set_max_priority(host, USER_PRIORITY);
+    task
 }
 
 /// The boot flags and the root device of `command_line`, as the old Hurd's

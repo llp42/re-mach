@@ -10,6 +10,12 @@ pub const PAGE_SIZE: usize = 4096;
 /// Bytes of a thread's kernel stack.
 pub const KERNEL_STACK_SIZE: usize = 16 << 10;
 
+/// Start of user space.
+pub const MIN_USER_ADDRESS: usize = 0;
+
+/// Past the last user address.
+pub const MAX_USER_ADDRESS: usize = 0x8000_0000_0000;
+
 /// The PML4 maps itself here, showing every page table.
 pub const PAGE_TABLE_BASE: usize = 0xffff_8000_0000_0000;
 

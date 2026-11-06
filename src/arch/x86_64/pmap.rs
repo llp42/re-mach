@@ -20,8 +20,10 @@ use super::cpuid;
 use super::memory_layout::{
     DIRECT_MAP_BASE, KERNEL_BASE, MIN_KERNEL_ADDRESS, PAGE_SIZE, PAGE_TABLE_BASE,
 };
-use crate::kernel::slab::Cache;
+use crate::kernel::Error;
+use crate::kernel::slab::{Cache, CacheBox};
 use crate::sync::OnceLock;
+use crate::vm::page;
 use crate::vm::pmap::MachinePmap;
 
 /// Entries per table.
@@ -89,7 +91,7 @@ pub struct Pmap {
     /// Its PML4 table.
     pml4: PhysAddr,
     /// References held on it.
-    reference_count: AtomicUsize,
+    references: AtomicUsize,
     /// The CPUs it is active on, a bit each.
     active_cpus: AtomicUsize,
 }
@@ -103,8 +105,38 @@ impl MachinePmap for Pmap {
         KERNEL_PMAP.get().expect("pmap: not bootstrapped")
     }
 
+    fn create() -> Result<&'static Self, Error> {
+        let mut pmap = CACHE.allocate(Self {
+            pml4: PhysAddr(0),
+            references: AtomicUsize::new(1),
+            active_cpus: AtomicUsize::new(0),
+        })?;
+        // In no object, so at index 0.
+        let pml4 = page::allocate_zeroed(0).expect("pmap_create").address();
+        // SAFETY: the new table is zeroed and the pmap's alone; the kernel's
+        // is read atomically, as the CPU sets its accessed bits. Tables are
+        // arrays of entries, reached through the direct map.
+        let (entries, kernel_entries) = unsafe {
+            (
+                slice::from_raw_parts_mut(pml4.direct_map_ptr::<u64>(), ENTRIES),
+                slice::from_raw_parts(Self::kernel().pml4.direct_map_ptr::<AtomicU64>(), ENTRIES),
+            )
+        };
+        // The kernel's entries past the window's are set once at boot.
+        for (entry, kernel_entry) in entries[PAGE_TABLE_SLOT + 1..]
+            .iter_mut()
+            .zip(&kernel_entries[PAGE_TABLE_SLOT + 1..])
+        {
+            *entry = kernel_entry.load(Ordering::Relaxed);
+        }
+        entries[PAGE_TABLE_SLOT] = frame(pml4).as_u64() | TABLE.bits();
+        pmap.pml4 = pml4;
+        // SAFETY: a pmap lives until pmap_destroy frees it, which comes later.
+        Ok(unsafe { CacheBox::into_raw(pmap).as_ref() })
+    }
+
     fn reference(&self) {
-        self.reference_count.fetch_add(1, Ordering::Relaxed);
+        self.references.fetch_add(1, Ordering::Relaxed);
     }
 
     fn enter_kernel(address: usize, physical: PhysAddr) {
@@ -267,7 +299,7 @@ pub unsafe fn bootstrap() {
     }
     let kernel_pmap = Pmap {
         pml4,
-        reference_count: AtomicUsize::new(1),
+        references: AtomicUsize::new(1),
         active_cpus: AtomicUsize::new(usize::MAX),
     };
     assert!(
