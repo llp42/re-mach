@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, AtomicU64, AtomicUsize,
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use super::machine::{self, CpuState};
+use super::processor::State;
 use super::sched;
 use crate::arch::{Current, Machine as _, PAGE_SIZE};
 use crate::config::HZ;
@@ -323,8 +324,8 @@ pub fn map_time() {
 
 /// Takes a clock tick on the current CPU, `microseconds` after the one
 /// before, with the thread it interrupted in user mode or not: the tick is
-/// the thread's, and the CPU's in that state; it advances the CPU's
-/// timeouts, and on the boot CPU the time of day and the uptime.
+/// the thread's, and the CPU's in that state, or idle; it advances the
+/// CPU's timeouts, and on the boot CPU the time of day and the uptime.
 pub fn interrupt(microseconds: u32, user_mode: bool) {
     let cpu = smp::current();
     let thread = cpu.active_thread();
@@ -333,12 +334,14 @@ pub fn interrupt(microseconds: u32, user_mode: bool) {
     }
     let state = if user_mode {
         CpuState::User
+    } else if matches!(cpu.processor().state(), State::Idle) {
+        CpuState::Idle
     } else {
         CpuState::System
     };
     machine::count_tick(cpu.id(), state);
     if let Some(thread) = thread {
-        sched::quantum_update(thread, 1);
+        sched::quantum_update(thread, 1, state);
     }
     let wheel = cpu.timeouts();
     let ticks = wheel.ticks.load(Ordering::Relaxed) + 1;

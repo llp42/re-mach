@@ -49,6 +49,8 @@ pub enum CpuState {
     User = 0,
     /// The kernel.
     System = 1,
+    /// Nothing: the CPU idles.
+    Idle = 2,
 }
 
 impl CpuState {
@@ -57,6 +59,7 @@ impl CpuState {
         match self {
             Self::User => 0,
             Self::System => 1,
+            Self::Idle => 2,
         }
     }
 }

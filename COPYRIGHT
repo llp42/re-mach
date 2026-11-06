@@ -367,3 +367,7 @@ SPDX-License-Identifier: LicenseRef-CMU-CSL
 SPDX-FileName: x86_64/boothdr.S
 SPDX-FileCopyrightText: 2022 Free Software Foundation
 SPDX-License-Identifier: GPL-2.0-or-later
+
+SPDX-FileName: x86_64/cswitch.S
+SPDX-FileCopyrightText: 1991, 1990 Carnegie Mellon University
+SPDX-License-Identifier: CMU-Mach

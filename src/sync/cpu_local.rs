@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
-//! Per-CPU data: a slot per CPU, which only that CPU touches, inside a
-//! critical section.
+//! Per-CPU data, touched inside a critical section: a slot per CPU, which
+//! only that CPU touches, or data a CPU owns, which another touches only
+//! before that CPU starts.
 
 use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
@@ -21,9 +22,10 @@ pub struct RawCpuLock {
     held: AtomicBool,
 }
 
-// SAFETY: only `CpuLocal::lock` takes it, on the slot of the CPU it runs on
-// and inside a critical section, so no other CPU and no interrupt reaches
-// it; the flag stops the one case left, its CPU taking it twice.
+// SAFETY: it is taken inside a critical section, by `CpuLocal::lock` on the
+// current CPU's slot, or as `CpuLock::new`'s caller promises, so no other
+// CPU and no interrupt reaches it; the flag stops the one case left, its CPU
+// taking it twice.
 unsafe impl RawMutex for RawCpuLock {
     const INIT: Self = Self {
         held: AtomicBool::new(false),
@@ -48,6 +50,30 @@ unsafe impl RawMutex for RawCpuLock {
     unsafe fn unlock(&self) {
         self.held.store(false, Ordering::Relaxed);
         crit_exit();
+    }
+}
+
+/// Data its CPU locks, inside a critical section; another CPU only before
+/// that one starts.
+pub struct CpuLock<T>(lock_api::Mutex<RawCpuLock, T>);
+
+impl<T> CpuLock<T> {
+    /// One holding `value`.
+    ///
+    /// # Safety
+    ///
+    /// Only its CPU locks it, or another CPU before that one starts.
+    pub const unsafe fn new(value: T) -> Self {
+        Self(lock_api::Mutex::new(value))
+    }
+
+    /// Locks it, inside a critical section.
+    ///
+    /// # Panics
+    ///
+    /// If this CPU holds it already.
+    pub fn lock(&self) -> MutexGuard<'_, RawCpuLock, T> {
+        self.0.lock()
     }
 }
 

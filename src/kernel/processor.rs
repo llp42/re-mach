@@ -3,6 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Processors and processor sets.
 
+use core::ops::DerefMut;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, Ordering};
 
@@ -17,7 +18,7 @@ use super::{ipc_host, machine};
 use crate::config::MAX_CPUS;
 use crate::ipc::port::Port;
 use crate::smp;
-use crate::sync::{OnceLock, Token};
+use crate::sync::{CpuLock, CriticalSection, OnceLock, Token};
 
 /// A processor: one per CPU, in that CPU's data.
 #[expect(dead_code, reason = "the dispatcher and processor_info read them")]
@@ -34,9 +35,10 @@ pub struct Processor {
     pub(super) last_quantum: AtomicU32,
     /// The processor set it is in, once it comes up.
     set: AtomicPtr<ProcessorSet>,
-    /// Its runnable threads, by priority; only its CPU touches them, inside
-    /// a critical section.
-    run_queues: [RunQueue; RUN_QUEUES],
+    /// Its runnable threads.
+    run_queues: CpuLock<RunQueues>,
+    /// Its idle thread, once that runs.
+    pub(super) idle_thread: OnceLock<&'static Thread>,
     /// Its place in the action queue.
     action_link: LinkedListAtomicLink,
     /// Its port, for controlling it.
@@ -60,16 +62,27 @@ pub(super) enum State {
     Offline = 0,
     /// Running a thread.
     Running = 1,
+    /// Running its idle thread.
+    Idle = 2,
 }
 
 impl State {
     /// Its number.
-    const fn number(self) -> u8 {
+    pub(super) const fn number(self) -> u8 {
         match self {
             Self::Offline => 0,
             Self::Running => 1,
+            Self::Idle => 2,
         }
     }
+}
+
+/// A processor's runnable threads, bound to it or not.
+struct RunQueues {
+    /// By priority, each in the order they became runnable.
+    lists: [RunQueue; RUN_QUEUES],
+    /// How many of them are bound to it.
+    bound: u32,
 }
 
 impl Processor {
@@ -82,7 +95,14 @@ impl Processor {
             first_quantum: AtomicBool::new(false),
             last_quantum: AtomicU32::new(0),
             set: AtomicPtr::new(ptr::null_mut()),
-            run_queues: [const { RunQueue::new(RunQueueAdapter::NEW) }; RUN_QUEUES],
+            // SAFETY: only `run_queues` locks it, once it checked the CPU.
+            run_queues: unsafe {
+                CpuLock::new(RunQueues {
+                    lists: [const { RunQueue::new(RunQueueAdapter::NEW) }; RUN_QUEUES],
+                    bound: 0,
+                })
+            },
+            idle_thread: OnceLock::new(),
             action_link: LinkedListAtomicLink::new(),
             port: AtomicPtr::new(ptr::null_mut()),
             name_port: AtomicPtr::new(ptr::null_mut()),
@@ -98,8 +118,78 @@ impl Processor {
         match self.state.load(Ordering::Acquire) {
             0 => State::Offline,
             1 => State::Running,
+            2 => State::Idle,
             state => panic!("processor: bad state {state}"),
         }
+    }
+
+    /// Sets what it is doing, on its CPU.
+    pub(super) fn set_state(&self, state: State) {
+        self.state.store(state.number(), Ordering::Release);
+    }
+
+    /// Its run queues, locked on its CPU, or on another before it starts.
+    ///
+    /// # Panics
+    ///
+    /// On another CPU once it runs: that comes with SMP.
+    fn run_queues(&self) -> impl DerefMut<Target = RunQueues> + '_ {
+        // The thread stays on the CPU checked until the lock enters its own
+        // section.
+        let _section = CriticalSection::enter();
+        assert!(
+            ptr::eq(self, smp::current().processor()) || matches!(self.state(), State::Offline),
+            "run queue: another running CPU's, not yet"
+        );
+        self.run_queues.lock()
+    }
+
+    /// How many threads bound to it wait on its run queues, on its CPU.
+    pub(super) fn bound_queued(&self) -> u32 {
+        self.run_queues().bound
+    }
+
+    /// Puts `thread` last at its scheduled priority.
+    pub(super) fn enqueue(&self, thread: &'static Thread) {
+        let mut queues = self.run_queues();
+        let priority = usize::try_from(thread.sched_pri.load(Ordering::Relaxed)).unwrap();
+        // SAFETY: a thread lives while it waits on a run queue.
+        queues.lists[priority].push_back(unsafe { UnsafeRef::from_raw(thread) });
+        if thread.bound().is_some() {
+            queues.bound += 1;
+        }
+        self.queued.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Takes the best of its threads bound to it, or if none the best of
+    /// all; the first to become runnable among equals.
+    ///
+    /// # Panics
+    ///
+    /// If it counts bound threads but has none.
+    pub(super) fn dequeue(&self) -> Option<&'static Thread> {
+        let mut queues = self.run_queues();
+        let bound_only = queues.bound > 0;
+        let Some(thread) = queues.lists.iter_mut().find_map(|list| {
+            let mut cursor = list.front_mut();
+            while let Some(thread) = cursor.get() {
+                if !bound_only || thread.bound().is_some() {
+                    return cursor.remove();
+                }
+                cursor.move_next();
+            }
+            None
+        }) else {
+            assert!(!bound_only, "choose_thread: no bound thread");
+            return None;
+        };
+        // SAFETY: as above.
+        let thread = unsafe { &*UnsafeRef::into_raw(thread) };
+        if bound_only {
+            queues.bound -= 1;
+        }
+        self.queued.fetch_sub(1, Ordering::Relaxed);
+        Some(thread)
     }
 
     /// The set it is in, once it comes up.
@@ -129,7 +219,7 @@ pub struct ProcessorSet {
     /// The policies its threads may use.
     pub(super) policies: Policies,
     /// Its processors' quantum, in ticks.
-    quantum: AtomicU32,
+    pub(super) quantum: AtomicU32,
     /// The quantum for each count of threads waiting, up to its processor
     /// count; at 0, twice the quantum of 1. Changed only under `members`'
     /// token, and read without it at each tick.

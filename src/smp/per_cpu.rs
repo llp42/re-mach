@@ -28,6 +28,8 @@ pub struct PerCpu {
     nesting: AtomicPtr<AtomicU32>,
     /// How many spinlocks it holds.
     spinlocks: AtomicU32,
+    /// How many tokens its thread holds.
+    tokens: AtomicU32,
     /// Its sleep queues, by event hash; only it touches them, inside a
     /// critical section.
     #[expect(dead_code, reason = "assert_wait and thread_wakeup use them")]
@@ -59,6 +61,7 @@ impl PerCpu {
             boot_nesting: AtomicU32::new(0),
             nesting: AtomicPtr::new(ptr::null_mut()),
             spinlocks: AtomicU32::new(0),
+            tokens: AtomicU32::new(0),
             sleep_queues: [const { SleepQueue::new(SleepQueueAdapter::NEW) }; SLEEP_QUEUES],
             processor: Processor::new(),
             active_thread: AtomicPtr::new(ptr::null_mut()),
@@ -124,9 +127,29 @@ impl PerCpu {
         self.spinlocks.load(Ordering::Relaxed)
     }
 
+    /// Notes a token taken on this CPU.
+    pub fn take_token(&self) {
+        raise(&self.tokens);
+    }
+
+    /// Notes a token released on this CPU.
+    pub fn release_token(&self) {
+        lower(&self.tokens);
+    }
+
+    /// How many tokens this CPU's thread holds.
+    pub fn tokens(&self) -> u32 {
+        self.tokens.load(Ordering::Relaxed)
+    }
+
     /// Posts `asts` on it.
     pub fn add_asts(&self, asts: Ast) {
         self.pending_asts.fetch_or(asts.bits(), Ordering::Relaxed);
+    }
+
+    /// Clears `asts` on it.
+    pub fn remove_asts(&self, asts: Ast) {
+        self.pending_asts.fetch_and(!asts.bits(), Ordering::Relaxed);
     }
 
     /// The ASTs pending on it.

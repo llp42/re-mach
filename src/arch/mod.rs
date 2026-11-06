@@ -20,6 +20,10 @@ pub trait Machine {
     /// Stops the current CPU for good.
     fn halt() -> !;
 
+    /// Halts the current CPU, inside a critical section, until an interrupt
+    /// arrives; at once if the section holds one back already.
+    fn idle();
+
     /// Writes `text` to the console, where `\n` ends a line.
     fn write_console(text: &str);
 

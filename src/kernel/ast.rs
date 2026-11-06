@@ -27,14 +27,14 @@ pub fn check(thread: &Thread) {
     let cpu = smp::current();
     let processor = cpu.processor();
     match processor.state() {
-        State::Offline => {}
+        State::Offline | State::Idle => {}
         State::Running => {
             cpu.add_asts(Ast::from_bits_retain(thread.asts.load(Ordering::Relaxed)));
             if !cpu.asts().is_empty() {
                 return;
             }
             if thread.state.load(Ordering::Relaxed) & ThreadState::SUSPENDED.bits() != 0
-                || processor.queued.load(Ordering::Relaxed) != 0
+                || processor.bound_queued() != 0
             {
                 cpu.add_asts(Ast::BLOCK);
                 return;
