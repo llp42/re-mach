@@ -14,4 +14,6 @@ pub enum Error {
     Failure = 5,
     /// A resource it needed could not be allocated, perhaps for now only.
     ResourceShortage = 6,
+    /// The name denotes a right already.
+    NameExists = 13,
 }

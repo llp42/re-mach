@@ -6,25 +6,31 @@
 use core::ptr::NonNull;
 use core::sync::atomic::AtomicU32;
 
-use super::entry::{Entry, ZERO_ENTRY};
-use super::port::Port;
+use super::entry::{self, Entry, EntryBits, Rights, ZERO_ENTRY};
 use crate::kernel::Error;
 use crate::kernel::radix_tree::RadixTree;
 use crate::kernel::slab::{Cache, CacheBox};
+use crate::sync::SleepLock;
 
 /// A space: the names a task gives ports and port sets.
-#[expect(dead_code, reason = "the space and right calls use them")]
 pub struct Space {
     /// How many references it has.
+    #[expect(dead_code, reason = "the space calls read it")]
     references: AtomicU32,
+    /// Its state.
+    pub(super) state: SleepLock<SpaceState>,
+}
+
+/// A space's state under its lock.
+pub(super) struct SpaceState {
     /// Whether it is in use; special spaces never are.
-    active: bool,
+    pub(super) active: bool,
     /// Its entries, by name.
-    map: RadixTree<Entry>,
-    /// Its names for ports, by port.
-    reverse_map: RadixTree<Port>,
+    pub(super) map: RadixTree<Entry>,
+    /// Its send rights' entries, by port.
+    pub(super) reverse_map: RadixTree<Entry>,
     /// How many names it holds.
-    size: u32,
+    pub(super) size: u32,
 }
 
 impl Space {
@@ -32,10 +38,12 @@ impl Space {
     const fn special() -> Self {
         Self {
             references: AtomicU32::new(1),
-            active: false,
-            map: RadixTree::new(),
-            reverse_map: RadixTree::new(),
-            size: 0,
+            state: SleepLock::new(SpaceState {
+                active: false,
+                map: RadixTree::new(),
+                reverse_map: RadixTree::new(),
+                size: 0,
+            }),
         }
     }
 
@@ -50,11 +58,53 @@ impl Space {
             .map_err(|_| Error::ResourceShortage)?;
         CACHE.allocate(Self {
             references: AtomicU32::new(2),
-            active: true,
-            map,
-            reverse_map: RadixTree::new(),
-            size: 1,
+            state: SleepLock::new(SpaceState {
+                active: true,
+                map,
+                reverse_map: RadixTree::new(),
+                size: 1,
+            }),
         })
+    }
+}
+
+impl SpaceState {
+    /// The entry of `name`, which holds rights, else a new one for it.
+    ///
+    /// # Errors
+    ///
+    /// `ResourceShortage` if the entry or a map node can't be allocated.
+    ///
+    /// # Panics
+    ///
+    /// If the space is dead, or the name's entry is free: not yet.
+    pub(super) fn allocate_name(&mut self, name: u32) -> Result<NonNull<Entry>, Error> {
+        assert!(self.active, "ipc_entry_alloc_name: a dead space, not yet");
+        let key = u64::from(name);
+        if let Some(entry) = self.map.lookup(key) {
+            // SAFETY: the space's lock, held, guards its entries, and no
+            // reference to this one is alive.
+            let used = unsafe { entry.as_ref() }.in_use();
+            assert!(used, "ipc_entry_alloc_name: a free entry, not yet");
+            return Ok(entry);
+        }
+        let entry = CacheBox::into_raw(entry::CACHE.allocate(Entry {
+            name,
+            bits: EntryBits {
+                rights: Rights::empty(),
+                user_references: 0,
+            },
+            object: None,
+            request: 0,
+        })?);
+        if self.map.insert(key, entry).is_err() {
+            // SAFETY: it came from `into_raw` of an entry box, and the map
+            // didn't take it.
+            drop(unsafe { CacheBox::from_raw(&entry::CACHE, entry) });
+            return Err(Error::ResourceShortage);
+        }
+        self.size += 1;
+        Ok(entry)
     }
 }
 

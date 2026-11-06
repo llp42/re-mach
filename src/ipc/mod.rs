@@ -5,13 +5,24 @@
 //! them.
 
 pub mod entry;
+pub mod mach_port;
+mod object;
 pub mod port;
 pub mod port_set;
+mod right;
 pub mod space;
 
 use crate::sync::OnceLock;
 use crate::vm::map::Map;
 use crate::{kernel, vm};
+
+/// A right as a message carries it, by Mach's type names; only the ones
+/// used here.
+#[derive(Clone, Copy)]
+pub enum MessageType {
+    /// `MACH_MSG_TYPE_PORT_SEND`: a send right.
+    PortSend,
+}
 
 /// The kernel's map for IPC buffers, such as out-of-line data in its
 /// replies.

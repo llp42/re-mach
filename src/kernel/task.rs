@@ -35,7 +35,7 @@ pub struct Task {
     /// Its address space.
     map: UnsafeRef<Map>,
     /// Its names for ports and port sets.
-    space: UnsafeRef<Space>,
+    pub(super) space: UnsafeRef<Space>,
     /// Its port, which controls it.
     pub(super) self_port: AtomicPtr<Port>,
     /// The send right for its port it hands out.
