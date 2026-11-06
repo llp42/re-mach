@@ -9,6 +9,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use lock_api::{GuardNoSend, RawMutex};
 
+use crate::smp;
+
 /// A token's raw lock.
 pub struct RawToken {
     held: AtomicBool,
@@ -30,13 +32,19 @@ unsafe impl RawMutex for RawToken {
     }
 
     fn try_lock(&self) -> bool {
-        self.held
+        let taken = self
+            .held
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
+            .is_ok();
+        if taken {
+            smp::current().take_token();
+        }
+        taken
     }
 
     unsafe fn unlock(&self) {
         self.held.store(false, Ordering::Release);
+        smp::current().release_token();
     }
 }
 

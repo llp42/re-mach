@@ -3,16 +3,20 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The scheduler.
 
+use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use intrusive_collections::LinkedList;
 
-use super::ast;
+use super::ast::{self, Ast};
 use super::clock::{self, Timeout};
-use super::processor::{self, ActionQueueAdapter};
-use super::thread::{RunQueueAdapter, SleepQueueAdapter, Thread};
+use super::machine::CpuState;
+use super::processor::{self, ActionQueueAdapter, Processor, State};
+use super::thread::{RunQueueAdapter, SleepQueueAdapter, Thread, ThreadState};
+use crate::arch::{self, Machine as _};
 use crate::config::HZ;
 use crate::smp;
+use crate::sync::CriticalSection;
 
 /// The threads sleeping on the events that hash to one slot.
 pub type SleepQueue = LinkedList<SleepQueueAdapter>;
@@ -84,21 +88,25 @@ bitflags::bitflags! {
 /// priority is recomputed.
 pub const USAGE_THRESHOLD: u32 = 1 << (PRIORITY_SHIFT + 2 + SCHEDULER_SHIFT);
 
-/// Charges `ticks` ticks to `thread`, running on the current CPU's
-/// processor: its quantum runs down and is renewed when it runs out, its
-/// priority follows its use, and the CPU checks whether it should switch.
-pub fn quantum_update(thread: &'static Thread, ticks: u32) {
+/// Charges `ticks` ticks the current CPU spent in `state` to `thread`,
+/// running on its processor: unless idle, its quantum runs down and is
+/// renewed when it runs out, its priority follows its use, and the CPU
+/// checks whether it should switch.
+pub fn quantum_update(thread: &'static Thread, ticks: u32, state: CpuState) {
     let processor = smp::current().processor();
     // A processor moving between sets is in none.
     let Some(set) = processor.set() else {
         return;
     };
     let set_quantum = set.current_quantum();
-    let mut quantum = if processor.queued.load(Ordering::Relaxed) == 0 {
+    let mut quantum = if processor.bound_queued() == 0 {
         set_quantum
     } else {
         MIN_QUANTUM
     };
+    if matches!(state, CpuState::Idle) {
+        return;
+    }
     let left = processor.quantum.load(Ordering::Relaxed) - i32::try_from(ticks).unwrap();
     processor.quantum.store(left, Ordering::Relaxed);
     if quantum != processor.last_quantum.load(Ordering::Relaxed)
@@ -116,6 +124,203 @@ pub fn quantum_update(thread: &'static Thread, ticks: u32) {
         thread.charge_tick(false);
     }
     ast::check(thread);
+}
+
+/// Whether a thread made runnable may preempt the current one.
+#[derive(Clone, Copy)]
+pub enum Preemption {
+    /// It may, if it is better.
+    Allowed,
+    /// It may not.
+    Forbidden,
+}
+
+/// Makes `thread` runnable: it goes on the run queue of the processor it
+/// is bound to, which then switches if it is the current CPU's, or else on
+/// the current CPU's, which switches if `preemption` allows it and `thread`
+/// is better than the one it runs.
+///
+/// # Panics
+///
+/// If `thread` is bound to another running CPU, or is not bound and in
+/// another set than the current CPU's: those come with SMP.
+pub fn set_run(thread: &'static Thread, preemption: Preemption) {
+    let _section = CriticalSection::enter();
+    thread.catch_up();
+    let cpu = smp::current();
+    let processor = cpu.processor();
+    if let Some(bound) = thread.bound() {
+        bound.enqueue(thread);
+        // Another CPU's is off line, so it takes no AST check.
+        if ptr::eq(bound, processor) {
+            cpu.add_asts(Ast::BLOCK);
+        }
+        return;
+    }
+    assert!(
+        processor
+            .set()
+            .is_some_and(|set| ptr::eq(set, thread.set.load(Ordering::Acquire))),
+        "thread_setrun: another set's run queue, not yet"
+    );
+    processor.enqueue(thread);
+    if matches!(preemption, Preemption::Allowed) {
+        let current = cpu
+            .active_thread()
+            .expect("thread_setrun: no current thread");
+        if current.sched_pri.load(Ordering::Relaxed) > thread.sched_pri.load(Ordering::Relaxed) {
+            processor.first_quantum.store(false, Ordering::Relaxed);
+            cpu.add_asts(Ast::BLOCK);
+        }
+    }
+}
+
+/// Gives the current CPU up to the next thread to run, which may be the
+/// current one; returns once the current one runs again.
+///
+/// # Panics
+///
+/// If the CPU holds a spinlock or a token, or is in an interrupt handler.
+pub fn block() {
+    let _section = CriticalSection::enter();
+    let cpu = smp::current();
+    assert!(cpu.spinlocks() == 0, "thread_block: spinlocks held");
+    assert!(cpu.tokens() == 0, "thread_block: tokens held");
+    assert!(!cpu.in_interrupt(), "thread_block: in an interrupt handler");
+    cpu.remove_asts(Ast::BLOCK);
+    let thread = cpu
+        .active_thread()
+        .expect("thread_block: no current thread");
+    invoke(thread, select(cpu.processor(), thread));
+}
+
+/// The thread `processor`, the current CPU's, runs next after `current`,
+/// with the processor's quantum set for it: a thread bound to it, else
+/// another, else `current` if it may run on, else the processor's idle
+/// thread, the processor then idle.
+///
+/// # Panics
+///
+/// If the processor is in no set, or must idle with no idle thread.
+fn select(processor: &'static Processor, current: &'static Thread) -> &'static Thread {
+    processor.first_quantum.store(true, Ordering::Relaxed);
+    let set = processor.set().expect("thread_select: no processor set");
+    let thread = match processor.dequeue() {
+        Some(thread) if thread.bound().is_some() => {
+            processor
+                .quantum
+                .store(i32::try_from(MIN_QUANTUM).unwrap(), Ordering::Relaxed);
+            return thread;
+        }
+        Some(thread) => thread,
+        None if current.state.load(Ordering::Relaxed) == ThreadState::RUN.bits()
+            && ptr::eq(current.set.load(Ordering::Acquire), set)
+            && current
+                .bound()
+                .is_none_or(|bound| ptr::eq(bound, processor)) =>
+        {
+            current.catch_up();
+            current
+        }
+        None => {
+            if matches!(processor.state(), State::Running) {
+                processor.set_state(State::Idle);
+            }
+            *processor
+                .idle_thread
+                .get()
+                .expect("choose_pset_thread: no idle thread")
+        }
+    };
+    let quantum = thread.next_quantum(set.quantum.load(Ordering::Relaxed));
+    processor
+        .quantum
+        .store(i32::try_from(quantum).unwrap(), Ordering::Relaxed);
+    thread
+}
+
+/// Switches the current CPU from `old`, the thread it runs, to `new`,
+/// inside a critical section; returns once `old` runs again, having
+/// dispatched the thread switched from then.
+fn invoke(old: &'static Thread, new: &'static Thread) {
+    if ptr::eq(old, new) {
+        return;
+    }
+    new.run_here();
+    // The CPU takes the new thread's ASTs; none is per-thread yet.
+    smp::current().add_asts(Ast::from_bits_retain(new.asts.load(Ordering::Relaxed)));
+    // SAFETY: the CPU runs on `old`'s stack; `new` was switched away from,
+    // or got its stack before it was made runnable.
+    dispatch(unsafe { old.switch(new) });
+}
+
+/// Puts `thread`, just switched from, where its state says: back on a run
+/// queue if it runs on, nowhere if an idle thread.
+///
+/// # Panics
+///
+/// If its state is not one of those.
+pub(super) fn dispatch(thread: &'static Thread) {
+    match ThreadState::from_bits_retain(thread.state.load(Ordering::Relaxed)) {
+        state if state == ThreadState::RUN => set_run(thread, Preemption::Forbidden),
+        // Its processor chooses it when it has nothing else.
+        state if state == ThreadState::RUN | ThreadState::IDLE => {}
+        state => panic!(
+            "thread_dispatch: thread {thread:p} in state {:#x}, not yet",
+            state.bits()
+        ),
+    }
+}
+
+/// An idle thread's work, on the CPU of the processor it is bound to: it
+/// takes the lowest priority and becomes the processor's idle thread, then
+/// blocks; chosen again, it waits for runnable threads, then blocks.
+///
+/// # Panics
+///
+/// If its processor already has an idle thread, or is in a state other
+/// than idle once threads are runnable.
+pub fn idle_thread() -> ! {
+    let section = CriticalSection::enter();
+    let cpu = smp::current();
+    let thread = cpu.active_thread().expect("idle_thread: no current thread");
+    let lowest = u32::try_from(RUN_QUEUES).unwrap() - 1;
+    thread.priority.store(lowest, Ordering::Relaxed);
+    thread.sched_pri.store(lowest, Ordering::Relaxed);
+    thread
+        .state
+        .fetch_or(ThreadState::IDLE.bits(), Ordering::Relaxed);
+    assert!(
+        cpu.processor().idle_thread.set(thread).is_ok(),
+        "idle_thread: twice"
+    );
+    drop(section);
+    block();
+    loop {
+        // An interrupt that makes a thread runnable is held back until the
+        // section ends, and wakes the CPU.
+        let section = loop {
+            let section = CriticalSection::enter();
+            if smp::current().processor().queued.load(Ordering::Relaxed) != 0 {
+                break section;
+            }
+            arch::Current::idle();
+            drop(section);
+        };
+        let processor = smp::current().processor();
+        match processor.state() {
+            State::Idle => {
+                processor.set_state(State::Running);
+                block();
+            }
+            state => panic!(
+                "idle_thread: bad processor state {} on CPU {}",
+                state.number(),
+                smp::current().id()
+            ),
+        }
+        drop(section);
+    }
 }
 
 /// Sets up the scheduler, on the boot CPU.

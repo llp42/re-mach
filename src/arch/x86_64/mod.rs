@@ -37,6 +37,7 @@ use core::fmt::Write;
 use core::mem::MaybeUninit;
 use core::{ptr, slice};
 
+use x86_64::instructions::interrupts;
 use x86_64::registers::control::{Cr0, Cr0Flags};
 use x86_64::registers::rflags::{self, RFlags};
 
@@ -279,6 +280,17 @@ pub struct X86_64;
 impl Machine for X86_64 {
     fn halt() -> ! {
         halt()
+    }
+
+    fn idle() {
+        // With interrupts off, none can be held back between the check and
+        // the halt; the halt runs in `sti`'s shadow.
+        interrupts::disable();
+        if PerCpu::current().holds_interrupts() {
+            interrupts::enable();
+        } else {
+            interrupts::enable_and_hlt();
+        }
     }
 
     fn write_console(text: &str) {

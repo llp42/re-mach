@@ -13,7 +13,7 @@ mod token;
 
 pub use boot_cell::BootCell;
 pub use cache_padded::CachePadded;
-pub use cpu_local::CpuLocal;
+pub use cpu_local::{CpuLocal, CpuLock};
 pub use critical_section::CriticalSection;
 pub use once_lock::OnceLock;
 pub use sleep_lock::SleepLock;

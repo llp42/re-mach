@@ -15,7 +15,7 @@ use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 use super::Error;
 use super::clock::{self, TimeValue};
 use super::processor::{DEFAULT_SET, Processor, ProcessorSet};
-use super::sched::{self, Policies, RUN_QUEUES, SCHEDULER_SCALE};
+use super::sched::{self, Policies, Preemption, RUN_QUEUES, SCHEDULER_SCALE};
 use super::slab::{Cache, CacheBox};
 use super::task::{self, Task};
 use crate::ipc::port::{self, KernelObject, Port};
@@ -27,11 +27,14 @@ use crate::{arch, smp};
 bitflags::bitflags! {
     /// What a thread is doing, as Mach numbers it; only the states used
     /// here.
+    #[derive(PartialEq, Eq)]
     pub struct ThreadState: u32 {
         /// Asked to stop.
         const SUSPENDED = 0x02;
         /// Running, or waiting to run.
         const RUN = 0x04;
+        /// A processor's idle thread.
+        const IDLE = 0x80;
     }
 }
 
@@ -60,11 +63,11 @@ pub struct Thread {
     /// How many of those suspensions user tasks asked for.
     pub(super) user_stop_count: AtomicU32,
     /// Its base priority.
-    priority: u32,
+    pub(super) priority: AtomicU32,
     /// The highest priority it may take.
     max_priority: u32,
     /// The priority it is scheduled at, its base aged by its use.
-    sched_pri: AtomicU32,
+    pub(super) sched_pri: AtomicU32,
     /// Its scheduling policy.
     pub(super) policy: Policies,
     /// Its recent processor use, scaled.
@@ -95,6 +98,8 @@ pub struct Thread {
     kernel_stack: OnceLock<KernelStack>,
     /// The processor it last ran on; null before it first runs.
     last_processor: AtomicPtr<Processor>,
+    /// The processor it must run on; null for any.
+    bound: AtomicPtr<Processor>,
     /// How deep its critical sections nest; a new thread starts inside the
     /// one the switch to it is made in.
     critical_nesting: AtomicU32,
@@ -230,11 +235,23 @@ pub trait MachineThread: Sized {
     /// Its stack is set up, and the CPU is inside a critical section the
     /// thread's count holds.
     unsafe fn load(&self) -> !;
+    /// Switches the current CPU from its thread, `current`, to `next`'s;
+    /// once its thread runs again, returns the thread switched from then.
+    ///
+    /// # Safety
+    ///
+    /// `next`'s stack is set up, and the CPU is inside a critical section
+    /// both threads' counts hold.
+    unsafe fn switch(&self, next: &Self, current: &'static Thread) -> &'static Thread;
 }
 
-/// Where a new thread begins, before its function: it leaves the critical
-/// section the switch to it was made in.
-pub extern "sysv64" fn begin() {
+/// Where a new thread begins, before its function: it dispatches `old`, the
+/// thread switched from if any, then leaves the critical section the switch
+/// to it was made in.
+pub extern "sysv64" fn begin(old: Option<&'static Thread>) {
+    if let Some(old) = old {
+        sched::dispatch(old);
+    }
     // SAFETY: a switch is made in a critical section no guard holds, and
     // this thread runs its first instructions in it.
     drop(unsafe { CriticalSection::inherit() });
@@ -312,6 +329,43 @@ impl Thread {
         unsafe { self.pcb.load() }
     }
 
+    /// Switches the current CPU from it to `next`, inside a critical
+    /// section; once it runs again, returns the thread switched from then.
+    ///
+    /// # Safety
+    ///
+    /// The CPU runs on its stack, and `next`'s stack holds the frame
+    /// `attach_stack` wrote or a switch away from it pushed.
+    ///
+    /// # Panics
+    ///
+    /// If `next` is not inside a critical section, as threads are while
+    /// switched away from.
+    pub(super) unsafe fn switch(&'static self, next: &'static Self) -> &'static Self {
+        assert!(
+            next.critical_nesting.load(Ordering::Relaxed) != 0,
+            "switch_context: thread outside a critical section"
+        );
+        smp::current().switch_nesting(&next.critical_nesting);
+        // SAFETY: as the caller promises, `next`'s stack holds a frame
+        // `attach_stack` wrote, if it never ran, or a switch pushed; both
+        // counts hold the critical section the CPU is in.
+        unsafe { self.pcb.switch(&next.pcb, self) }
+    }
+
+    /// Binds it to `processor`, which alone runs it from then on.
+    pub fn bind(&self, processor: &'static Processor) {
+        let _section = CriticalSection::enter();
+        self.bound
+            .store(ptr::from_ref(processor).cast_mut(), Ordering::Release);
+    }
+
+    /// The processor it is bound to, if any.
+    pub(super) fn bound(&self) -> Option<&'static Processor> {
+        // SAFETY: processors live for good.
+        unsafe { self.bound.load(Ordering::Acquire).as_ref() }
+    }
+
     /// Adds `microseconds` to its time in user mode or in the kernel, on the
     /// CPU it runs on.
     pub fn add_time(&self, microseconds: u32, user_mode: bool) {
@@ -382,8 +436,17 @@ impl Thread {
     /// Schedules it at the priority its base priority and use give.
     fn compute_my_priority(&self) {
         let usage = self.sched_usage.load(Ordering::Relaxed);
-        self.sched_pri
-            .store(computed_priority(self.priority, usage), Ordering::Relaxed);
+        self.sched_pri.store(
+            computed_priority(self.priority.load(Ordering::Relaxed), usage),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// Catches its use up with the scheduler's aging, if it missed any.
+    pub(super) fn catch_up(&self) {
+        if self.sched_stamp.load(Ordering::Relaxed) != sched::scheduler_tick() {
+            self.update_priority();
+        }
     }
 
     /// Catches its use up with the scheduler's aging: each second missed
@@ -436,11 +499,7 @@ impl Thread {
     /// # Errors
     ///
     /// `Failure` if users have not stopped it.
-    ///
-    /// # Panics
-    ///
-    /// If it would go on a run queue: that comes with `thread_setrun`.
-    pub fn resume(&self) -> Result<(), Error> {
+    pub fn resume(&'static self) -> Result<(), Error> {
         if self.user_stop_count.load(Ordering::Relaxed) == 0 {
             return Err(Error::Failure);
         }
@@ -450,10 +509,11 @@ impl Thread {
             let state = self
                 .state
                 .fetch_and(!ThreadState::SUSPENDED.bits(), Ordering::Relaxed);
-            assert!(
-                state & ThreadState::RUN.bits() != 0,
-                "thread_resume: thread_setrun comes with the scheduler"
-            );
+            if state & ThreadState::RUN.bits() == 0 {
+                self.state
+                    .fetch_or(ThreadState::RUN.bits(), Ordering::Relaxed);
+                sched::set_run(self, Preemption::Allowed);
+            }
         }
         Ok(())
     }
@@ -495,7 +555,7 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         // Set below with the priorities, under the set's and task's tokens.
         suspend_count: AtomicU32::new(0),
         user_stop_count: AtomicU32::new(1),
-        priority: 0,
+        priority: AtomicU32::new(0),
         max_priority: 0,
         sched_pri: AtomicU32::new(0),
         policy: Policies::TIMESHARE,
@@ -514,6 +574,7 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         start: OnceLock::new(),
         kernel_stack: OnceLock::new(),
         last_processor: AtomicPtr::new(ptr::null_mut()),
+        bound: AtomicPtr::new(ptr::null_mut()),
         critical_nesting: AtomicU32::new(1),
         user_time: AtomicU64::new(0),
         system_time: AtomicU64::new(0),
@@ -555,8 +616,9 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         set = current;
     };
     thread.max_priority = members.max_priority.max(set.max_priority);
-    thread.priority = members.priority.max(thread.max_priority);
-    *thread.sched_pri.get_mut() = computed_priority(thread.priority, sched_usage);
+    let priority = members.priority.max(thread.max_priority);
+    *thread.priority.get_mut() = priority;
+    *thread.sched_pri.get_mut() = computed_priority(priority, sched_usage);
     *thread.suspend_count.get_mut() =
         members.suspend_count + 1 + u32::from(set.empty.load(Ordering::Relaxed));
     // Nothing is published yet; only the set's reference is undone.

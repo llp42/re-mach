@@ -138,6 +138,11 @@ impl PerCpu {
         true
     }
 
+    /// Whether this CPU holds any interrupt back; with interrupts off.
+    pub fn holds_interrupts(&self) -> bool {
+        self.interrupts_held.load(Ordering::Relaxed)
+    }
+
     /// Takes this CPU's lowest pending vector, if any, noting when none is
     /// left; with interrupts off.
     fn take_pending(&self) -> Option<usize> {

@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Threads' machine state: their process control blocks.
 
-use core::arch::{asm, global_asm};
+use core::arch::{asm, global_asm, naked_asm};
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -14,7 +14,7 @@ use super::per_cpu::PerCpu;
 use super::trap::TrapFrame;
 use crate::kernel::Error;
 use crate::kernel::slab::{Cache, CacheBox};
-use crate::kernel::thread::{self, MachineThread};
+use crate::kernel::thread::{self, MachineThread, Thread};
 use crate::smp::MachinePerCpu as _;
 use crate::vm::kernel::KernelStack;
 
@@ -29,14 +29,16 @@ pub struct Pcb {
     stack_pointer: AtomicUsize,
 }
 
-// A new thread's first return: interrupts on, then `begin`, then its
-// function, which is in rbx and never returns.
+// A new thread's first return: interrupts on, then `begin` with the thread
+// switched from, in rax, then its function, which is in rbx and never
+// returns.
 global_asm!(
     ".pushsection .text, \"ax\"",
     ".globl thread_trampoline",
     "thread_trampoline:",
     "sti",
     "xorl %ebp, %ebp",
+    "movq %rax, %rdi",
     "call {begin}",
     "call *%rbx",
     "ud2",
@@ -56,6 +58,41 @@ const SAVED_REGISTERS: usize = 6;
 
 /// Where rbx is among them.
 const SAVED_RBX: usize = 4;
+
+/// Pushes the callee-saved registers, stores the stack pointer at
+/// `from_stack`, and pops them from `to_stack`, returning there with
+/// `from`, the thread switched from.
+///
+/// # Safety
+///
+/// `to_stack` holds a frame a switch pushed or `attach_stack` wrote, and
+/// the CPU is inside a critical section.
+#[unsafe(naked)]
+unsafe extern "sysv64" fn switch_stacks(
+    from_stack: *mut usize,
+    to_stack: usize,
+    from: &'static Thread,
+) -> &'static Thread {
+    naked_asm!(
+        "pushq %rbp",
+        "pushq %rbx",
+        "pushq %r12",
+        "pushq %r13",
+        "pushq %r14",
+        "pushq %r15",
+        "movq %rsp, (%rdi)",
+        "movq %rsi, %rsp",
+        "movq %rdx, %rax",
+        "popq %r15",
+        "popq %r14",
+        "popq %r13",
+        "popq %r12",
+        "popq %rbx",
+        "popq %rbp",
+        "ret",
+        options(att_syntax),
+    );
+}
 
 /// The cache process control blocks come from.
 static CACHE: Cache<Pcb> = Cache::new("pcb");
@@ -109,10 +146,30 @@ impl MachineThread for Pcb {
                 "popq %r12",
                 "popq %rbx",
                 "popq %rbp",
+                // No thread is switched from.
+                "xorl %eax, %eax",
                 "ret",
                 stack_pointer = in(reg) self.stack_pointer.load(Ordering::Acquire),
                 options(att_syntax, noreturn),
             );
+        }
+    }
+
+    unsafe fn switch(&self, next: &Self, current: &'static Thread) -> &'static Thread {
+        // A trap from user mode saves the thread's registers in its PCB.
+        let user_end = ptr::from_ref(&next.user).addr() + size_of::<TrapFrame>();
+        let tss = PerCpu::current().tss();
+        let mut updated = tss.get();
+        updated.privilege_stack_table[0] = VirtAddr::new(u64::try_from(user_end).unwrap());
+        tss.set(updated);
+        // SAFETY: guaranteed by the caller; this thread's stack pointer is
+        // saved where its next switch back reads it.
+        unsafe {
+            switch_stacks(
+                self.stack_pointer.as_ptr(),
+                next.stack_pointer.load(Ordering::Acquire),
+                current,
+            )
         }
     }
 }
