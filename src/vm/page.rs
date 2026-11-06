@@ -90,6 +90,35 @@ struct PageArray {
     start: PhysAddr,
     /// The pages, in address order.
     pages: &'static [Page],
+    /// The DMA reserve's pool.
+    reserve: Pool,
+    /// The colour queues' pool: the pages above the reserve.
+    queues: Pool,
+}
+
+/// A pool's pages and its free-page thresholds.
+struct Pool {
+    /// Its pages, holes included.
+    pages: usize,
+    /// Free pages at or below which only privileged allocations proceed.
+    min: usize,
+    /// Free pages at or below which pageout starts.
+    low: usize,
+    /// Free pages at or above which pageout stops.
+    high: usize,
+}
+
+impl Pool {
+    /// One of `pages` pages, its thresholds a share of them, each with a
+    /// floor.
+    fn new(pages: usize) -> Self {
+        Self {
+            pages,
+            min: (pages * 5 / 100).max(500),
+            low: (pages * 6 / 100).max(600),
+            high: (pages * 10 / 100).max(1000),
+        }
+    }
 }
 
 /// The page array, once `setup` builds it.
@@ -131,18 +160,20 @@ impl PageQueue {
         }
     }
 
-    /// Puts `page` at its end.
-    fn push(&self, page: &'static Page) {
+    /// Puts `page` at its end, counting it in its pool's `total` too.
+    fn push(&self, page: &'static Page, total: &AtomicUsize) {
         let mut list = self.list.lock();
         list.push_back(page);
         // The count changes only under the lock.
         self.pages
             .store(self.pages.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
+        total.fetch_add(1, Ordering::Relaxed);
         drop(list);
     }
 
-    /// Takes its first page; an empty queue is passed by without its lock.
-    fn pop(&self) -> Option<&'static Page> {
+    /// Takes its first page, dropping it from its pool's `total` too; an
+    /// empty queue is passed by without its lock.
+    fn pop(&self, total: &AtomicUsize) -> Option<&'static Page> {
         if self.pages.load(Ordering::Relaxed) == 0 {
             return None;
         }
@@ -151,6 +182,7 @@ impl PageQueue {
         // The count changes only under the lock.
         self.pages
             .store(self.pages.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
+        total.fetch_sub(1, Ordering::Relaxed);
         drop(list);
         Some(page)
     }
@@ -158,6 +190,9 @@ impl PageQueue {
 
 /// The page queues, a list per colour each, each on its own cache lines.
 struct PageQueues {
+    /// How many pages the free queues hold; changed under the lock of the
+    /// queue changed.
+    free_pages: AtomicUsize,
     /// Free pages.
     free: [CachePadded<PageQueue>; COLORS],
     /// Pages in use, not referenced lately.
@@ -176,12 +211,22 @@ fn reserve_end(size: usize) -> usize {
     DMA_RESERVE_LIMIT.min(size / 4) / PAGE_SIZE
 }
 
-/// Free frames kept for DMA, below `DMA_RESERVE_LIMIT`: a bit per frame
-/// from 0, set when it is free.
-static DMA_RESERVE: Spinlock<[u64; DMA_RESERVE_LIMIT / PAGE_SIZE / 64]> =
-    Spinlock::new([0; DMA_RESERVE_LIMIT / PAGE_SIZE / 64]);
+/// The DMA reserve's free frames and their count.
+struct Reserve {
+    /// A bit per frame from 0, set when it is free.
+    frames: [u64; DMA_RESERVE_LIMIT / PAGE_SIZE / 64],
+    /// How many bits are set.
+    free: usize,
+}
+
+/// Free frames kept for DMA, below `DMA_RESERVE_LIMIT`.
+static DMA_RESERVE: Spinlock<Reserve> = Spinlock::new(Reserve {
+    frames: [0; DMA_RESERVE_LIMIT / PAGE_SIZE / 64],
+    free: 0,
+});
 
 static QUEUES: PageQueues = PageQueues {
+    free_pages: AtomicUsize::new(0),
     free: [const { CachePadded::new(PageQueue::new()) }; COLORS],
     inactive: [const { CachePadded::new(PageQueue::new()) }; COLORS],
     active: [const { CachePadded::new(PageQueue::new()) }; COLORS],
@@ -262,11 +307,16 @@ pub fn setup() {
     // SAFETY: every slot is written, and a `MaybeUninit<Page>` is laid out
     // as a `Page`.
     let pages = unsafe { &*ptr::slice_from_raw_parts(slots.as_ptr().cast::<Page>(), count) };
+    let reserve_pages = reserve_end(count * PAGE_SIZE)
+        .saturating_sub(span.start.0 / PAGE_SIZE)
+        .min(count);
     assert!(
         PAGES
             .set(PageArray {
                 start: span.start,
                 pages,
+                reserve: Pool::new(reserve_pages),
+                queues: Pool::new(count - reserve_pages),
             })
             .is_ok(),
         "vm_page: set up twice"
@@ -290,43 +340,43 @@ pub fn release(range: Range<PhysAddr>) {
     let reserved = reserve_end(array.pages.len() * PAGE_SIZE);
     for frame in range.start.0.div_ceil(PAGE_SIZE)..range.end.0 / PAGE_SIZE {
         if frame < reserved {
-            DMA_RESERVE.lock()[frame / 64] |= 1 << (frame % 64);
+            let mut reserve = DMA_RESERVE.lock();
+            let bit = 1 << (frame % 64);
+            if reserve.frames[frame / 64] & bit == 0 {
+                reserve.frames[frame / 64] |= bit;
+                reserve.free += 1;
+            }
+            drop(reserve);
         } else {
             let color = (frame ^ (frame / COLORS) ^ (frame / (COLORS * COLORS))) % COLORS;
-            QUEUES.free[color].push(&array.pages[frame - first]);
+            QUEUES.free[color].push(&array.pages[frame - first], &QUEUES.free_pages);
         }
     }
 }
 
-/// Prints each pool's pages and free pages: the DMA reserve, then the rest,
-/// on the boot CPU.
+/// Prints each pool's pages, free pages and thresholds: the DMA reserve,
+/// then the rest, on the boot CPU.
 ///
 /// # Panics
 ///
 /// If the page array is not set up.
 pub fn print_pools() {
     let array = PAGES.get().expect("vm_page: not set up");
-    let count = array.pages.len();
-    let dma = reserve_end(count * PAGE_SIZE)
-        .saturating_sub(array.start.0 / PAGE_SIZE)
-        .min(count);
-    let dma_free = {
-        let reserve = DMA_RESERVE.lock();
-        reserve.iter().map(|word| word.count_ones()).sum::<u32>()
-    };
-    let free = QUEUES
-        .free
-        .iter()
-        .map(|queue| queue.pages.load(Ordering::Relaxed))
-        .sum();
-    for (name, pages, free) in [
-        ("DMA", dma, usize::try_from(dma_free).unwrap()),
-        ("DIRECTMAP", count - dma, free),
+    let reserve_free = DMA_RESERVE.lock().free;
+    let queue_free = QUEUES.free_pages.load(Ordering::Relaxed);
+    for (name, pool, free) in [
+        ("DMA", &array.reserve, reserve_free),
+        ("DIRECTMAP", &array.queues, queue_free),
     ] {
         println!(
-            "vm_page: {name}: pages: {pages} ({}M), free: {free} ({}M)",
-            (pages * PAGE_SIZE) >> 20,
+            "vm_page: {name}: pages: {} ({}M), free: {free} ({}M)",
+            pool.pages,
+            (pool.pages * PAGE_SIZE) >> 20,
             (free * PAGE_SIZE) >> 20
+        );
+        println!(
+            "vm_page: {name}: min:{} low:{} high:{}",
+            pool.min, pool.low, pool.high
         );
     }
 }
@@ -365,7 +415,7 @@ pub fn allocate(index: usize) -> Option<&'static Page> {
     let cpu_colors = COLORS / machine::processor_count();
     let first = smp::current().id() * cpu_colors + index % cpu_colors;
     let queue = &QUEUES.free[first];
-    if let Some(page) = queue.pop() {
+    if let Some(page) = queue.pop(&QUEUES.free_pages) {
         queue.last.store(0, Ordering::Relaxed);
         return Some(page);
     }
@@ -383,7 +433,10 @@ pub fn allocate(index: usize) -> Option<&'static Page> {
             if searched.contains(&color) {
                 continue;
             }
-            if let Some(page) = QUEUES.free[color].pop() {
+            if QUEUES.free_pages.load(Ordering::Relaxed) == 0 {
+                return None;
+            }
+            if let Some(page) = QUEUES.free[color].pop(&QUEUES.free_pages) {
                 if looked >= 8 {
                     queue.last.store(color + 1, Ordering::Relaxed);
                 }
