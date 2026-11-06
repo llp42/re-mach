@@ -33,7 +33,7 @@ pub struct Task {
     /// How many references it has.
     references: AtomicU32,
     /// Its address space.
-    map: UnsafeRef<Map>,
+    pub(super) map: UnsafeRef<Map>,
     /// Its names for ports and port sets.
     pub(super) space: UnsafeRef<Space>,
     /// Its port, which controls it.

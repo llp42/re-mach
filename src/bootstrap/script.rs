@@ -42,7 +42,6 @@ enum Function {
 /// A command: a line's program, and what it runs with.
 struct Command {
     /// The module the line is of.
-    #[expect(dead_code, reason = "boot_script_exec_cmd reads it")]
     module: &'static BootModule,
     /// Its program's path.
     path: &'static str,
@@ -259,10 +258,11 @@ impl Script {
         }
     }
 
-    /// Runs the commands, so far up to building each one's command line and
-    /// arguments from kalloc: the line holds the path, then each port
-    /// argument's name in the task, in decimal, each ending with a NUL; the
-    /// arguments are their offsets in it.
+    /// Runs the commands: builds each one's command line and arguments from
+    /// kalloc, then runs it in its task; the line holds the path, then each
+    /// port argument's name in the task, in decimal, each ending with a NUL,
+    /// and the arguments are their offsets in it. So far the first command
+    /// never ends, so this never returns.
     ///
     /// # Errors
     ///
@@ -271,7 +271,8 @@ impl Script {
     /// # Panics
     ///
     /// On a command with no task, a string argument, or a command line
-    /// past its room: not yet.
+    /// past its room: not yet. As `bootstrap::run_command`, if a command's
+    /// thread can't be created or resumed.
     pub fn run(&self) -> Result<(), Error> {
         for command in self.commands.items() {
             let task = command
@@ -319,6 +320,7 @@ impl Script {
                 }
                 line.push(0);
             }
+            bootstrap::run_command(command.module, task, line.items(), arguments.items());
         }
         Ok(())
     }

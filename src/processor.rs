@@ -342,8 +342,8 @@ impl ProcessorSet {
     }
 
     /// Sets its quanta for `count` processors: an even share of the
-    /// shortest quantum each, by threads waiting; with no set-wide run
-    /// queue, the quantum for none waiting.
+    /// shortest quantum each, by threads waiting; then its quantum for the
+    /// threads waiting now, up to one each.
     fn set_quantum(&self, count: u32) {
         for waiting in 1..=count {
             self.machine_quantum[usize::try_from(waiting).unwrap()].store(
@@ -353,15 +353,41 @@ impl ProcessorSet {
         }
         let one = self.machine_quantum[1].load(Ordering::Relaxed);
         self.machine_quantum[0].store(2 * one, Ordering::Relaxed);
-        self.quantum.store(2 * one, Ordering::Relaxed);
+        let waiting = usize::try_from(self.queued().min(count)).unwrap();
+        self.quantum.store(
+            self.machine_quantum[waiting].load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
     }
 
-    /// Its quantum for the threads waiting now: with no set-wide run queue,
-    /// for none.
+    /// Its quantum for the threads waiting now, up to one each of its
+    /// processors.
     pub(super) fn current_quantum(&self) -> u32 {
-        let quantum = self.machine_quantum[0].load(Ordering::Relaxed);
+        let waiting = self
+            .queued()
+            .min(self.processor_count.load(Ordering::Relaxed));
+        let quantum =
+            self.machine_quantum[usize::try_from(waiting).unwrap()].load(Ordering::Relaxed);
         self.quantum.store(quantum, Ordering::Relaxed);
         quantum
+    }
+
+    /// How many threads wait on its run queue: those its processors' run
+    /// queues hold that are not bound to them.
+    ///
+    /// # Panics
+    ///
+    /// If one of its processors is another running CPU's: that comes with
+    /// SMP.
+    pub(super) fn queued(&self) -> u32 {
+        (0..MAX_CPUS)
+            .map(|cpu| smp::of(cpu).processor())
+            .filter(|processor| processor.set().is_some_and(|set| ptr::eq(set, self)))
+            .map(|processor| {
+                let queues = processor.run_queues();
+                processor.queued.load(Ordering::Relaxed) - queues.bound
+            })
+            .sum()
     }
 
     /// `quantum` adjusted at run time: its processors take turns at

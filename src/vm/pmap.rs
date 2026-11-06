@@ -27,6 +27,21 @@ pub trait MachinePmap {
     /// Takes a reference on it.
     fn reference(&self);
 
+    /// Makes it the current CPU's, as the CPU switches to a thread of its
+    /// task from one of another, inside a critical section.
+    ///
+    /// # Panics
+    ///
+    /// If it is the kernel's: not yet.
+    fn activate(&self);
+    /// Gives it up on the current CPU, as the CPU switches from a thread of
+    /// its task to one of another, inside a critical section.
+    ///
+    /// # Panics
+    ///
+    /// If it is a user task's: not yet.
+    fn deactivate(&self);
+
     /// Maps kernel `address` to the page at `physical`, read-write.
     fn enter_kernel(address: usize, physical: PhysAddr);
     /// The page `enter_kernel` mapped kernel `address` to; `None` if none.

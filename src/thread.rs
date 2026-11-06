@@ -22,6 +22,7 @@ use crate::sync::{CriticalSection, OnceLock};
 use crate::task::{self, Task};
 use crate::vm;
 use crate::vm::kernel::KernelStack;
+use crate::vm::pmap::MachinePmap as _;
 use crate::{arch, smp};
 
 bitflags::bitflags! {
@@ -98,9 +99,9 @@ pub struct Thread {
     self_port: AtomicPtr<Port>,
     /// The send right for its port it hands out.
     self_send: AtomicPtr<Port>,
-    /// The function it starts in, once given.
-    start: OnceLock<fn() -> !>,
-    /// Its kernel stack, once it has one.
+    /// What its function is given by whoever starts it; null for nothing.
+    pub(super) argument: AtomicPtr<()>,
+    /// Its kernel stack, which it keeps for life; set as it is created.
     kernel_stack: OnceLock<KernelStack>,
     /// The processor it last ran on; null before it first runs.
     last_processor: AtomicPtr<Processor>,
@@ -273,36 +274,15 @@ pub fn init() {
 }
 
 impl Thread {
-    /// Makes it start in `function` once it first runs.
+    /// Makes it start in `function` once it first runs: its stack is set to
+    /// enter it.
     ///
     /// # Panics
     ///
-    /// If it has a function to start in already.
+    /// If it has no stack, which `create` gives it.
     pub fn start(&self, function: fn() -> !) {
-        assert!(self.start.set(function).is_ok(), "thread_start: twice");
-    }
-
-    /// Gives it its kernel stack, set to start it in its function.
-    ///
-    /// # Errors
-    ///
-    /// As `vm::kernel::allocate_stack`.
-    ///
-    /// # Panics
-    ///
-    /// If it has no function to start in, or a stack already.
-    pub fn allocate_stack(&self) -> Result<(), Error> {
-        let start = *self
-            .start
-            .get()
-            .expect("thread_doswapin: no start function");
-        let stack = vm::kernel::allocate_stack()?;
-        self.pcb.attach_stack(&stack, start);
-        assert!(
-            self.kernel_stack.set(stack).is_ok(),
-            "thread_doswapin: twice"
-        );
-        Ok(())
+        let stack = self.kernel_stack.get().expect("thread_start: no stack");
+        self.pcb.attach_stack(stack, function);
     }
 
     /// Records that it runs on the current CPU, as the CPU switches to it.
@@ -336,7 +316,8 @@ impl Thread {
     }
 
     /// Switches the current CPU from it to `next`, inside a critical
-    /// section; once it runs again, returns the thread switched from then.
+    /// section, and to `next`'s task's physical map if its task is
+    /// another; once it runs again, returns the thread switched from then.
     ///
     /// # Safety
     ///
@@ -346,12 +327,16 @@ impl Thread {
     /// # Panics
     ///
     /// If `next` is not inside a critical section, as threads are while
-    /// switched away from.
+    /// switched away from; as `MachinePmap::activate` and `deactivate`.
     pub(super) unsafe fn switch(&'static self, next: &'static Self) -> &'static Self {
         assert!(
             next.critical_nesting.load(Ordering::Relaxed) != 0,
             "switch_context: thread outside a critical section"
         );
+        if !ptr::eq(&raw const *self.task, &raw const *next.task) {
+            self.task.map.pmap().deactivate();
+            next.task.map.pmap().activate();
+        }
         smp::current().switch_nesting(&next.critical_nesting);
         // SAFETY: as the caller promises, `next`'s stack holds a frame
         // `attach_stack` wrote, if it never ran, or a switch pushed; both
@@ -534,15 +519,17 @@ impl Thread {
     }
 }
 
-/// A new thread of `task`, suspended, in its task's set, or the default
-/// set if that one is not in use, at its task's priority aged by a full
-/// share of a processor, with a port and a send right for it; a thread
-/// made in a set with no processor is suspended once more.
+/// A new thread of `task`, suspended, with the kernel stack it keeps for
+/// life, in its task's set, or the default set if that one is not in use,
+/// at its task's priority aged by a full share of a processor, with a port
+/// and a send right for it; a thread made in a set with no processor is
+/// suspended once more.
 ///
 /// # Errors
 ///
 /// `ResourceShortage` if the thread, its machine state or its port can't
-/// be allocated; `Failure` if the task is not alive.
+/// be allocated, or as `vm::kernel::allocate_stack` for its stack;
+/// `Failure` if the task is not alive.
 pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
     let mut pcb = arch::Pcb::new()?;
     let port = port::allocate_kernel()?;
@@ -581,7 +568,7 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         pcb: unsafe { UnsafeRef::from_raw(ptr::from_mut(&mut *pcb)) },
         self_port: AtomicPtr::new(ptr::null_mut()),
         self_send: AtomicPtr::new(ptr::null_mut()),
-        start: OnceLock::new(),
+        argument: AtomicPtr::new(ptr::null_mut()),
         kernel_stack: OnceLock::new(),
         last_processor: AtomicPtr::new(ptr::null_mut()),
         bound: AtomicPtr::new(ptr::null_mut()),
@@ -596,6 +583,11 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         fixed_quantum: 0,
         asts: AtomicU32::new(0),
     })?;
+    let stack = vm::kernel::allocate_stack()?;
+    assert!(
+        thread.kernel_stack.set(stack).is_ok(),
+        "thread_create: a stack already"
+    );
     let members = task.members.lock();
     // SAFETY: under the task's token its reference keeps its set alive, and
     // the one taken here does after.
@@ -632,7 +624,8 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
     *thread.sched_pri.get_mut() = computed_priority(priority, sched_usage);
     *thread.suspend_count.get_mut() =
         members.suspend_count + 1 + u32::from(set.empty.load(Ordering::Relaxed));
-    // Nothing is published yet; only the set's reference is undone.
+    // Nothing is published yet; only the set's reference is undone, and
+    // the stack stays taken, as stacks are not freed yet.
     if !members.active {
         drop(members);
         drop(set_members);

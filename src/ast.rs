@@ -39,13 +39,19 @@ pub fn check(thread: &Thread) {
                 cpu.add_asts(Ast::BLOCK);
                 return;
             }
-            // A fixed-priority thread uses all of a new quantum.
-            if processor
-                .set()
-                .is_some_and(|set| set.policies.contains(Policies::FIXED_PRIORITY))
-                && thread.policy == Policies::FIXED_PRIORITY
-            {
-                processor.first_quantum.store(true, Ordering::Relaxed);
+            match processor.set() {
+                // A fixed-priority thread uses all of a new quantum.
+                Some(set) if set.policies.contains(Policies::FIXED_PRIORITY) => {
+                    if thread.policy == Policies::FIXED_PRIORITY {
+                        processor.first_quantum.store(true, Ordering::Relaxed);
+                    }
+                }
+                Some(set)
+                    if !processor.first_quantum.load(Ordering::Relaxed) && set.queued() > 0 =>
+                {
+                    panic!("ast_check: the set's run queue, not yet")
+                }
+                _ => {}
             }
         }
     }

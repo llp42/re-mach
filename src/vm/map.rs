@@ -74,6 +74,11 @@ impl Map {
         }
     }
 
+    /// The physical map its mappings go into.
+    pub const fn pmap(&self) -> &'static Pmap {
+        self.pmap
+    }
+
     /// A new empty map of `bounds` over `pmap`, a user task's, with one
     /// reference, its size limited to the memory's.
     ///
