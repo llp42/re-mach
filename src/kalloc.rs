@@ -5,8 +5,8 @@
 
 use core::ptr::NonNull;
 
-use super::Error;
-use super::slab::{MIN_ALIGN, RawCache};
+use crate::error::Error;
+use crate::slab::{MIN_ALIGN, RawCache};
 
 /// The size of a kalloc cache's slabs, each aligned to it.
 pub const SLAB_SIZE: usize = 128 << 10;

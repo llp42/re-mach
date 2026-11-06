@@ -5,7 +5,7 @@
 use core::ptr::NonNull;
 
 use super::address::PhysAddr;
-use crate::kernel::Error;
+use crate::error::Error;
 use crate::vm;
 
 /// A device's 32-bit registers, mapped uncached.

@@ -6,10 +6,10 @@
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use super::host::HOST;
-use super::processor::{BOOT_PROCESSOR, DEFAULT_SET, Processor, ProcessorSet};
-use super::slab::CacheBox;
+use crate::host::HOST;
 use crate::ipc::port::{self, KernelObject, Port};
+use crate::processor::{BOOT_PROCESSOR, DEFAULT_SET, Processor, ProcessorSet};
+use crate::slab::CacheBox;
 
 /// Gives the host, the default set and the boot processor their ports, on
 /// the boot CPU.
@@ -36,7 +36,7 @@ pub fn init() {
 /// # Panics
 ///
 /// If a port can't be allocated.
-pub(super) fn init_processor(processor: &'static Processor) {
+pub fn init_processor(processor: &'static Processor) {
     store_port(&processor.port, Some(KernelObject::Processor(processor)));
     store_port(
         &processor.name_port,
@@ -50,7 +50,7 @@ pub(super) fn init_processor(processor: &'static Processor) {
 /// # Panics
 ///
 /// If a port can't be allocated.
-pub(super) fn init_set(set: &'static ProcessorSet) {
+pub fn init_set(set: &'static ProcessorSet) {
     let object = NonNull::from(set);
     store_port(
         &set.port,

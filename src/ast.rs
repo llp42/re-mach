@@ -6,10 +6,10 @@
 
 use core::sync::atomic::Ordering;
 
-use super::processor::State;
-use super::sched::Policies;
-use super::thread::{Thread, ThreadState};
+use crate::processor::State;
+use crate::sched::Policies;
 use crate::smp;
+use crate::thread::{Thread, ThreadState};
 
 bitflags::bitflags! {
     /// Why a CPU takes an AST, as Mach numbers them; only those used here.

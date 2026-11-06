@@ -8,11 +8,11 @@ use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, AtomicU64, AtomicUsize,
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
-use super::machine::{self, CpuState};
-use super::processor::State;
-use super::sched;
 use crate::arch::{Current, Machine as _, PAGE_SIZE};
 use crate::config::HZ;
+use crate::machine::{self, CpuState};
+use crate::processor::State;
+use crate::sched;
 use crate::sync::{CriticalSection, OnceLock, Spinlock};
 use crate::{smp, vm};
 
@@ -149,7 +149,7 @@ impl TimeValue {
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
 
 /// A time in two atomics, read and written apart.
-pub(super) struct AtomicTimeValue {
+pub struct AtomicTimeValue {
     seconds: AtomicI64,
     nanoseconds: AtomicI64,
 }

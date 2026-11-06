@@ -8,7 +8,7 @@ use core::ptr::NonNull;
 use super::port::Port;
 use super::space::Space;
 use super::{MessageType, right};
-use crate::kernel::Error;
+use crate::error::Error;
 
 /// Puts the right `message_type` names, for `port`, in `space` as `name`;
 /// the space takes the right and its reference.

@@ -10,12 +10,12 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering, compiler_fence};
 use intrusive_collections::LinkedList;
 
 use crate::arch;
-use crate::kernel::ast::Ast;
-use crate::kernel::clock::Wheel;
-use crate::kernel::processor::Processor;
-use crate::kernel::sched::{SLEEP_QUEUES, SleepQueue};
-use crate::kernel::thread::{RunQueueAdapter, SleepQueueAdapter, Thread};
+use crate::ast::Ast;
+use crate::clock::Wheel;
+use crate::processor::Processor;
+use crate::sched::{SLEEP_QUEUES, SleepQueue};
 use crate::sync::{CpuLock, CriticalSection, Spinlock};
+use crate::thread::{RunQueueAdapter, SleepQueueAdapter, Thread};
 
 /// One CPU's machine-independent data, held in the machine's part.
 pub struct PerCpu {

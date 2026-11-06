@@ -6,7 +6,7 @@
 use super::port::Port;
 use super::space::Space;
 use super::{MessageType, object};
-use crate::kernel::Error;
+use crate::error::Error;
 
 /// Inserts the right `message_type` names, for `port`, in `space` as
 /// `name`; the space takes the right and its reference.

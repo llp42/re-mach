@@ -4,9 +4,9 @@
 //! The pageout daemon.
 
 use super::page;
-use crate::kernel::sched::{self, Event};
-use crate::kernel::thread;
+use crate::sched::{self, Event};
 use crate::sync::Spinlock;
+use crate::thread;
 
 /// What the pageout daemon sleeps on until it is asked to run; it holds
 /// the lock from its check of the pools until it waits.

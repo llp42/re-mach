@@ -7,13 +7,13 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::space::{self, Space};
-use crate::kernel::Error;
-use crate::kernel::host::Host;
-use crate::kernel::processor::{Processor, ProcessorSet};
-use crate::kernel::slab::{Cache, CacheBox};
-use crate::kernel::task::Task;
-use crate::kernel::thread::Thread;
+use crate::error::Error;
+use crate::host::Host;
+use crate::processor::{Processor, ProcessorSet};
+use crate::slab::{Cache, CacheBox};
 use crate::sync::Spinlock;
+use crate::task::Task;
+use crate::thread::Thread;
 use crate::vm::object::Object;
 
 /// A port: its reference count, and its state under its lock.

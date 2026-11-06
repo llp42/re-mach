@@ -6,7 +6,7 @@
 use core::ptr::NonNull;
 
 use super::port::Port;
-use crate::kernel::slab::Cache;
+use crate::slab::Cache;
 
 /// An entry: a name, its rights, and the port they are for.
 pub struct Entry {

@@ -5,8 +5,8 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use super::processor;
 use crate::config::MAX_CPUS;
+use crate::processor;
 use crate::sync::OnceLock;
 use crate::vm;
 

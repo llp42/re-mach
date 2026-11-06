@@ -3,8 +3,8 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! A task's machine part: the I/O ports it may use.
 
-use crate::kernel::kalloc::SLAB_SIZE;
-use crate::kernel::slab::{MIN_ALIGN, RawCache};
+use crate::kalloc::SLAB_SIZE;
+use crate::slab::{MIN_ALIGN, RawCache};
 
 /// An I/O permission bitmap's size: a bit per port.
 const IO_BITMAP_SIZE: usize = 0x1_0000 / 8;

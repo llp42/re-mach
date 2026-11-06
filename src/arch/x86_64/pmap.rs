@@ -20,8 +20,8 @@ use super::cpuid;
 use super::memory_layout::{
     DIRECT_MAP_BASE, KERNEL_BASE, MIN_KERNEL_ADDRESS, PAGE_SIZE, PAGE_TABLE_BASE,
 };
-use crate::kernel::Error;
-use crate::kernel::slab::{Cache, CacheBox};
+use crate::error::Error;
+use crate::slab::{Cache, CacheBox};
 use crate::sync::OnceLock;
 use crate::vm::page;
 use crate::vm::pmap::MachinePmap;

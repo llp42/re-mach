@@ -41,7 +41,7 @@ pub fn bootstrap() {
     map::init();
     kernel::init();
     arch::Pmap::init();
-    crate::kernel::kalloc::init();
+    crate::kalloc::init();
     page::init();
 }
 

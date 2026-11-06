@@ -11,8 +11,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
 
-use super::Error;
 use crate::arch::{PAGE_SIZE, PhysAddr};
+use crate::error::Error;
 use crate::sync::{CpuLocal, Spinlock};
 use crate::vm;
 use crate::vm::page::{self, Page, PageQueueAdapter};

@@ -5,11 +5,12 @@
 
 use core::str;
 
-use super::thread::{self, Thread};
-use super::{bootstrap, clock, machine, processor, radix_tree, sched, task};
 use crate::arch::{self, Machine as _};
+use crate::collections::radix_tree;
 use crate::config::MAX_CPUS;
 use crate::sync::CriticalSection;
+use crate::thread::{self, Thread};
+use crate::{bootstrap, clock, machine, processor, sched, task};
 use crate::{device, ipc, smp, vm};
 
 /// The startup thread's work: starting the other kernel threads and the

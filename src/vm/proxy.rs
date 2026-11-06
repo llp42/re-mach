@@ -7,7 +7,7 @@
 use core::ops::Range;
 
 use super::Protection;
-use crate::kernel::slab::Cache;
+use crate::slab::Cache;
 
 /// A proxy memory object; so far only what it allows and the part it maps.
 #[expect(dead_code, reason = "memory_object_create_proxy and vm_map use them")]
