@@ -3,6 +3,7 @@
 //! Per-CPU data: the machine-independent part, and the trait through which
 //! it reaches the machine's part.
 
+use core::ops::DerefMut;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering, compiler_fence};
 
@@ -14,7 +15,7 @@ use crate::kernel::clock::Wheel;
 use crate::kernel::processor::Processor;
 use crate::kernel::sched::{SLEEP_QUEUES, SleepQueue};
 use crate::kernel::thread::{RunQueueAdapter, SleepQueueAdapter, Thread};
-use crate::sync::Spinlock;
+use crate::sync::{CpuLock, CriticalSection, Spinlock};
 
 /// One CPU's machine-independent data, held in the machine's part.
 pub struct PerCpu {
@@ -30,10 +31,8 @@ pub struct PerCpu {
     spinlocks: AtomicU32,
     /// How many tokens its thread holds.
     tokens: AtomicU32,
-    /// Its sleep queues, by event hash; only it touches them, inside a
-    /// critical section.
-    #[expect(dead_code, reason = "assert_wait and thread_wakeup use them")]
-    sleep_queues: [SleepQueue; SLEEP_QUEUES],
+    /// Its sleep queues, by event hash; only it locks them.
+    sleep_queues: CpuLock<[SleepQueue; SLEEP_QUEUES]>,
     /// Its processor.
     processor: Processor,
     /// The thread it runs; null before its first.
@@ -62,7 +61,10 @@ impl PerCpu {
             nesting: AtomicPtr::new(ptr::null_mut()),
             spinlocks: AtomicU32::new(0),
             tokens: AtomicU32::new(0),
-            sleep_queues: [const { SleepQueue::new(SleepQueueAdapter::NEW) }; SLEEP_QUEUES],
+            // SAFETY: only `sleep_queues` locks it, once it checked the CPU.
+            sleep_queues: unsafe {
+                CpuLock::new([const { SleepQueue::new(SleepQueueAdapter::NEW) }; SLEEP_QUEUES])
+            },
             processor: Processor::new(),
             active_thread: AtomicPtr::new(ptr::null_mut()),
             dead_threads: Spinlock::new(LinkedList::new(RunQueueAdapter::NEW)),
@@ -84,6 +86,22 @@ impl PerCpu {
     /// Its timeouts.
     pub const fn timeouts(&self) -> &Wheel {
         &self.timeouts
+    }
+
+    /// Its sleep queues, locked.
+    ///
+    /// # Panics
+    ///
+    /// If it is not the current CPU.
+    pub fn sleep_queues(&self) -> impl DerefMut<Target = [SleepQueue; SLEEP_QUEUES]> + '_ {
+        // The thread stays on the CPU checked until the lock enters its own
+        // section.
+        let _section = CriticalSection::enter();
+        assert!(
+            ptr::eq(self, current()),
+            "sleep queue: another CPU's, not yet"
+        );
+        self.sleep_queues.lock()
     }
 
     /// The thread it runs, once it runs one.

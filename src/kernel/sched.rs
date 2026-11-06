@@ -6,7 +6,7 @@
 use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use intrusive_collections::LinkedList;
+use intrusive_collections::{LinkedList, UnsafeRef};
 
 use super::ast::{self, Ast};
 use super::clock::{self, Timeout};
@@ -16,13 +16,32 @@ use super::thread::{RunQueueAdapter, SleepQueueAdapter, Thread, ThreadState};
 use crate::arch::{self, Machine as _};
 use crate::config::HZ;
 use crate::smp;
-use crate::sync::CriticalSection;
+use crate::sync::{CriticalSection, SpinlockGuard};
 
 /// The threads sleeping on the events that hash to one slot.
 pub type SleepQueue = LinkedList<SleepQueueAdapter>;
 
 /// How many sleep queues each CPU has.
 pub const SLEEP_QUEUES: usize = 1031;
+
+/// What a thread waits for: an address.
+#[derive(Clone, Copy)]
+pub struct Event(usize);
+
+impl Event {
+    /// The event of `object`'s address.
+    pub fn of<T>(object: &T) -> Self {
+        Self(ptr::from_ref(object).addr())
+    }
+
+    /// Its sleep queue: its address as a signed number, complemented if
+    /// negative, modulo the queues.
+    const fn hash(self) -> usize {
+        let address = self.0.cast_signed();
+        let positive = if address < 0 { !address } else { address };
+        positive.cast_unsigned() % SLEEP_QUEUES
+    }
+}
 
 /// The runnable threads of one priority.
 pub type RunQueue = LinkedList<RunQueueAdapter>;
@@ -175,6 +194,38 @@ pub fn set_run(thread: &'static Thread, preemption: Preemption) {
     }
 }
 
+/// Makes the current thread wait for `event`, uninterruptibly: it goes on
+/// its CPU's sleep queue for the event, and stops running once it blocks.
+///
+/// # Panics
+///
+/// If it waits for an event already.
+fn assert_wait(event: Event) {
+    let _section = CriticalSection::enter();
+    let cpu = smp::current();
+    let thread = cpu.active_thread().expect("assert_wait: no current thread");
+    let waited = thread.wait_event.load(Ordering::Relaxed);
+    assert!(
+        waited == 0,
+        "assert_wait: already asserted event {waited:#x}"
+    );
+    // SAFETY: a thread lives while it waits on a sleep queue.
+    cpu.sleep_queues()[event.hash()].push_back(unsafe { UnsafeRef::from_raw(thread) });
+    thread.wait_event.store(event.0, Ordering::Relaxed);
+    thread.state.fetch_or(
+        (ThreadState::WAIT | ThreadState::UNINTERRUPTIBLE).bits(),
+        Ordering::Relaxed,
+    );
+}
+
+/// Makes the current thread wait for `event`, releases `guard`'s lock and
+/// blocks; returns once the thread runs again.
+pub fn sleep<T>(event: Event, guard: SpinlockGuard<'_, T>) {
+    assert_wait(event);
+    drop(guard);
+    block();
+}
+
 /// Gives the current CPU up to the next thread to run, which may be the
 /// current one; returns once the current one runs again.
 ///
@@ -239,10 +290,12 @@ fn select(processor: &'static Processor, current: &'static Thread) -> &'static T
     thread
 }
 
-/// Switches the current CPU from `old`, the thread it runs, to `new`,
-/// inside a critical section; returns once `old` runs again, having
-/// dispatched the thread switched from then.
+/// Makes `new` interruptible, then switches the current CPU to it from
+/// `old`, the thread it runs, inside a critical section; returns once `old`
+/// runs again, having dispatched the thread switched from then.
 fn invoke(old: &'static Thread, new: &'static Thread) {
+    new.state
+        .fetch_and(!ThreadState::UNINTERRUPTIBLE.bits(), Ordering::Relaxed);
     if ptr::eq(old, new) {
         return;
     }
@@ -255,7 +308,8 @@ fn invoke(old: &'static Thread, new: &'static Thread) {
 }
 
 /// Puts `thread`, just switched from, where its state says: back on a run
-/// queue if it runs on, nowhere if an idle thread.
+/// queue if it runs on, nowhere if an idle thread; one that waits stops
+/// running, unless suspended in an interruptible wait.
 ///
 /// # Panics
 ///
@@ -263,6 +317,21 @@ fn invoke(old: &'static Thread, new: &'static Thread) {
 pub(super) fn dispatch(thread: &'static Thread) {
     match ThreadState::from_bits_retain(thread.state.load(Ordering::Relaxed)) {
         state if state == ThreadState::RUN => set_run(thread, Preemption::Forbidden),
+        state
+            if [
+                ThreadState::RUN
+                    | ThreadState::WAIT
+                    | ThreadState::SUSPENDED
+                    | ThreadState::UNINTERRUPTIBLE,
+                ThreadState::RUN | ThreadState::WAIT | ThreadState::UNINTERRUPTIBLE,
+                ThreadState::RUN | ThreadState::WAIT,
+            ]
+            .contains(&state) =>
+        {
+            thread
+                .state
+                .fetch_and(!ThreadState::RUN.bits(), Ordering::Relaxed);
+        }
         // Its processor chooses it when it has nothing else.
         state if state == ThreadState::RUN | ThreadState::IDLE => {}
         state => panic!(

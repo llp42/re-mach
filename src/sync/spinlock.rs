@@ -62,3 +62,6 @@ unsafe impl RawMutex for RawSpinlock {
 
 /// A lock that spins, held inside a critical section on its holder's CPU.
 pub type Spinlock<T> = lock_api::Mutex<RawSpinlock, T>;
+
+/// A held spinlock; dropping it releases the lock.
+pub type SpinlockGuard<'a, T> = lock_api::MutexGuard<'a, RawSpinlock, T>;

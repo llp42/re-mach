@@ -196,10 +196,8 @@ struct PageQueues {
     /// Free pages.
     free: [CachePadded<PageQueue>; COLORS],
     /// Pages in use, not referenced lately.
-    #[expect(dead_code, reason = "pageout moves pages through it")]
     inactive: [CachePadded<PageQueue>; COLORS],
     /// Pages in use, referenced lately.
-    #[expect(dead_code, reason = "pageout moves pages through it")]
     active: [CachePadded<PageQueue>; COLORS],
 }
 
@@ -379,6 +377,23 @@ pub fn print_pools() {
             pool.min, pool.low, pool.high
         );
     }
+}
+
+/// Whether every pool is usable for unprivileged allocations: it has no
+/// page in use to page out, or at least its high threshold of free pages.
+/// The DMA reserve's pages are never paged out.
+///
+/// # Panics
+///
+/// If the page array is not set up.
+pub(super) fn usable() -> bool {
+    let array = PAGES.get().expect("vm_page: not set up");
+    QUEUES
+        .active
+        .iter()
+        .chain(&QUEUES.inactive)
+        .all(|queue| queue.pages.load(Ordering::Relaxed) == 0)
+        || QUEUES.free_pages.load(Ordering::Relaxed) >= array.queues.high
 }
 
 /// The bytes the page array covers, holes included.

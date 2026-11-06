@@ -14,7 +14,7 @@ use crate::{ipc, smp, vm};
 
 /// The startup thread's work: starting the other kernel threads and the
 /// bootstrap tasks; so far only an idle thread for each processor, then it
-/// stops its CPU.
+/// becomes the pageout daemon.
 fn start_kernel_threads() -> ! {
     let kernel_task = task::KERNEL_TASK
         .get()
@@ -45,7 +45,11 @@ fn start_kernel_threads() -> ! {
             .resume()
             .unwrap_or_else(|error| panic!("start_kernel_threads: thread_resume: {error:?}"));
     }
-    arch::Current::halt()
+    smp::current()
+        .active_thread()
+        .expect("start_kernel_threads: no current thread")
+        .set_name("pageout");
+    vm::pageout::run()
 }
 
 /// Starts the machine-independent kernel, on the boot CPU, once the

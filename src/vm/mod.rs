@@ -7,6 +7,7 @@ pub mod kernel;
 pub mod map;
 pub mod object;
 pub mod page;
+pub mod pageout;
 pub mod pmap;
 pub mod proxy;
 

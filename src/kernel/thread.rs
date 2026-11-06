@@ -7,7 +7,7 @@ use core::iter;
 use core::mem;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{
-    AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering,
+    AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
 };
 
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
@@ -29,10 +29,14 @@ bitflags::bitflags! {
     /// here.
     #[derive(PartialEq, Eq)]
     pub struct ThreadState: u32 {
+        /// Waiting for an event.
+        const WAIT = 0x01;
         /// Asked to stop.
         const SUSPENDED = 0x02;
         /// Running, or waiting to run.
         const RUN = 0x04;
+        /// Its wait may not be interrupted.
+        const UNINTERRUPTIBLE = 0x08;
         /// A processor's idle thread.
         const IDLE = 0x80;
     }
@@ -58,6 +62,8 @@ pub struct Thread {
     task: UnsafeRef<Task>,
     /// What it is doing, as `ThreadState` bits.
     pub(super) state: AtomicU32,
+    /// The address of the event it waits for; 0 for none.
+    pub(super) wait_event: AtomicUsize,
     /// How many times it is suspended.
     pub(super) suspend_count: AtomicU32,
     /// How many of those suspensions user tasks asked for.
@@ -65,7 +71,7 @@ pub struct Thread {
     /// Its base priority.
     pub(super) priority: AtomicU32,
     /// The highest priority it may take.
-    max_priority: u32,
+    max_priority: AtomicU32,
     /// The priority it is scheduled at, its base aged by its use.
     pub(super) sched_pri: AtomicU32,
     /// Its scheduling policy.
@@ -494,7 +500,7 @@ impl Thread {
     }
 
     /// Lifts one stop users asked for, and the suspension it holds; a thread
-    /// no longer suspended at all runs.
+    /// no longer suspended at all runs, unless it waits.
     ///
     /// # Errors
     ///
@@ -509,7 +515,7 @@ impl Thread {
             let state = self
                 .state
                 .fetch_and(!ThreadState::SUSPENDED.bits(), Ordering::Relaxed);
-            if state & ThreadState::RUN.bits() == 0 {
+            if state & (ThreadState::WAIT | ThreadState::RUN).bits() == 0 {
                 self.state
                     .fetch_or(ThreadState::RUN.bits(), Ordering::Relaxed);
                 sched::set_run(self, Preemption::Allowed);
@@ -552,11 +558,12 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         // SAFETY: a task lives while it has threads.
         task: unsafe { UnsafeRef::from_raw(task) },
         state: AtomicU32::new(ThreadState::SUSPENDED.bits()),
+        wait_event: AtomicUsize::new(0),
         // Set below with the priorities, under the set's and task's tokens.
         suspend_count: AtomicU32::new(0),
         user_stop_count: AtomicU32::new(1),
         priority: AtomicU32::new(0),
-        max_priority: 0,
+        max_priority: AtomicU32::new(0),
         sched_pri: AtomicU32::new(0),
         policy: Policies::TIMESHARE,
         cpu_usage: AtomicU32::new(TIMER_RATE),
@@ -615,8 +622,9 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         set.references.fetch_sub(1, Ordering::Relaxed);
         set = current;
     };
-    thread.max_priority = members.max_priority.max(set.max_priority);
-    let priority = members.priority.max(thread.max_priority);
+    let max_priority = members.max_priority.max(set.max_priority);
+    *thread.max_priority.get_mut() = max_priority;
+    let priority = members.priority.max(max_priority);
     *thread.priority.get_mut() = priority;
     *thread.sched_pri.get_mut() = computed_priority(priority, sched_usage);
     *thread.suspend_count.get_mut() =
@@ -641,4 +649,27 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
     drop(members);
     drop(set_members);
     Ok(thread)
+}
+
+/// Sets the current thread's base priority to `priority`, its highest
+/// raised to it if need be, and its scheduled priority from its use.
+///
+/// # Panics
+///
+/// If the thread is not timeshared, or is depressed: those come later.
+pub fn set_own_priority(priority: u32) {
+    let _section = CriticalSection::enter();
+    let thread = smp::current()
+        .active_thread()
+        .expect("thread_set_own_priority: no current thread");
+    if priority < thread.max_priority.load(Ordering::Relaxed) {
+        thread.max_priority.store(priority, Ordering::Relaxed);
+    }
+    thread.priority.store(priority, Ordering::Relaxed);
+    assert!(
+        thread.usage_sets_priority(),
+        "compute_priority: fixed priority or depressed, not yet"
+    );
+    // It runs, so it waits on no run queue.
+    thread.compute_my_priority();
 }
