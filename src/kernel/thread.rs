@@ -573,7 +573,10 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         set: AtomicPtr::new(ptr::null_mut()),
         may_assign: true,
         creation_time: clock::stamp(),
-        name: task.name.map(AtomicU8::new),
+        name: task
+            .name
+            .each_ref()
+            .map(|byte| AtomicU8::new(byte.load(Ordering::Relaxed))),
         // SAFETY: its box, unused until given up below, outlives the thread.
         pcb: unsafe { UnsafeRef::from_raw(ptr::from_mut(&mut *pcb)) },
         self_port: AtomicPtr::new(ptr::null_mut()),
