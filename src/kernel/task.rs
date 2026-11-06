@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use super::Error;
-use super::clock::{self, TimeValue};
+use super::clock::{self, AtomicTimeValue};
 use super::processor::{DEFAULT_SET, ProcessorSet};
 use super::sched::USER_PRIORITY;
 use super::slab::{Cache, CacheBox};
@@ -41,7 +41,7 @@ pub struct Task {
     /// Whether it may be moved to another processor set.
     may_assign: bool,
     /// When it was created.
-    creation_time: TimeValue,
+    pub(super) creation_time: AtomicTimeValue,
     /// Its name, ending with a NUL.
     pub(super) name: [u8; NAME_SIZE],
     /// Whether it is alive, its priorities and suspensions, and its threads.
@@ -124,7 +124,7 @@ fn create_kernel() -> Result<&'static Task, Error> {
         self_port: AtomicPtr::new(ptr::null_mut()),
         self_send: AtomicPtr::new(ptr::null_mut()),
         may_assign: true,
-        creation_time: clock::stamp(),
+        creation_time: clock::stamp().into(),
         name,
         members: Token::new(TaskMembers {
             active: true,
