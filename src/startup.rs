@@ -41,9 +41,6 @@ fn start_kernel_threads() -> ! {
         thread.bind(smp::of(cpu).processor());
         thread.start(sched::idle_thread);
         thread
-            .allocate_stack()
-            .unwrap_or_else(|error| panic!("start_kernel_threads: thread_doswapin: {error:?}"));
-        thread
             .resume()
             .unwrap_or_else(|error| panic!("start_kernel_threads: thread_resume: {error:?}"));
     }
@@ -78,9 +75,6 @@ pub fn start() -> ! {
         .unwrap_or_else(|error| panic!("startup: thread_create: {error:?}"));
     startup.set_name("startup");
     startup.start(start_kernel_threads);
-    startup
-        .allocate_stack()
-        .unwrap_or_else(|error| panic!("startup: thread_doswapin: {error:?}"));
     // It looks as if it runs already, so resuming it puts it on no run
     // queue.
     startup.mark_running();

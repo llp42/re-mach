@@ -22,6 +22,7 @@ use super::memory_layout::{
 };
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
+use crate::smp;
 use crate::sync::OnceLock;
 use crate::vm::page;
 use crate::vm::pmap::MachinePmap;
@@ -86,7 +87,6 @@ const PAGE_ATTRIBUTES: [PatMemoryType; 8] = [
 ];
 
 /// One address space's page tables.
-#[expect(dead_code, reason = "the VM reads it")]
 pub struct Pmap {
     /// Its PML4 table.
     pml4: PhysAddr,
@@ -137,6 +137,31 @@ impl MachinePmap for Pmap {
 
     fn reference(&self) {
         self.references.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn activate(&self) {
+        assert!(
+            !ptr::eq(self, Self::kernel()),
+            "PMAP_ACTIVATE_USER: the kernel pmap, not yet"
+        );
+        // Before CR3, so a TLB shootdown finds this CPU.
+        self.active_cpus
+            .fetch_or(1 << smp::current().id(), Ordering::SeqCst);
+        // SAFETY: a user PML4 maps kernel space as the kernel's does.
+        unsafe {
+            Cr3::write(
+                PhysFrame::containing_address(frame(self.pml4)),
+                Cr3Flags::empty(),
+            );
+        }
+    }
+
+    fn deactivate(&self) {
+        // The kernel pmap stays active on every CPU.
+        assert!(
+            ptr::eq(self, Self::kernel()),
+            "PMAP_DEACTIVATE_USER: a user pmap, not yet"
+        );
     }
 
     fn enter_kernel(address: usize, physical: PhysAddr) {

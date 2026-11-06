@@ -5,22 +5,24 @@
 
 mod script;
 
-use core::ptr::NonNull;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::arch::{self, Machine as _};
+use crate::boot::BootModule;
 use crate::error::Error;
 use crate::host::HOST;
 use crate::ipc::port::Port;
 use crate::ipc::{MessageType, mach_port};
-use crate::sched::USER_PRIORITY;
+use crate::sched::{self, Event, USER_PRIORITY};
+use crate::sync::Spinlock;
 use crate::task::{self, Task};
-use crate::{device, print, println};
+use crate::{device, print, println, smp, thread};
 use script::{Script, Value};
 
 /// Starts the boot modules' tasks; so far it finds the modules, sets the
 /// boot script's variables, parses the modules' command lines and runs the
-/// script up to each command's arguments.
+/// script up to the first command's thread, which stops its CPU.
 ///
 /// # Panics
 ///
@@ -120,6 +122,82 @@ fn create_task(path: &str) -> &'static Task {
         .expect("boot_script_task_create: no host port");
     task.set_max_priority(host, USER_PRIORITY);
     task
+}
+
+/// What `run_command` lends the thread it makes, on its own stack: the
+/// module, the command line and its arguments, and whether the thread is
+/// done with them.
+struct LoaderInfo<'a> {
+    /// The module whose program the thread loads.
+    #[expect(dead_code, reason = "exec_load reads it")]
+    module: &'static BootModule,
+    /// The command line: the path, then each argument, each ending with a
+    /// NUL.
+    #[expect(dead_code, reason = "build_args_and_stack reads it")]
+    line: &'a [u8],
+    /// Where each argument starts in `line`, the path first.
+    #[expect(dead_code, reason = "build_args_and_stack reads it")]
+    arguments: &'a [usize],
+    /// Whether the thread is done with them, behind the lock `run_command`
+    /// sleeps with.
+    done: Spinlock<bool>,
+}
+
+/// The boot script's run of a command: a new thread in `task`, which loads
+/// the program in `module` and starts it with `arguments`, their offsets in
+/// `line`; it waits until the thread is done with them. So far that thread
+/// stops its CPU, so it waits for good.
+///
+/// # Panics
+///
+/// If the thread can't be created or resumed.
+fn run_command(module: &'static BootModule, task: &'static Task, line: &[u8], arguments: &[usize]) {
+    let thread = thread::create(task)
+        .unwrap_or_else(|error| panic!("boot_script_exec_cmd: thread_create: {error:?}"));
+    let info = LoaderInfo {
+        module,
+        line,
+        arguments,
+        done: Spinlock::new(false),
+    };
+    let mut done = info.done.lock();
+    thread
+        .argument
+        .store(ptr::from_ref(&info).cast_mut().cast(), Ordering::Release);
+    thread.start(load_program);
+    thread
+        .resume()
+        .unwrap_or_else(|error| panic!("boot_script_exec_cmd: thread_resume: {error:?}"));
+    // The thread refers to the info until done.
+    while !*done {
+        sched::sleep(Event::of(&info), done);
+        done = info.done.lock();
+    }
+    drop(done);
+}
+
+/// The work of a thread `run_command` makes, in its boot task: loads the
+/// module's program into the task and starts it; so far it takes the info
+/// it was given, then stops its CPU.
+///
+/// # Panics
+///
+/// If it was given no info.
+fn load_program() -> ! {
+    let thread = smp::current()
+        .active_thread()
+        .expect("user_bootstrap: no current thread");
+    // SAFETY: `run_command` gave it a `LoaderInfo`, which it keeps until the
+    // thread is done with it.
+    let _info = unsafe {
+        thread
+            .argument
+            .load(Ordering::Acquire)
+            .cast::<LoaderInfo<'_>>()
+            .as_ref()
+    }
+    .expect("user_bootstrap: no info");
+    arch::Current::halt()
 }
 
 /// The boot script's insert of a port argument: a send right made for
