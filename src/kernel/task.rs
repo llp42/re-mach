@@ -4,7 +4,8 @@
 //! Tasks: an address space, a name space for ports, and threads.
 
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, Ordering};
+use core::{iter, str};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
@@ -43,7 +44,7 @@ pub struct Task {
     /// When it was created.
     pub(super) creation_time: AtomicTimeValue,
     /// Its name, ending with a NUL.
-    pub(super) name: [u8; NAME_SIZE],
+    pub(super) name: [AtomicU8; NAME_SIZE],
     /// Whether it is alive, its priorities and suspensions, and its threads.
     pub(super) members: Token<TaskMembers>,
     /// The processor set its threads run on; set as the set takes it.
@@ -86,6 +87,15 @@ impl Task {
             .threads
             .push_back(unsafe { UnsafeRef::from_raw(thread) });
     }
+
+    /// Names it `name`, cut to fit with its final NUL.
+    fn set_name(&self, name: &str) {
+        // Unlocked, as in GNU Mach: racing calls may mix two names.
+        let bytes = name.bytes().chain(iter::repeat(0));
+        for (stored, byte) in self.name[..NAME_SIZE - 1].iter().zip(bytes) {
+            stored.store(byte, Ordering::Relaxed);
+        }
+    }
 }
 
 /// The kernel's task, once `init` creates it.
@@ -103,18 +113,17 @@ pub fn init() {
     CACHE.register();
     arch::Current::task_module_init();
     let task = create_kernel().unwrap_or_else(|error| panic!("task_init: {error:?}"));
+    task.set_name("gnumach");
     assert!(KERNEL_TASK.set(task).is_ok(), "task_init: twice");
 }
 
-/// The kernel's task, named "gnumach": the kernel map, a new space, and a
-/// port with a send right, at the default set's priorities.
+/// The kernel's task, named by its address: the kernel map, a new space,
+/// and a port with a send right, at the default set's priorities.
 fn create_kernel() -> Result<&'static Task, Error> {
     let map = KERNEL_MAP.get().expect("task_init: no kernel map");
     let mut space = Space::create()?;
     let port = port::allocate_kernel()?;
     port.make_send();
-    let mut name = [0; NAME_SIZE];
-    name[..7].copy_from_slice(b"gnumach");
     let task = CACHE.allocate(Task {
         references: AtomicU32::new(2),
         // SAFETY: the kernel map is static.
@@ -125,7 +134,7 @@ fn create_kernel() -> Result<&'static Task, Error> {
         self_send: AtomicPtr::new(ptr::null_mut()),
         may_assign: true,
         creation_time: clock::stamp().into(),
-        name,
+        name: [const { AtomicU8::new(0) }; NAME_SIZE],
         members: Token::new(TaskMembers {
             active: true,
             // No higher than the set allows; a larger number is lower.
@@ -143,6 +152,18 @@ fn create_kernel() -> Result<&'static Task, Error> {
     let task = CacheBox::into_raw(task);
     // SAFETY: the task is the kernel's for good.
     let task = unsafe { task.as_ref() };
+    // "%p": its address in hex, with no prefix, written from the end.
+    let mut name = [0; 2 * size_of::<usize>()];
+    let (mut start, mut address) = (name.len(), ptr::from_ref(task).addr());
+    loop {
+        start -= 1;
+        name[start] = b"0123456789abcdef"[address % 16];
+        address /= 16;
+        if address == 0 {
+            break;
+        }
+    }
+    task.set_name(str::from_utf8(&name[start..]).unwrap());
     port.set_kernel_object(KernelObject::Task(NonNull::from(task)));
     let port = CacheBox::into_raw(port).as_ptr();
     task.self_port.store(port, Ordering::Release);
