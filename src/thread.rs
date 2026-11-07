@@ -5,6 +5,7 @@
 
 use core::iter;
 use core::mem;
+use core::ops::Range;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
@@ -250,6 +251,17 @@ pub trait MachineThread: Sized {
     /// `next`'s stack is set up, and the CPU is inside a critical section
     /// both threads' counts hold.
     unsafe fn switch(&self, next: &Self, current: &'static Thread) -> &'static Thread;
+    /// Where a user stack of `size` bytes starts.
+    fn user_stack_low(size: usize) -> usize;
+    /// Sets the current thread's first user registers: its stack pointer to
+    /// room for `argument_size` bytes, rounded up to the stack's alignment,
+    /// at the top of `stack`, and its instruction pointer to `entry`; returns
+    /// where that room starts.
+    ///
+    /// # Panics
+    ///
+    /// If `stack` is not aligned, or no thread runs on the CPU.
+    fn set_user_registers(stack: Range<usize>, entry: usize, argument_size: usize) -> usize;
 }
 
 /// Where a new thread begins, before its function: it dispatches `old`, the

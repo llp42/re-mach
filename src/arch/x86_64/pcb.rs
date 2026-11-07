@@ -4,17 +4,20 @@
 //! Threads' machine state: their process control blocks.
 
 use core::arch::{asm, global_asm, naked_asm};
+use core::cell::UnsafeCell;
+use core::ops::Range;
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use x86_64::VirtAddr;
 
 use super::fpu;
+use super::memory_layout::MAX_USER_ADDRESS;
 use super::per_cpu::PerCpu;
 use super::trap::TrapFrame;
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
-use crate::smp::MachinePerCpu as _;
+use crate::smp::{self, MachinePerCpu as _};
 use crate::thread::{self, MachineThread, Thread};
 use crate::vm::kernel::KernelStack;
 
@@ -23,7 +26,7 @@ use crate::vm::kernel::KernelStack;
 #[repr(C, align(16))]
 pub struct Pcb {
     /// Its user registers, laid out as a trap from user mode saves them.
-    user: TrapFrame,
+    user: UnsafeCell<TrapFrame>,
     /// Its kernel stack pointer while it does not run: the callee-saved
     /// registers a switch pushed, then where it returns.
     stack_pointer: AtomicUsize,
@@ -33,6 +36,13 @@ pub struct Pcb {
     /// The stack pointer of the copy `onfault` serves.
     pub(super) onfault_stack: AtomicUsize,
 }
+
+// SAFETY: only its thread, or the CPU as that thread traps, writes its user
+// registers.
+unsafe impl Sync for Pcb {}
+
+/// What a user stack pointer is aligned to, as the System V ABI asks.
+const USER_STACK_ALIGNMENT: usize = 16;
 
 // A new thread's first return: interrupts on, then `begin` with the thread
 // switched from, in rax, then its function, which is in rbx and never
@@ -110,7 +120,7 @@ impl MachineThread for Pcb {
 
     fn new() -> Result<CacheBox<Self>, Error> {
         CACHE.allocate(Self {
-            user: TrapFrame::user(),
+            user: UnsafeCell::new(TrapFrame::user()),
             stack_pointer: AtomicUsize::new(0),
             onfault: AtomicUsize::new(0),
             onfault_stack: AtomicUsize::new(0),
@@ -137,7 +147,7 @@ impl MachineThread for Pcb {
 
     unsafe fn load(&self) -> ! {
         // A trap from user mode saves the thread's registers in its PCB.
-        let user_end = ptr::from_ref(&self.user).addr() + size_of::<TrapFrame>();
+        let user_end = self.user.get().addr() + size_of::<TrapFrame>();
         let tss = PerCpu::current().tss();
         let mut updated = tss.get();
         updated.privilege_stack_table[0] = VirtAddr::new(u64::try_from(user_end).unwrap());
@@ -164,7 +174,7 @@ impl MachineThread for Pcb {
 
     unsafe fn switch(&self, next: &Self, current: &'static Thread) -> &'static Thread {
         // A trap from user mode saves the thread's registers in its PCB.
-        let user_end = ptr::from_ref(&next.user).addr() + size_of::<TrapFrame>();
+        let user_end = next.user.get().addr() + size_of::<TrapFrame>();
         let tss = PerCpu::current().tss();
         let mut updated = tss.get();
         updated.privilege_stack_table[0] = VirtAddr::new(u64::try_from(user_end).unwrap());
@@ -178,5 +188,26 @@ impl MachineThread for Pcb {
                 current,
             )
         }
+    }
+
+    fn user_stack_low(size: usize) -> usize {
+        MAX_USER_ADDRESS - size
+    }
+
+    fn set_user_registers(stack: Range<usize>, entry: usize, argument_size: usize) -> usize {
+        assert!(
+            stack.start.is_multiple_of(USER_STACK_ALIGNMENT)
+                && stack.end.is_multiple_of(USER_STACK_ALIGNMENT)
+        );
+        let arguments = stack.end - argument_size.next_multiple_of(USER_STACK_ALIGNMENT);
+        let thread = smp::current()
+            .active_thread()
+            .expect("set_user_regs: no current thread");
+        // SAFETY: the current thread's own registers, written by nothing else
+        // while it runs in the kernel.
+        let user = unsafe { &mut *thread.pcb.user.get() };
+        user.interrupted.stack_pointer = VirtAddr::new(u64::try_from(arguments).unwrap());
+        user.interrupted.instruction_pointer = VirtAddr::new(u64::try_from(entry).unwrap());
+        arguments
     }
 }

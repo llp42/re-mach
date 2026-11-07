@@ -20,11 +20,12 @@ use crate::ipc::{MessageType, mach_port};
 use crate::sched::{self, Event, USER_PRIORITY};
 use crate::sync::Spinlock;
 use crate::task::{self, Task};
-use crate::vm::Protection;
+use crate::thread::MachineThread as _;
 use crate::vm::map::{Change, Map};
 use crate::vm::user::Placement;
+use crate::vm::{Inheritance, Protection};
 use crate::{device, print, println, smp, thread, vm};
-use elf_load::{SectionType, Segment};
+use elf_load::{Image, SectionType, Segment};
 use script::{Script, Value};
 
 /// Starts the boot modules' tasks; so far it finds the modules, sets the
@@ -182,7 +183,7 @@ fn run_command(module: &'static BootModule, task: &'static Task, line: &[u8], ar
 
 /// The work of a thread `run_command` makes, in its boot task: loads the
 /// module's program into the task and starts it; so far it loads the
-/// program, prints so and stops its CPU.
+/// program, builds its stack and arguments, prints so and stops its CPU.
 ///
 /// # Panics
 ///
@@ -202,11 +203,10 @@ fn load_program() -> ! {
     }
     .expect("user_bootstrap: no info");
     let fail = |error: elf_load::Error| -> ! {
-        // The path came from a `&str`, ended by a NUL, so it always converts.
         let path = CStr::from_bytes_until_nul(&info.line[info.arguments[0]..])
-            .ok()
-            .and_then(|path| path.to_str().ok())
-            .unwrap_or_default();
+            .expect("user_bootstrap: a path with no NUL")
+            .to_str()
+            .expect("user_bootstrap: a path not UTF-8");
         panic!(
             "Cannot load user executable module (error code {}): {}",
             i32::from(error),
@@ -223,7 +223,71 @@ fn load_program() -> ! {
         load_segment(&thread.task.map, bytes, &segment).unwrap_or_else(|error| fail(error));
     }
     print!("task loaded:");
+    // GNU Mach's argv.
+    let argv = info.arguments.iter().map(|&offset| {
+        CStr::from_bytes_until_nul(&info.line[offset..])
+            .expect("user_bootstrap: an argument with no NUL")
+    });
+    build_arguments_and_stack(&thread.task.map, &image, argv.clone());
+    for argument in argv {
+        let argument = argument
+            .to_str()
+            .expect("user_bootstrap: an argument not UTF-8");
+        print!(" {argument}");
+    }
     arch::Current::halt()
+}
+
+/// Maps the current task's stack into `map`, as `image` asks, and copies
+/// `argv` to its top: the argument count, a pointer to each argument, a
+/// null end, an empty environment's null end, then the strings; the
+/// current thread's first user registers start the program there.
+fn build_arguments_and_stack<'a>(
+    map: &Map,
+    image: &Image<'_>,
+    argv: impl Iterator<Item = &'a CStr> + Clone,
+) {
+    /// The stack's bytes.
+    const STACK_SIZE: usize = 2 * 64 * 1024;
+    /// A slot's bytes: GNU Mach's `rpc_vm_offset_t`.
+    const SLOT_SIZE: usize = size_of::<usize>();
+    let (count, strings) = argv.clone().fold((0_usize, 0), |(count, bytes), argument| {
+        (count + 1, bytes + argument.count_bytes() + 1)
+    });
+    // The count, the pointers and their end, then the environment's end.
+    let slots = SLOT_SIZE + (count + 1 + 1) * SLOT_SIZE;
+    let stack_size = STACK_SIZE.next_multiple_of(PAGE_SIZE);
+    let stack_base = arch::Pcb::user_stack_low(stack_size);
+    // Here and below, results go unchecked, as GNU Mach's do.
+    let _ = vm::user::map(
+        map,
+        stack_base,
+        stack_size,
+        0,
+        Placement::Fixed,
+        None,
+        image.stack_protection,
+        Protection::all(),
+        Inheritance::Copy,
+    );
+    let mut slot = arch::Pcb::set_user_registers(
+        stack_base..stack_base + stack_size,
+        image.entry,
+        strings + slots,
+    );
+    let mut string = slot + slots;
+    let _ = arch::Current::copy_out(&count.to_ne_bytes(), slot);
+    slot += SLOT_SIZE;
+    for argument in argv {
+        let _ = arch::Current::copy_out(&string.to_ne_bytes(), slot);
+        slot += SLOT_SIZE;
+        let bytes = argument.to_bytes_with_nul();
+        let _ = arch::Current::copy_out(bytes, string);
+        string += bytes.len();
+    }
+    let _ = arch::Current::copy_out(&0_usize.to_ne_bytes(), slot);
+    slot += SLOT_SIZE;
+    let _ = arch::Current::copy_out(&0_usize.to_ne_bytes(), slot);
 }
 
 /// Loads `segment` of the image in `bytes` into `map`, the current task's:

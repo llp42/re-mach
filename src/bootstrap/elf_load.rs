@@ -108,11 +108,9 @@ impl ProgramHeaders<'_> {
 /// An image `parse` recognized.
 pub struct Image<'a> {
     /// Its entry point, rebased.
-    #[expect(dead_code, reason = "build_args_and_stack reads it")]
     pub entry: usize,
     /// The protection it asks for its stack: the last `PT_GNU_STACK`'s, else
     /// all.
-    #[expect(dead_code, reason = "build_args_and_stack reads it")]
     pub stack_protection: Protection,
     /// Its program headers.
     program_headers: ProgramHeaders<'a>,
