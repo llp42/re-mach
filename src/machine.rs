@@ -57,11 +57,11 @@ pub enum Mode {
 #[derive(Clone, Copy)]
 pub enum CpuState {
     /// User code.
-    User = 0,
+    User,
     /// The kernel.
-    System = 1,
+    System,
     /// Nothing: the CPU idles.
-    Idle = 2,
+    Idle,
 }
 
 impl CpuState {

@@ -59,11 +59,11 @@ intrusive_adapter!(
 /// here.
 pub enum State {
     /// Not in the system.
-    Offline = 0,
+    Offline,
     /// Running a thread.
-    Running = 1,
+    Running,
     /// Running its idle thread.
-    Idle = 2,
+    Idle,
 }
 
 impl State {
