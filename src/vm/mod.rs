@@ -3,6 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Virtual memory.
 
+pub mod fault;
 pub mod kernel;
 pub mod map;
 pub mod object;

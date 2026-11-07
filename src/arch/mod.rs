@@ -5,6 +5,7 @@
 use core::ffi::CStr;
 
 use crate::boot::BootModule;
+use crate::error::Error;
 
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
@@ -43,6 +44,18 @@ pub trait Machine {
 
     /// The boot modules, in the loader's order.
     fn boot_modules() -> &'static [BootModule];
+
+    /// Copies `source` to `destination` in the current task's space.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidAddress` if `destination` is not below `MAX_USER_ADDRESS` or
+    /// the bytes would end past it, or if a page of them can't be faulted in.
+    ///
+    /// # Panics
+    ///
+    /// If no thread runs on the CPU.
+    fn copy_out(source: &[u8], destination: usize) -> Result<(), Error>;
 
     /// The EFI system table's physical address, when booted through UEFI.
     #[expect(dead_code, reason = "host_info reports it")]

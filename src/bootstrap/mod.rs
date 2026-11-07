@@ -226,8 +226,8 @@ fn load_program() -> ! {
 }
 
 /// Loads `segment` of the image in `bytes` into `map`, the current task's;
-/// so far it checks the segment and allocates its pages, then stops its
-/// CPU.
+/// so far it checks the segment, allocates its pages and copies its file
+/// bytes in, then stops its CPU.
 ///
 /// # Errors
 ///
@@ -236,8 +236,8 @@ fn load_program() -> ! {
 /// # Panics
 ///
 /// If the segment takes no memory, less than its file bytes, or pages past
-/// the address space's end, or if its pages can't be allocated where it
-/// asks.
+/// the address space's end, if its pages can't be allocated where it asks,
+/// or if its file bytes can't be copied in.
 fn load_segment(map: &Map, bytes: &[u8], segment: &Segment) -> Result<(), elf_load::Error> {
     if segment
         .offset
@@ -260,6 +260,11 @@ fn load_segment(map: &Map, bytes: &[u8], segment: &Segment) -> Result<(), elf_lo
     let start = vm::user::allocate(map, pages.start, pages.end - pages.start, Placement::Fixed)
         .unwrap_or_else(|error| panic!("read_exec: vm_allocate: {error:?}"));
     assert_eq!(start, pages.start);
+    if segment.file_size > 0 {
+        let file = &bytes[segment.offset..segment.offset + segment.file_size];
+        arch::Current::copy_out(file, segment.address)
+            .unwrap_or_else(|error| panic!("read_exec: copyout: {error:?}"));
+    }
     arch::Current::halt()
 }
 

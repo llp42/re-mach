@@ -5,18 +5,25 @@
 
 use core::arch::global_asm;
 use core::fmt::{self, Write};
+use core::ptr;
+use core::sync::atomic::Ordering;
 
 use x86_64::VirtAddr;
+use x86_64::instructions::interrupts;
 use x86_64::registers::control::Cr2;
 use x86_64::registers::rflags::RFlags;
-use x86_64::structures::idt::InterruptStackFrameValue;
+use x86_64::structures::idt::{ExceptionVector, InterruptStackFrameValue, PageFaultErrorCode};
 
 use super::gdt;
+use super::memory_layout::{MAX_USER_ADDRESS, PAGE_SIZE};
 use super::serial::Serial;
+use crate::smp;
+use crate::vm::kernel::KERNEL_MAP;
+use crate::vm::{self, Protection};
 
 // Each entry pushes a zero error code, unless the CPU pushed one, and its
-// vector; the common path saves the registers as a `TrapFrame` and calls
-// `kernel_trap`.
+// vector; the common path saves the registers as a `TrapFrame`, calls
+// `kernel_trap` and returns.
 global_asm!(
     ".pushsection .text, \"ax\"",
     ".macro entry name, vector",
@@ -73,7 +80,23 @@ global_asm!(
     "cld",
     "movq %rsp, %rdi",
     "call {kernel_trap}",
-    "ud2",
+    "popq %r15",
+    "popq %r14",
+    "popq %r13",
+    "popq %r12",
+    "popq %r11",
+    "popq %r10",
+    "popq %r9",
+    "popq %r8",
+    "popq %rbp",
+    "popq %rdi",
+    "popq %rsi",
+    "popq %rdx",
+    "popq %rcx",
+    "popq %rbx",
+    "popq %rax",
+    "addq $16, %rsp",
+    "iretq",
     ".popsection",
     kernel_trap = sym kernel_trap,
     options(att_syntax),
@@ -194,15 +217,69 @@ impl fmt::Display for TrapFrame {
     }
 }
 
-/// Reports a kernel trap and panics; none is recoverable yet.
-extern "sysv64" fn kernel_trap(frame: &TrapFrame) -> ! {
+/// Takes a trap from kernel mode: a page fault on a user address is
+/// resolved in the current task's map, or resumes the copy that took it at
+/// its recovery point; any other trap is reported and panics.
+///
+/// # Panics
+///
+/// On any other trap; on a page fault in kernel space or at address 0, not
+/// yet; on one on a user address in a kernel thread, or that neither
+/// resolves nor recovers.
+extern "sysv64" fn kernel_trap(frame: &mut TrapFrame) {
     let cr2 = Cr2::read_raw();
+    let address = usize::try_from(cr2).unwrap();
+    let page_fault = u8::try_from(frame.vector)
+        .ok()
+        .and_then(|vector| ExceptionVector::try_from(vector).ok())
+        == Some(ExceptionVector::Page);
+    // GNU Mach takes address 0 in the kernel map.
+    let user = address != 0 && address < MAX_USER_ADDRESS;
+    if page_fault && user {
+        // The interrupt gate turned interrupts off; the fault had them as
+        // its frame says.
+        if frame.interrupted.cpu_flags.contains(RFlags::INTERRUPT_FLAG) {
+            interrupts::enable();
+        }
+        let thread = smp::current().active_thread().filter(|thread| {
+            !KERNEL_MAP
+                .get()
+                .is_some_and(|kernel| ptr::eq(kernel, &raw const *thread.task.map))
+        });
+        let Some(thread) = thread else {
+            let _ = write!(Serial, "kernel page fault at {address:#x}:\r\n{frame}");
+            panic!("kernel thread accessed user space!");
+        };
+        let access = if PageFaultErrorCode::from_bits_truncate(frame.error_code)
+            .contains(PageFaultErrorCode::CAUSED_BY_WRITE)
+        {
+            Protection::READ | Protection::WRITE
+        } else {
+            Protection::READ
+        };
+        if vm::fault::fault(&thread.task.map, address & !(PAGE_SIZE - 1), access).is_ok() {
+            return;
+        }
+        // A copy's recovery point, for a fault at its stack pointer.
+        let recovery = thread.pcb.onfault.load(Ordering::Relaxed);
+        let stack = thread.pcb.onfault_stack.load(Ordering::Relaxed);
+        if recovery != 0
+            && u64::try_from(stack).unwrap() == frame.interrupted.stack_pointer.as_u64()
+        {
+            frame.interrupted.instruction_pointer = VirtAddr::new(u64::try_from(recovery).unwrap());
+            return;
+        }
+    }
     let _ = write!(
         Serial,
         "Kernel trap {}, rip {:#x}, code {:#x}, cr2 {cr2:#x}\r\n{frame}",
         frame.vector,
         frame.interrupted.instruction_pointer.as_u64(),
         frame.error_code,
+    );
+    assert!(
+        !page_fault || user,
+        "kernel_trap: a page fault in the kernel map, not yet"
     );
     panic!("trap")
 }

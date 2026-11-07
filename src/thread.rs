@@ -94,7 +94,7 @@ pub struct Thread {
     /// Its name, ending with a NUL.
     name: [AtomicU8; task::NAME_SIZE],
     /// Its machine state.
-    pcb: UnsafeRef<arch::Pcb>,
+    pub(super) pcb: UnsafeRef<arch::Pcb>,
     /// Its port, which controls it.
     self_port: AtomicPtr<Port>,
     /// The send right for its port it hands out.
