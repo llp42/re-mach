@@ -32,12 +32,11 @@ bitflags::bitflags! {
     }
 }
 
-/// What a child task gets of memory, as Mach's interface numbers it; only
-/// the values used here.
+/// What a child task gets of memory; only the values used here.
 #[derive(PartialEq, Eq)]
 pub enum Inheritance {
     /// A copy of it.
-    Copy = 1,
+    Copy,
 }
 
 /// The VM's event counts, as Mach's `vm_statistics` reports them; only
