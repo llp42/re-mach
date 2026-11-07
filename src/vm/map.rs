@@ -5,8 +5,9 @@
 
 use core::ops::{DerefMut, Range};
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
+use intrusive_collections::rbtree::Cursor;
 use intrusive_collections::{
     Bound, KeyAdapter, RBTree, RBTreeAtomicLink, UnsafeRef, intrusive_adapter,
 };
@@ -124,7 +125,7 @@ impl Map {
             gap_link: RBTreeAtomicLink::new(),
             range: range.clone(),
             gap: AtomicUsize::new(0),
-            protection,
+            protection: AtomicU32::new(protection.bits()),
             max_protection,
             inheritance,
             backing: Backing::Object {
@@ -164,7 +165,7 @@ impl Map {
         let extends = |neighbour: &Entry| {
             !matches!(neighbour.backing, Backing::Submap(_))
                 && neighbour.inheritance == entry.inheritance
-                && neighbour.protection == entry.protection
+                && neighbour.protection() == entry.protection()
                 && neighbour.max_protection == entry.max_protection
                 && neighbour.wire_count == 0
         };
@@ -220,7 +221,7 @@ impl Map {
             gap_link: RBTreeAtomicLink::new(),
             gap: AtomicUsize::new(next - range.end),
             range,
-            protection: Protection::READ | Protection::WRITE,
+            protection: AtomicU32::new((Protection::READ | Protection::WRITE).bits()),
             max_protection: Protection::all(),
             inheritance: Inheritance::Copy,
             backing: Backing::Submap(submap.get().unwrap()),
@@ -262,7 +263,7 @@ impl Map {
             gap_link: RBTreeAtomicLink::new(),
             gap: AtomicUsize::new(next - range.end),
             range: range.clone(),
-            protection,
+            protection: AtomicU32::new(protection.bits()),
             max_protection,
             inheritance: Inheritance::Copy,
             backing: Backing::Object {
@@ -277,6 +278,88 @@ impl Map {
         contents.link(self.bounds.start, previous, entry);
         drop(contents);
         Ok(range)
+    }
+
+    /// Sets what `range`, cut to the map's bounds, allows to `protection`,
+    /// as `change` says, in its physical map too.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` if a submap lies in `range`, and `ProtectionFailure`
+    /// if an entry there may never allow `protection`.
+    ///
+    /// # Panics
+    ///
+    /// If `range` splits an entry, an entry would merge with the one before
+    /// it, one has wired access or is wired, or for `Change::Maximum`: not
+    /// yet. As `MachinePmap::protect`.
+    pub fn protect(
+        &self,
+        range: Range<usize>,
+        protection: Protection,
+        change: Change,
+    ) -> Result<(), Error> {
+        let contents = self.lock();
+        let end = range.end.min(self.bounds.end);
+        let start = range.start.max(self.bounds.start).min(end);
+        // The entry holding `start`, else the next.
+        let mut first = contents.entries.upper_bound(Bound::Included(&start));
+        match first.get() {
+            Some(entry) if start < entry.range.end => assert!(
+                start == entry.range.start,
+                "vm_map_clip_start: splitting an entry, not yet"
+            ),
+            _ => first.move_next(),
+        }
+        // Every entry is checked before any changes.
+        let mut current = first.clone();
+        while let Some(entry) = current.get().filter(|entry| entry.range.start < end) {
+            if matches!(entry.backing, Backing::Submap(_)) {
+                return Err(Error::InvalidArgument);
+            }
+            if !entry.max_protection.contains(protection) {
+                return Err(Error::ProtectionFailure);
+            }
+            current.move_next();
+        }
+        let mut current = first.clone();
+        while let Some(entry) = current.get().filter(|entry| entry.range.start < end) {
+            assert!(
+                end >= entry.range.end,
+                "vm_map_clip_end: splitting an entry, not yet"
+            );
+            let old = entry.protection();
+            match change {
+                Change::Current => entry.protection.store(protection.bits(), Ordering::Relaxed),
+                Change::Maximum => panic!("vm_map_protect: set_max, not yet"),
+            }
+            let new = entry.protection();
+            assert!(
+                new.is_empty() || entry.wired_access.is_empty(),
+                "vm_map_protect: an entry with wired access, not yet"
+            );
+            if new != old {
+                self.pmap.protect(entry.range.clone(), new);
+            }
+            coalesce(&current);
+            current.move_next();
+        }
+        // The entry after the range, with the last in it.
+        coalesce(&current);
+        // vm_map_pageable_scan; no entry merged, so the range starts at `first`.
+        while let Some(entry) = first.get().filter(|entry| entry.range.start < end) {
+            assert!(
+                entry.wired_access.is_empty(),
+                "vm_map_pageable_scan: an entry with wired access, not yet"
+            );
+            assert!(
+                entry.wire_count == 0,
+                "vm_map_pageable_scan: vm_fault_unwire, not yet"
+            );
+            first.move_next();
+        }
+        drop(contents);
+        Ok(())
     }
 
     /// Finds what `address` maps for a fault asking for `access`: the object
@@ -340,6 +423,16 @@ impl Map {
         contents.timestamp = contents.timestamp.wrapping_add(1);
         contents
     }
+}
+
+/// Which of its protections `Map::protect` sets on each entry.
+#[derive(Clone, Copy)]
+pub enum Change {
+    /// What it allows now.
+    Current,
+    /// The most it may allow, which also cuts what it allows now.
+    #[expect(dead_code, reason = "the vm_protect RPC asks for it")]
+    Maximum,
 }
 
 /// What `Map::lookup` finds for an address.
@@ -433,8 +526,9 @@ pub struct Entry {
     /// The free space after it, up to the next entry or the map's end;
     /// changed only under the map's write lock.
     gap: AtomicUsize,
-    /// What it allows now.
-    protection: Protection,
+    /// What it allows now, as `Protection`'s bits; changed only under the
+    /// map's write lock.
+    protection: AtomicU32,
     /// The most it may ever allow.
     max_protection: Protection,
     /// What a child task gets of it.
@@ -444,11 +538,15 @@ pub struct Entry {
     /// How many times it is wired: its pages stay resident and mapped.
     wire_count: u32,
     /// What it allows while wired.
-    #[expect(dead_code, reason = "vm_map_pageable and vm_fault read it")]
     wired_access: Protection,
 }
 
 impl Entry {
+    /// What it allows now.
+    fn protection(&self) -> Protection {
+        Protection::from_bits_retain(self.protection.load(Ordering::Relaxed))
+    }
+
     /// Its object, from an offset, once `vm_map_lookup`'s checks find a fault
     /// asking for `access` may be resolved in it.
     ///
@@ -460,7 +558,7 @@ impl Entry {
             panic!("vm_map_lookup: a submap, not yet");
         };
         assert!(
-            self.protection.contains(access),
+            self.protection().contains(access),
             "vm_map_lookup: KERN_PROTECTION_FAILURE, not yet"
         );
         assert!(
@@ -472,7 +570,7 @@ impl Entry {
 
     /// What a lookup of `address` in it finds, with `object` behind it from
     /// `offset`, its `state` locked, at the map's `version`.
-    const fn found(
+    fn found(
         &self,
         address: usize,
         object: &'static Object,
@@ -484,11 +582,34 @@ impl Entry {
             object,
             state,
             offset: address - self.range.start + offset,
-            protection: self.protection,
+            protection: self.protection(),
             wired: self.wire_count != 0,
             version,
         }
     }
+}
+
+/// Merges the entry at `cursor` into the one before it, if they meet and map
+/// alike.
+///
+/// # Panics
+///
+/// If they would merge: not yet.
+fn coalesce(cursor: &Cursor<'_, EntryAdapter>) {
+    let (Some(entry), Some(previous)) = (cursor.get(), cursor.peek_prev().get()) else {
+        return;
+    };
+    if previous.range.end != entry.range.start
+        || matches!(previous.backing, Backing::Submap(_))
+        || matches!(entry.backing, Backing::Submap(_))
+        || previous.inheritance != entry.inheritance
+        || previous.protection() != entry.protection()
+        || previous.max_protection != entry.max_protection
+        || previous.wire_count != entry.wire_count
+    {
+        return;
+    }
+    panic!("vm_map_coalesce_entry: vm_object_coalesce, not yet");
 }
 
 /// What backs an entry; only the kinds used here.
