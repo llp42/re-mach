@@ -3,12 +3,15 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The bootstrap: tasks for the modules the loader brought.
 
+mod elf_load;
 mod script;
 
+use core::ffi::CStr;
 use core::ptr::{self, NonNull};
+use core::slice;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use crate::arch::{self, Machine as _};
+use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::boot::BootModule;
 use crate::error::Error;
 use crate::host::HOST;
@@ -18,6 +21,7 @@ use crate::sched::{self, Event, USER_PRIORITY};
 use crate::sync::Spinlock;
 use crate::task::{self, Task};
 use crate::{device, print, println, smp, thread};
+use elf_load::{SectionType, Segment};
 use script::{Script, Value};
 
 /// Starts the boot modules' tasks; so far it finds the modules, sets the
@@ -129,14 +133,11 @@ fn create_task(path: &str) -> &'static Task {
 /// done with them.
 struct LoaderInfo<'a> {
     /// The module whose program the thread loads.
-    #[expect(dead_code, reason = "exec_load reads it")]
     module: &'static BootModule,
     /// The command line: the path, then each argument, each ending with a
     /// NUL.
-    #[expect(dead_code, reason = "build_args_and_stack reads it")]
     line: &'a [u8],
     /// Where each argument starts in `line`, the path first.
-    #[expect(dead_code, reason = "build_args_and_stack reads it")]
     arguments: &'a [usize],
     /// Whether the thread is done with them, behind the lock `run_command`
     /// sleeps with.
@@ -177,19 +178,20 @@ fn run_command(module: &'static BootModule, task: &'static Task, line: &[u8], ar
 }
 
 /// The work of a thread `run_command` makes, in its boot task: loads the
-/// module's program into the task and starts it; so far it takes the info
-/// it was given, then stops its CPU.
+/// module's program into the task and starts it; so far it reads the
+/// program's image and starts on its first segment, where it stops its
+/// CPU.
 ///
 /// # Panics
 ///
-/// If it was given no info.
+/// If it was given no info, or the program can't be loaded.
 fn load_program() -> ! {
     let thread = smp::current()
         .active_thread()
         .expect("user_bootstrap: no current thread");
     // SAFETY: `run_command` gave it a `LoaderInfo`, which it keeps until the
     // thread is done with it.
-    let _info = unsafe {
+    let info = unsafe {
         thread
             .argument
             .load(Ordering::Acquire)
@@ -197,6 +199,61 @@ fn load_program() -> ! {
             .as_ref()
     }
     .expect("user_bootstrap: no info");
+    let fail = |error: elf_load::Error| -> ! {
+        // The path came from a `&str`, ended by a NUL, so it always converts.
+        let path = CStr::from_bytes_until_nul(&info.line[info.arguments[0]..])
+            .ok()
+            .and_then(|path| path.to_str().ok())
+            .unwrap_or_default();
+        panic!(
+            "Cannot load user executable module (error code {}): {}",
+            i32::from(error),
+            path
+        )
+    };
+    let range = &info.module.range;
+    // SAFETY: the module's copy in boot memory, unwritten and kept until the
+    // bootstrap frees it.
+    let bytes =
+        unsafe { slice::from_raw_parts(range.start.direct_map_ptr(), range.end - range.start) };
+    let image = elf_load::parse(bytes).unwrap_or_else(|error| fail(error));
+    for segment in image.segments() {
+        load_segment(bytes, &segment).unwrap_or_else(|error| fail(error));
+    }
+    arch::Current::halt()
+}
+
+/// Loads `segment` of the image in `bytes` into the current task; so far
+/// it checks the segment and finds its pages, then stops its CPU.
+///
+/// # Errors
+///
+/// `OutOfBounds` if the segment's file bytes lie past the image's end.
+///
+/// # Panics
+///
+/// If the segment takes no memory, less than its file bytes, or pages past
+/// the address space's end.
+fn load_segment(bytes: &[u8], segment: &Segment) -> Result<(), elf_load::Error> {
+    if segment
+        .offset
+        .checked_add(segment.file_size)
+        .is_none_or(|end| end > bytes.len())
+    {
+        return Err(elf_load::Error::OutOfBounds);
+    }
+    if !segment.section_type.contains(SectionType::ALLOCATE) {
+        return Ok(());
+    }
+    assert!(segment.memory_size > 0);
+    assert!(segment.memory_size >= segment.file_size);
+    let end = segment
+        .address
+        .checked_add(segment.memory_size)
+        .and_then(|end| end.checked_next_multiple_of(PAGE_SIZE))
+        .expect("read_exec: a segment past the address space's end");
+    #[expect(unused_variables, reason = "vm_allocate takes them")]
+    let pages = segment.address & !(PAGE_SIZE - 1)..end;
     arch::Current::halt()
 }
 
