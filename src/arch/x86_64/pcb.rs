@@ -10,11 +10,13 @@ use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use x86_64::VirtAddr;
+use x86_64::instructions::interrupts;
 
-use super::fpu;
 use super::memory_layout::MAX_USER_ADDRESS;
 use super::per_cpu::PerCpu;
 use super::trap::TrapFrame;
+use super::{fpu, halt};
+use crate::ast;
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
 use crate::smp::{self, MachinePerCpu as _};
@@ -209,5 +211,19 @@ impl MachineThread for Pcb {
         user.interrupted.stack_pointer = VirtAddr::new(u64::try_from(arguments).unwrap());
         user.interrupted.instruction_pointer = VirtAddr::new(u64::try_from(entry).unwrap());
         arguments
+    }
+
+    fn return_to_user() -> ! {
+        // Checked with interrupts off, taken with them on.
+        loop {
+            interrupts::disable();
+            if smp::current().asts().is_empty() {
+                break;
+            }
+            interrupts::enable();
+            ast::taken();
+        }
+        // The user registers, swapgs and iretq come later.
+        halt()
     }
 }

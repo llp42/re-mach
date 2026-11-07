@@ -345,8 +345,9 @@ fn invoke(old: &'static Thread, new: &'static Thread) {
 }
 
 /// Puts `thread`, just switched from, where its state says: back on a run
-/// queue if it runs on, nowhere if an idle thread; one that waits stops
-/// running, unless suspended in an interruptible wait.
+/// queue if it runs on, nowhere if an idle thread; one suspended outside a
+/// wait stops, and one that waits stops running, unless suspended in an
+/// interruptible wait.
 ///
 /// # Panics
 ///
@@ -354,6 +355,11 @@ fn invoke(old: &'static Thread, new: &'static Thread) {
 pub fn dispatch(thread: &'static Thread) {
     match ThreadState::from_bits_retain(thread.state.load(Ordering::Relaxed)) {
         state if state == ThreadState::RUN => set_run(thread, Preemption::Forbidden),
+        state if state == ThreadState::RUN | ThreadState::SUSPENDED => {
+            thread
+                .state
+                .fetch_and(!ThreadState::RUN.bits(), Ordering::Relaxed);
+        }
         state
             if [
                 ThreadState::RUN

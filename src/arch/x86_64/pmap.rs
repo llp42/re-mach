@@ -161,14 +161,13 @@ impl MachinePmap for Pmap {
     }
 
     fn activate(&self) {
-        assert!(
-            !ptr::eq(self, Self::kernel()),
-            "PMAP_ACTIVATE_USER: the kernel pmap, not yet"
-        );
-        // Before CR3, so a TLB shootdown finds this CPU.
-        self.active_cpus
-            .fetch_or(1 << smp::current().id(), Ordering::SeqCst);
-        // SAFETY: a user PML4 maps kernel space as the kernel's does.
+        // The kernel pmap stays active on every CPU; a user pmap's bit goes
+        // before CR3, so a TLB shootdown finds this CPU.
+        if !ptr::eq(self, Self::kernel()) {
+            self.active_cpus
+                .fetch_or(1 << smp::current().id(), Ordering::SeqCst);
+        }
+        // SAFETY: every PML4 maps kernel space as the kernel's does.
         unsafe {
             Cr3::write(
                 PhysFrame::containing_address(frame(self.pml4)),
@@ -179,10 +178,12 @@ impl MachinePmap for Pmap {
 
     fn deactivate(&self) {
         // The kernel pmap stays active on every CPU.
-        assert!(
-            ptr::eq(self, Self::kernel()),
-            "PMAP_DEACTIVATE_USER: a user pmap, not yet"
-        );
+        if ptr::eq(self, Self::kernel()) {
+            return;
+        }
+        // After CR3, so a TLB shootdown finds this CPU until then.
+        self.active_cpus
+            .fetch_and(!(1 << smp::current().id()), Ordering::SeqCst);
     }
 
     fn enter(&self, address: usize, physical: PhysAddr, protection: Protection, wiring: Wiring) {
@@ -297,7 +298,8 @@ impl MachinePmap for Pmap {
             }
             address = next;
         }
-        // After the entries change, as `activate` sets its bit before CR3.
+        // After the entries change, as `activate` sets its bit before CR3,
+        // and `deactivate` clears it after.
         assert!(
             self.active_cpus.load(Ordering::SeqCst) & !current == 0,
             "PMAP_UPDATE_TLBS: signal_cpus, not yet"

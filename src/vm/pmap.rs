@@ -38,17 +38,10 @@ pub trait MachinePmap {
 
     /// Makes it the current CPU's, as the CPU switches to a thread of its
     /// task from one of another, inside a critical section.
-    ///
-    /// # Panics
-    ///
-    /// If it is the kernel's: not yet.
     fn activate(&self);
     /// Gives it up on the current CPU, as the CPU switches from a thread of
-    /// its task to one of another, inside a critical section.
-    ///
-    /// # Panics
-    ///
-    /// If it is a user task's: not yet.
+    /// its task to one of another, inside a critical section, once the
+    /// CPU's tables are another pmap's.
     fn deactivate(&self);
 
     /// Maps user `address` to the page at `physical`, allowing `protection`

@@ -30,7 +30,7 @@ use script::{Script, Value};
 
 /// Starts the boot modules' tasks; so far it finds the modules, sets the
 /// boot script's variables, parses the modules' command lines and runs the
-/// script up to the first command's thread, which stops its CPU.
+/// script up to task-resume, which stops the CPU.
 ///
 /// # Panics
 ///
@@ -150,8 +150,8 @@ struct LoaderInfo<'a> {
 
 /// The boot script's run of a command: a new thread in `task`, which loads
 /// the program in `module` and starts it with `arguments`, their offsets in
-/// `line`; it waits until the thread is done with them. So far that thread
-/// wakes it, then stops its CPU, so it doesn't run yet.
+/// `line`; it waits until the thread is done with them, then ends the
+/// line.
 ///
 /// # Panics
 ///
@@ -179,12 +179,13 @@ fn run_command(module: &'static BootModule, task: &'static Task, line: &[u8], ar
         done = info.done.lock();
     }
     drop(done);
+    print!("\n");
 }
 
 /// The work of a thread `run_command` makes, in its boot task: loads the
 /// module's program into the task and starts it; so far it loads the
 /// program, builds its stack and arguments, prints so, suspends the task,
-/// tells `run_command` it is done and stops its CPU.
+/// tells `run_command` it is done and returns to user mode.
 ///
 /// # Panics
 ///
@@ -246,7 +247,7 @@ fn load_program() -> ! {
     *done = true;
     drop(done);
     sched::wakeup(event);
-    arch::Current::halt()
+    arch::Pcb::return_to_user()
 }
 
 /// Maps the current task's stack into `map`, as `image` asks, and copies
