@@ -151,7 +151,7 @@ struct LoaderInfo<'a> {
 /// The boot script's run of a command: a new thread in `task`, which loads
 /// the program in `module` and starts it with `arguments`, their offsets in
 /// `line`; it waits until the thread is done with them. So far that thread
-/// stops its CPU, so it waits for good.
+/// wakes it, then stops its CPU, so it doesn't run yet.
 ///
 /// # Panics
 ///
@@ -183,11 +183,13 @@ fn run_command(module: &'static BootModule, task: &'static Task, line: &[u8], ar
 
 /// The work of a thread `run_command` makes, in its boot task: loads the
 /// module's program into the task and starts it; so far it loads the
-/// program, builds its stack and arguments, prints so and stops its CPU.
+/// program, builds its stack and arguments, prints so, suspends the task,
+/// tells `run_command` it is done and stops its CPU.
 ///
 /// # Panics
 ///
-/// If it was given no info, or the program can't be loaded.
+/// If it was given no info, or the program can't be loaded; as
+/// `Task::suspend`.
 fn load_program() -> ! {
     let thread = smp::current()
         .active_thread()
@@ -235,6 +237,15 @@ fn load_program() -> ! {
             .expect("user_bootstrap: an argument not UTF-8");
         print!(" {argument}");
     }
+    thread.task.suspend();
+    // `run_command` may drop the info once it is done, so the wakeup takes
+    // its address alone.
+    let event = Event::of(info);
+    let mut done = info.done.lock();
+    assert!(!*done);
+    *done = true;
+    drop(done);
+    sched::wakeup(event);
     arch::Current::halt()
 }
 

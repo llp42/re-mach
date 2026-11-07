@@ -496,6 +496,14 @@ impl Thread {
             .fetch_or(ThreadState::RUN.bits(), Ordering::Relaxed);
     }
 
+    /// Suspends it once more.
+    pub(super) fn hold(&self) {
+        let _section = CriticalSection::enter();
+        self.suspend_count.fetch_add(1, Ordering::Relaxed);
+        self.state
+            .fetch_or(ThreadState::SUSPENDED.bits(), Ordering::Relaxed);
+    }
+
     /// Lifts one stop users asked for, and the suspension it holds; a thread
     /// no longer suspended at all runs, unless it waits.
     ///

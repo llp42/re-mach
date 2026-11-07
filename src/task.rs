@@ -10,6 +10,7 @@ use core::{iter, str};
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use crate::arch::{self, MAX_USER_ADDRESS, MIN_USER_ADDRESS, Machine as _};
+use crate::ast::Ast;
 use crate::clock::{self, AtomicTimeValue};
 use crate::error::Error;
 use crate::ipc::port::{self, KernelObject, Port};
@@ -17,8 +18,8 @@ use crate::ipc::space::Space;
 use crate::processor::{DEFAULT_SET, ProcessorSet};
 use crate::sched::{RUN_QUEUES, USER_PRIORITY};
 use crate::slab::{Cache, CacheBox};
-use crate::sync::OnceLock;
-use crate::sync::Token;
+use crate::smp;
+use crate::sync::{CriticalSection, OnceLock, Token};
 use crate::thread::{TaskThreadAdapter, Thread};
 use crate::vm::kernel::KERNEL_MAP;
 use crate::vm::map::Map;
@@ -76,6 +77,8 @@ pub struct TaskMembers {
     pub(super) max_priority: u32,
     /// How many times the task is suspended.
     pub(super) suspend_count: u32,
+    /// How many times users stopped the task; the first suspends it.
+    user_stop_count: u32,
     /// The threads, in the order the task took them.
     threads: LinkedList<TaskThreadAdapter>,
     /// How many threads there are.
@@ -91,6 +94,75 @@ impl Task {
         members
             .threads
             .push_back(unsafe { UnsafeRef::from_raw(thread) });
+    }
+
+    /// Stops it once more for users: the first stop suspends it, holding its
+    /// threads and waiting for them to stop; the current thread, if one of
+    /// them, is held and blocks on its way out of the kernel.
+    ///
+    /// # Panics
+    ///
+    /// If it is not alive, or has a thread other than the current one to
+    /// wait for: not yet.
+    pub(super) fn suspend(&self) {
+        let mut members = self.members.lock();
+        members.user_stop_count += 1;
+        let first = members.user_stop_count == 1;
+        drop(members);
+        if !first {
+            return;
+        }
+        self.hold();
+        self.wait_until_stopped();
+        let current = smp::current()
+            .active_thread()
+            .expect("task_suspend: no current thread");
+        if ptr::eq(&raw const *current.task, self) {
+            current.hold();
+            let _section = CriticalSection::enter();
+            smp::current().add_asts(Ast::BLOCK);
+        }
+    }
+
+    /// Suspends it once more, holding its threads but the current one.
+    ///
+    /// # Panics
+    ///
+    /// If it is not alive: not yet.
+    fn hold(&self) {
+        let current = smp::current()
+            .active_thread()
+            .expect("task_hold: no current thread");
+        let mut members = self.members.lock();
+        assert!(members.active, "task_hold: an inactive task, not yet");
+        members.suspend_count += 1;
+        for thread in &members.threads {
+            if !ptr::eq(thread, current) {
+                thread.hold();
+            }
+        }
+        drop(members);
+    }
+
+    /// Waits until its threads but the current one stop.
+    ///
+    /// # Panics
+    ///
+    /// If it is not alive, or has a thread other than the current one: not
+    /// yet.
+    fn wait_until_stopped(&self) {
+        let current = smp::current()
+            .active_thread()
+            .expect("task_dowait: no current thread");
+        let members = self.members.lock();
+        for thread in &members.threads {
+            assert!(members.active, "task_dowait: an inactive task, not yet");
+            assert!(
+                ptr::eq(thread, current),
+                "task_dowait: thread_dowait, not yet"
+            );
+        }
+        drop(members);
     }
 
     /// Names it `name`, cut to fit with its final NUL.
@@ -204,6 +276,7 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
             priority: USER_PRIORITY.max(DEFAULT_SET.max_priority),
             max_priority: DEFAULT_SET.max_priority,
             suspend_count: 0,
+            user_stop_count: 0,
             threads: LinkedList::new(TaskThreadAdapter::NEW),
             thread_count: 0,
         }),

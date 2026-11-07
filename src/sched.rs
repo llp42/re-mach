@@ -226,6 +226,43 @@ pub fn sleep<T>(event: Event, guard: SpinlockGuard<'_, T>) {
     block();
 }
 
+/// Wakes the threads waiting for `event` on the current CPU's sleep queue:
+/// each leaves it and runs.
+///
+/// # Panics
+///
+/// If one runs already, or is suspended in an interruptible wait: not yet.
+pub fn wakeup(event: Event) {
+    let _section = CriticalSection::enter();
+    let mut queues = smp::current().sleep_queues();
+    let mut cursor = queues[event.hash()].front_mut();
+    while let Some(thread) = cursor.get() {
+        if thread.wait_event.load(Ordering::Relaxed) != event.0 {
+            cursor.move_next();
+            continue;
+        }
+        // SAFETY: it waited on the queue, and goes on a run queue.
+        let thread = unsafe { &*UnsafeRef::into_raw(cursor.remove().unwrap()) };
+        thread.wait_event.store(0, Ordering::Relaxed);
+        let state = ThreadState::from_bits_retain(thread.state.load(Ordering::Relaxed));
+        assert!(
+            [
+                ThreadState::WAIT | ThreadState::SUSPENDED | ThreadState::UNINTERRUPTIBLE,
+                ThreadState::WAIT | ThreadState::UNINTERRUPTIBLE,
+                ThreadState::WAIT,
+            ]
+            .contains(&state),
+            "thread_wakeup_prim: thread {thread:p} in state {:#x}, not yet",
+            state.bits()
+        );
+        thread.state.store(
+            ((state - ThreadState::WAIT) | ThreadState::RUN).bits(),
+            Ordering::Relaxed,
+        );
+        set_run(thread, Preemption::Allowed);
+    }
+}
+
 /// Gives the current CPU up to the next thread to run, which may be the
 /// current one; returns once the current one runs again.
 ///
