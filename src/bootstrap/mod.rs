@@ -28,9 +28,9 @@ use crate::{device, print, println, smp, thread, vm};
 use elf_load::{Image, SectionType, Segment};
 use script::{Script, Value};
 
-/// Starts the boot modules' tasks; so far it finds the modules, sets the
-/// boot script's variables, parses the modules' command lines and runs the
-/// script up to task-resume, which stops the CPU.
+/// Starts the boot modules' tasks: finds the modules, sets the boot
+/// script's variables, parses the modules' command lines and runs the
+/// script; so far the modules' pages are not freed.
 ///
 /// # Panics
 ///
@@ -130,6 +130,19 @@ fn create_task(path: &str) -> &'static Task {
         .expect("boot_script_task_create: no host port");
     task.set_max_priority(host, USER_PRIORITY);
     task
+}
+
+/// The boot script's task-resume: resumes `task`, then starts a line for
+/// the program at `path`.
+///
+/// # Panics
+///
+/// If the task can't be resumed: the script's cleanup, not yet.
+fn resume_task(task: &Task, path: &str) {
+    task.resume().unwrap_or_else(|error| {
+        panic!("boot_script_task_resume failed with {error:?}, cleanup not yet")
+    });
+    print!("\nstart {path}: ");
 }
 
 /// What `run_command` lends the thread it makes, on its own stack: the

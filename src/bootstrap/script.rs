@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The boot script, which starts the boot modules' tasks; so far its
-//! variables, the parse of its lines and their run up to task-resume.
+//! variables, the parse of its lines and their run, with no cleanup.
 
 use core::fmt;
 use core::mem::MaybeUninit;
@@ -10,7 +10,6 @@ use core::ops::Range;
 use core::ptr::NonNull;
 use core::slice;
 
-use crate::arch::{self, Machine as _};
 use crate::boot::BootModule;
 use crate::ipc::port::Port;
 use crate::task::Task;
@@ -263,7 +262,7 @@ impl Script {
     /// kalloc, then runs it in its task; the line holds the path, then each
     /// port argument's name in the task, in decimal, each ending with a NUL,
     /// and the arguments are their offsets in it. Then runs each command's
-    /// functions; so far task-resume stops the CPU.
+    /// functions.
     ///
     /// # Errors
     ///
@@ -273,7 +272,8 @@ impl Script {
     ///
     /// On a command with no task, a string argument, or a command line
     /// past its room: not yet. As `bootstrap::run_command`, if a command's
-    /// thread can't be created or resumed.
+    /// thread can't be created or resumed, and `bootstrap::resume_task`, if
+    /// its task can't be resumed.
     pub fn run(&self) -> Result<(), Error> {
         for command in self.commands.items() {
             let task = command
@@ -324,10 +324,15 @@ impl Script {
             bootstrap::run_command(command.module, task, line.items(), arguments.items());
         }
         for command in self.commands.items() {
-            #[expect(clippy::never_loop, reason = "task-resume stops the CPU so far")]
             for function in &self.functions.items()[command.functions.clone()] {
                 match function {
-                    Function::ResumeTask => arch::Current::halt(),
+                    Function::ResumeTask => {
+                        // The loop above panicked on a command with no task.
+                        let task = command
+                            .task
+                            .expect("boot_script_exec: a command with no task");
+                        bootstrap::resume_task(task, command.path);
+                    }
                 }
             }
         }

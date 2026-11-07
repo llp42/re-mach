@@ -508,6 +508,27 @@ impl Thread {
             .fetch_or(ThreadState::SUSPENDED.bits(), Ordering::Relaxed);
     }
 
+    /// Lifts one suspension; a thread no longer suspended runs.
+    ///
+    /// # Panics
+    ///
+    /// If, no longer suspended, it waits or runs: not yet.
+    pub(super) fn release(&'static self) {
+        let _section = CriticalSection::enter();
+        if self.suspend_count.fetch_sub(1, Ordering::Relaxed) != 1 {
+            return;
+        }
+        if let Err(state) = self.state.compare_exchange(
+            ThreadState::SUSPENDED.bits(),
+            ThreadState::RUN.bits(),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            panic!("thread_release: thread {self:p} in state {state:#x}, not yet");
+        }
+        sched::set_run(self, Preemption::Allowed);
+    }
+
     /// Lifts one stop users asked for, and the suspension it holds; a thread
     /// no longer suspended at all runs, unless it waits.
     ///
