@@ -9,14 +9,53 @@ use x86_64::registers::model_specific::{Efer, EferFlags, LStar, SFMask, Star};
 use x86_64::registers::rflags::RFlags;
 
 use super::gdt;
+use super::per_cpu::{KERNEL_STACK, PRIVILEGE_STACK, USER_STACK};
 
-// TODO: the Mach trap path, at the first user-mode step.
+// SYSCALL enters with interrupts off, rip in rcx and rflags in r11: the
+// user registers go into the thread's PCB as a trap from user mode saves
+// them, then the kernel stack is taken and interrupts turned on; it stops
+// where the call is dispatched.
 global_asm!(
     ".pushsection .text, \"ax\"",
     ".globl syscall_entry",
     "syscall_entry:",
-    "ud2",
+    "swapgs",
+    "movq %rsp, %gs:{user_stack}",
+    "movq %gs:{privilege_stack}, %rsp",
+    "pushq ${user_data}",
+    "pushq %gs:{user_stack}",
+    "pushq %r11",
+    "pushq ${user_code}",
+    "pushq %rcx",
+    // No vector or error code.
+    "subq $16, %rsp",
+    "pushq %rax",
+    "pushq %rbx",
+    "pushq %rcx",
+    "pushq %rdx",
+    "pushq %rsi",
+    "pushq %rdi",
+    "pushq %rbp",
+    "pushq %r8",
+    "pushq %r9",
+    "pushq %r10",
+    "pushq %r11",
+    "pushq %r12",
+    "pushq %r13",
+    "pushq %r14",
+    "pushq %r15",
+    "movq %gs:{kernel_stack}, %rsp",
+    "sti",
+    // The dispatch comes later.
+    "1:",
+    "hlt",
+    "jmp 1b",
     ".popsection",
+    user_stack = const USER_STACK,
+    privilege_stack = const PRIVILEGE_STACK,
+    user_data = const gdt::USER_DATA.0,
+    user_code = const gdt::USER_CODE.0,
+    kernel_stack = const KERNEL_STACK,
     options(att_syntax),
 );
 

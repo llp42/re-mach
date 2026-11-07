@@ -6,7 +6,7 @@ use core::arch::asm;
 use core::cell::Cell;
 use core::mem::{self, MaybeUninit, offset_of};
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use raw_cpuid::CpuId;
 use x86_64::VirtAddr;
@@ -19,6 +19,7 @@ use super::{gdt, interrupt};
 use crate::config::MAX_CPUS;
 use crate::smp::{self, MachinePerCpu};
 use crate::sync::OnceLock;
+use crate::thread::Thread;
 
 /// One CPU's machine-dependent data, holding its machine-independent part;
 /// the GS base points at the current CPU's. Each starts its own cache line.
@@ -38,7 +39,26 @@ pub struct PerCpu {
     /// Whether any interrupt is held back, so leaving a section needs one
     /// load to know there is nothing to run.
     interrupts_held: AtomicBool,
+    /// Where its thread's kernel stack starts, which entries from user mode
+    /// switch to.
+    kernel_stack: AtomicUsize,
+    /// The user stack pointer of a system call, while its entry saves it.
+    user_stack: AtomicUsize,
+    /// The thread whose floating-point state its FPU holds, if any.
+    fpu_owner: AtomicPtr<Thread>,
 }
+
+/// Where the current CPU's kernel stack is, from the GS base.
+pub(super) const KERNEL_STACK: usize = offset_of!(PerCpu, kernel_stack);
+
+/// Where the current CPU keeps a system call's user stack pointer, from the
+/// GS base.
+pub(super) const USER_STACK: usize = offset_of!(PerCpu, user_stack);
+
+/// Where the current CPU's TSS RSP0 is, from the GS base: past its thread's
+/// user registers.
+pub(super) const PRIVILEGE_STACK: usize =
+    offset_of!(PerCpu, tss) + offset_of!(TaskStateSegment, privilege_stack_table);
 
 // SAFETY: only its own CPU touches the TSS.
 unsafe impl Sync for PerCpu {}
@@ -81,6 +101,9 @@ impl PerCpu {
             tss: Cell::new(TaskStateSegment::new()),
             pending_interrupts: [const { AtomicU64::new(0) }; 4],
             interrupts_held: AtomicBool::new(false),
+            kernel_stack: AtomicUsize::new(0),
+            user_stack: AtomicUsize::new(0),
+            fpu_owner: AtomicPtr::new(ptr::null_mut()),
         }
     }
 
@@ -121,6 +144,22 @@ impl PerCpu {
     /// Its TSS, which stays where it is.
     pub const fn tss(&self) -> &Cell<TaskStateSegment> {
         &self.tss
+    }
+
+    /// Sets where its thread's kernel stack starts, as it switches to it.
+    pub fn set_kernel_stack(&self, top: usize) {
+        self.kernel_stack.store(top, Ordering::Relaxed);
+    }
+
+    /// The thread whose floating-point state its FPU holds; null for none.
+    pub fn fpu_owner(&self) -> *const Thread {
+        self.fpu_owner.load(Ordering::Relaxed)
+    }
+
+    /// Gives its FPU to `thread`, on its CPU.
+    pub fn set_fpu_owner(&self, thread: &'static Thread) {
+        self.fpu_owner
+            .store(ptr::from_ref(thread).cast_mut(), Ordering::Relaxed);
     }
 
     /// Holds `vector` back if this CPU is in a critical section, returning

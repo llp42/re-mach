@@ -7,21 +7,21 @@ use core::arch::{asm, global_asm, naked_asm};
 use core::cell::UnsafeCell;
 use core::ops::Range;
 use core::ptr;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use x86_64::VirtAddr;
 use x86_64::instructions::interrupts;
 
+use super::fpu;
 use super::memory_layout::MAX_USER_ADDRESS;
 use super::per_cpu::PerCpu;
 use super::trap::TrapFrame;
-use super::{fpu, halt};
 use crate::ast;
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
 use crate::smp::{self, MachinePerCpu as _};
 use crate::thread::{self, MachineThread, Thread};
-use crate::vm::kernel::KernelStack;
+use crate::vm::kernel::{KERNEL_MAP, KernelStack};
 
 /// A thread's machine state: its user registers, and where its kernel
 /// registers are saved while it does not run.
@@ -37,6 +37,10 @@ pub struct Pcb {
     pub(super) onfault: AtomicUsize,
     /// The stack pointer of the copy `onfault` serves.
     pub(super) onfault_stack: AtomicUsize,
+    /// Where its kernel stack starts; set as the stack is attached.
+    stack_top: AtomicUsize,
+    /// Its floating-point state's buffer, once it first uses the FPU.
+    pub(super) fpu: AtomicPtr<u8>,
 }
 
 // SAFETY: only its thread, or the CPU as that thread traps, writes its user
@@ -126,6 +130,8 @@ impl MachineThread for Pcb {
             stack_pointer: AtomicUsize::new(0),
             onfault: AtomicUsize::new(0),
             onfault_stack: AtomicUsize::new(0),
+            stack_top: AtomicUsize::new(0),
+            fpu: AtomicPtr::new(ptr::null_mut()),
         })
     }
 
@@ -145,15 +151,18 @@ impl MachineThread for Pcb {
                 .write(thread_trampoline);
         }
         self.stack_pointer.store(frame.addr(), Ordering::Release);
+        self.stack_top.store(stack.top(), Ordering::Relaxed);
     }
 
     unsafe fn load(&self) -> ! {
         // A trap from user mode saves the thread's registers in its PCB.
         let user_end = self.user.get().addr() + size_of::<TrapFrame>();
-        let tss = PerCpu::current().tss();
+        let cpu = PerCpu::current();
+        let tss = cpu.tss();
         let mut updated = tss.get();
         updated.privilege_stack_table[0] = VirtAddr::new(u64::try_from(user_end).unwrap());
         tss.set(updated);
+        cpu.set_kernel_stack(self.stack_top.load(Ordering::Relaxed));
         // SAFETY: guaranteed by the caller; the frame is the one
         // `attach_stack` wrote.
         unsafe {
@@ -175,12 +184,27 @@ impl MachineThread for Pcb {
     }
 
     unsafe fn switch(&self, next: &Self, current: &'static Thread) -> &'static Thread {
+        let cpu = PerCpu::current();
+        // With no FPU save here yet, another user thread must not find the
+        // owner's state live; the CPU already names `next` its thread.
+        let next_thread = smp::current()
+            .active_thread()
+            .expect("switch_context: no next thread");
+        let owner = cpu.fpu_owner();
+        let kernel = KERNEL_MAP
+            .get()
+            .is_some_and(|map| ptr::eq(map, &raw const *next_thread.task.map));
+        assert!(
+            owner.is_null() || ptr::eq(owner, next_thread) || kernel,
+            "fpu_save_context: not yet"
+        );
         // A trap from user mode saves the thread's registers in its PCB.
         let user_end = next.user.get().addr() + size_of::<TrapFrame>();
-        let tss = PerCpu::current().tss();
+        let tss = cpu.tss();
         let mut updated = tss.get();
         updated.privilege_stack_table[0] = VirtAddr::new(u64::try_from(user_end).unwrap());
         tss.set(updated);
+        cpu.set_kernel_stack(next.stack_top.load(Ordering::Relaxed));
         // SAFETY: guaranteed by the caller; this thread's stack pointer is
         // saved where its next switch back reads it.
         unsafe {
@@ -223,7 +247,37 @@ impl MachineThread for Pcb {
             interrupts::enable();
             ast::taken();
         }
-        // The user registers, swapgs and iretq come later.
-        halt()
+        let thread = smp::current()
+            .active_thread()
+            .expect("thread_exception_return: no current thread");
+        // SAFETY: the thread's user registers, which a trap from user mode
+        // saved or `set_user_registers` set; the kernel stack holds nothing
+        // live past here, and interrupts stay off until iretq.
+        unsafe {
+            asm!(
+                "movq {user}, %rsp",
+                "popq %r15",
+                "popq %r14",
+                "popq %r13",
+                "popq %r12",
+                "popq %r11",
+                "popq %r10",
+                "popq %r9",
+                "popq %r8",
+                "popq %rbp",
+                "popq %rdi",
+                "popq %rsi",
+                "popq %rdx",
+                "popq %rcx",
+                "popq %rbx",
+                "popq %rax",
+                // The vector and error code.
+                "addq $16, %rsp",
+                "swapgs",
+                "iretq",
+                user = in(reg) thread.pcb.user.get(),
+                options(att_syntax, noreturn),
+            );
+        }
     }
 }

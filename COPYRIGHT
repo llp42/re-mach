@@ -47,6 +47,13 @@ SPDX-FileCopyrightText: 2020 Free Software Foundation, Inc.
 SPDX-FileContributor: Almudena Garcia Jurado-Centurion
 SPDX-License-Identifier: GPL-2.0-or-later
 
+SPDX-FileName: i386/i386/fpu.c
+SPDX-FileCopyrightText: 1992-1990 Carnegie Mellon University
+SPDX-FileCopyrightText: 1994 Linus Torvalds
+SPDX-FileContributor: Gareth Hughes <gareth@valinux.com>
+SPDX-License-Identifier: CMU-Mach AND GPL-2.0-or-later
+SPDX-FileComment: The parts derived from Linux, added in 2009 and 2020, carry no notice of their own; GNU Mach's package licence applies to them.
+
 SPDX-FileName: i386/i386/gdt.h
 SPDX-FileCopyrightText: 1991, 1990 Carnegie Mellon University
 SPDX-FileCopyrightText: 1991 IBM Corporation
