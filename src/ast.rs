@@ -8,7 +8,7 @@ use core::ptr;
 use core::sync::atomic::Ordering;
 
 use crate::processor::State;
-use crate::sched::{self, Policies};
+use crate::sched::{self, Policies, Policy};
 use crate::smp;
 use crate::sync::CriticalSection;
 use crate::thread::{Thread, ThreadState};
@@ -81,7 +81,7 @@ pub fn check(thread: &Thread) {
             match processor.set() {
                 // A fixed-priority thread uses all of a new quantum.
                 Some(set) if set.policies.contains(Policies::FIXED_PRIORITY) => {
-                    if thread.policy == Policies::FIXED_PRIORITY {
+                    if matches!(thread.policy, Policy::FixedPriority) {
                         processor.first_quantum.store(true, Ordering::Relaxed);
                     }
                 }
