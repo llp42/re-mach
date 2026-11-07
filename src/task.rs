@@ -3,9 +3,9 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Tasks: an address space, a name space for ports, and threads.
 
+use core::iter;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering};
-use core::{iter, str};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
@@ -49,9 +49,8 @@ pub struct Task {
     pub(super) faults: AtomicUsize,
     /// Its pages filled with zeros on a fault.
     pub(super) zero_fills: AtomicUsize,
-    /// Its name, ending with a NUL.
-    pub(super) name: [AtomicU8; NAME_SIZE],
-    /// Whether it is alive, its priorities and suspensions, and its threads.
+    /// Whether it is alive, its priorities and suspensions, its threads and
+    /// its name.
     pub(super) members: Token<TaskMembers>,
     /// The processor set its threads run on; set as the set takes it.
     pub(super) set: AtomicPtr<ProcessorSet>,
@@ -67,7 +66,8 @@ intrusive_adapter!(
     pub SetTaskAdapter = UnsafeRef<Task>: Task { set_link => LinkedListAtomicLink }
 );
 
-/// Whether a task is alive, its priorities and suspensions, and its threads.
+/// Whether a task is alive, its priorities and suspensions, its threads and
+/// its name.
 pub struct TaskMembers {
     /// Whether the task is alive.
     pub(super) active: bool,
@@ -83,6 +83,8 @@ pub struct TaskMembers {
     threads: LinkedList<TaskThreadAdapter>,
     /// How many threads there are.
     thread_count: u32,
+    /// The task's name, ending with a NUL.
+    pub(super) name: [u8; NAME_SIZE],
 }
 
 impl Task {
@@ -208,11 +210,13 @@ impl Task {
 
     /// Names it `name`, cut to fit with its final NUL.
     pub(super) fn set_name(&self, name: &str) {
-        // Unlocked, as in GNU Mach: racing calls may mix two names.
+        // Under the task's token, so no reader sees two names mixed.
         let bytes = name.bytes().chain(iter::repeat(0));
-        for (stored, byte) in self.name[..NAME_SIZE - 1].iter().zip(bytes) {
-            stored.store(byte, Ordering::Relaxed);
+        let mut members = self.members.lock();
+        for (stored, byte) in members.name[..NAME_SIZE - 1].iter_mut().zip(bytes) {
+            *stored = byte;
         }
+        drop(members);
     }
 
     /// Caps its priority at `max_priority`, as the boot script does with
@@ -298,7 +302,7 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
     let mut space = Space::create()?;
     let port = port::allocate_kernel()?;
     port.make_send();
-    let task = CACHE.allocate(Task {
+    let mut task = CACHE.allocate(Task {
         references: AtomicU32::new(2),
         // SAFETY: a task's map outlives it.
         map: unsafe { UnsafeRef::from_raw(ptr::from_ref(map)) },
@@ -310,7 +314,6 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
         creation_time: clock::stamp().into(),
         faults: AtomicUsize::new(0),
         zero_fills: AtomicUsize::new(0),
-        name: [const { AtomicU8::new(0) }; NAME_SIZE],
         members: Token::new(TaskMembers {
             active: true,
             // No higher than the set allows; a larger number is lower.
@@ -320,19 +323,15 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
             user_stop_count: 0,
             threads: LinkedList::new(TaskThreadAdapter::NEW),
             thread_count: 0,
+            name: [0; NAME_SIZE],
         }),
         set: AtomicPtr::new(ptr::null_mut()),
         set_link: LinkedListAtomicLink::new(),
     })?;
-    // The task takes the space's first reference.
-    CacheBox::into_raw(space);
-    let task = CacheBox::into_raw(task);
-    // SAFETY: a task lives until task_deallocate frees it, which comes
-    // later.
-    let task = unsafe { task.as_ref() };
-    // "%p": its address in hex, with no prefix, written from the end.
+    // "%p": its address in hex, with no prefix, written from the end;
+    // without the token, as the task is not published yet.
     let mut name = [0; 2 * size_of::<usize>()];
-    let (mut start, mut address) = (name.len(), ptr::from_ref(task).addr());
+    let (mut start, mut address) = (name.len(), ptr::from_ref(&*task).addr());
     loop {
         start -= 1;
         name[start] = b"0123456789abcdef"[address % 16];
@@ -341,7 +340,13 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
             break;
         }
     }
-    task.set_name(str::from_utf8(&name[start..]).unwrap());
+    task.members.get_mut().name[..name.len() - start].copy_from_slice(&name[start..]);
+    // The task takes the space's first reference.
+    CacheBox::into_raw(space);
+    let task = CacheBox::into_raw(task);
+    // SAFETY: a task lives until task_deallocate frees it, which comes
+    // later.
+    let task = unsafe { task.as_ref() };
     port.set_kernel_object(KernelObject::Task(NonNull::from(task)));
     let port = CacheBox::into_raw(port).as_ptr();
     task.self_port.store(port, Ordering::Release);
