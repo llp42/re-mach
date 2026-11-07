@@ -262,6 +262,9 @@ pub trait MachineThread: Sized {
     ///
     /// If `stack` is not aligned, or no thread runs on the CPU.
     fn set_user_registers(stack: Range<usize>, entry: usize, argument_size: usize) -> usize;
+    /// Takes the current CPU's ASTs until none is pending, then returns its
+    /// thread to user mode; so far it stops the CPU there.
+    fn return_to_user() -> !;
 }
 
 /// Where a new thread begins, before its function: it dispatches `old`, the
@@ -339,15 +342,16 @@ impl Thread {
     /// # Panics
     ///
     /// If `next` is not inside a critical section, as threads are while
-    /// switched away from; as `MachinePmap::activate` and `deactivate`.
+    /// switched away from.
     pub(super) unsafe fn switch(&'static self, next: &'static Self) -> &'static Self {
         assert!(
             next.critical_nesting.load(Ordering::Relaxed) != 0,
             "switch_context: thread outside a critical section"
         );
+        // The old pmap is given up once the CPU has left its tables.
         if !ptr::eq(&raw const *self.task, &raw const *next.task) {
-            self.task.map.pmap().deactivate();
             next.task.map.pmap().activate();
+            self.task.map.pmap().deactivate();
         }
         smp::current().switch_nesting(&next.critical_nesting);
         // SAFETY: as the caller promises, `next`'s stack holds a frame

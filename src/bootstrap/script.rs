@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The boot script, which starts the boot modules' tasks; so far its
-//! variables, the parse of its lines and the start of their run.
+//! variables, the parse of its lines and their run up to task-resume.
 
 use core::fmt;
 use core::mem::MaybeUninit;
@@ -10,6 +10,7 @@ use core::ops::Range;
 use core::ptr::NonNull;
 use core::slice;
 
+use crate::arch::{self, Machine as _};
 use crate::boot::BootModule;
 use crate::ipc::port::Port;
 use crate::task::Task;
@@ -261,8 +262,8 @@ impl Script {
     /// Runs the commands: builds each one's command line and arguments from
     /// kalloc, then runs it in its task; the line holds the path, then each
     /// port argument's name in the task, in decimal, each ending with a NUL,
-    /// and the arguments are their offsets in it. So far the first command
-    /// never ends, so this never returns.
+    /// and the arguments are their offsets in it. Then runs each command's
+    /// functions; so far task-resume stops the CPU.
     ///
     /// # Errors
     ///
@@ -321,6 +322,14 @@ impl Script {
                 line.push(0);
             }
             bootstrap::run_command(command.module, task, line.items(), arguments.items());
+        }
+        for command in self.commands.items() {
+            #[expect(clippy::never_loop, reason = "task-resume stops the CPU so far")]
+            for function in &self.functions.items()[command.functions.clone()] {
+                match function {
+                    Function::ResumeTask => arch::Current::halt(),
+                }
+            }
         }
         Ok(())
     }

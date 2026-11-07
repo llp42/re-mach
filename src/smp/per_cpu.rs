@@ -175,6 +175,11 @@ impl PerCpu {
         Ast::from_bits_retain(self.pending_asts.load(Ordering::Relaxed))
     }
 
+    /// Takes the ASTs pending on it, which it then has none of.
+    pub fn take_asts(&self) -> Ast {
+        Ast::from_bits_retain(self.pending_asts.swap(0, Ordering::Relaxed))
+    }
+
     /// Enters an interrupt handler on this CPU; dropping the guard leaves it.
     pub fn enter_interrupt(&self) -> InterruptGuard<'_> {
         raise(&self.interrupt_nesting);
