@@ -18,4 +18,4 @@ pub use critical_section::CriticalSection;
 pub use once_lock::OnceLock;
 pub use sleep_lock::SleepLock;
 pub use spinlock::{Spinlock, SpinlockGuard};
-pub use token::Token;
+pub use token::{Token, TokenGuard};

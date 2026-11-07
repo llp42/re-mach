@@ -50,3 +50,6 @@ unsafe impl RawMutex for RawToken {
 
 /// A lock its holder keeps while it runs, and gives up while it sleeps.
 pub type Token<T> = lock_api::Mutex<RawToken, T>;
+
+/// A held token; dropping it releases the token.
+pub type TokenGuard<'a, T> = lock_api::MutexGuard<'a, RawToken, T>;

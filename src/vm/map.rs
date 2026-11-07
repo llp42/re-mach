@@ -3,22 +3,22 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Address maps.
 
-use core::ops::Range;
+use core::ops::{DerefMut, Range};
 use core::ptr;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use intrusive_collections::{
     Bound, KeyAdapter, RBTree, RBTreeAtomicLink, UnsafeRef, intrusive_adapter,
 };
 
-use super::object::Object;
+use super::object::{self, Object, ObjectState};
 use super::page;
 use super::pmap::MachinePmap as _;
 use super::{Inheritance, Protection};
 use crate::arch::{PAGE_SIZE, Pmap};
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
-use crate::sync::{OnceLock, SleepLock};
+use crate::sync::{OnceLock, SleepLock, TokenGuard};
 
 /// An address map: ranges of virtual memory and what they map; so far only
 /// what a new map sets.
@@ -49,6 +49,8 @@ struct Contents {
     leading_gap: usize,
     /// How much it maps, in bytes.
     size: usize,
+    /// Its version, moved on by every write lock.
+    timestamp: u32,
 }
 
 impl Map {
@@ -67,6 +69,7 @@ impl Map {
                 gaps: RBTree::new(GapAdapter::NEW),
                 leading_gap,
                 size: 0,
+                timestamp: 0,
             }),
         }
     }
@@ -124,11 +127,14 @@ impl Map {
             protection,
             max_protection,
             inheritance,
-            backing: None,
+            backing: Backing::Object {
+                object: AtomicPtr::new(ptr::null_mut()),
+                offset: AtomicUsize::new(0),
+            },
             wire_count: 0,
             wired_access: Protection::empty(),
         })?;
-        let mut contents = self.contents.write();
+        let mut contents = self.lock();
         if range.start < self.bounds.start || range.end > self.bounds.end {
             return Err(Error::InvalidAddress);
         }
@@ -156,7 +162,7 @@ impl Map {
             return Err(Error::NoSpace);
         }
         let extends = |neighbour: &Entry| {
-            !matches!(neighbour.backing, Some(Backing::Submap(_)))
+            !matches!(neighbour.backing, Backing::Submap(_))
                 && neighbour.inheritance == entry.inheritance
                 && neighbour.protection == entry.protection
                 && neighbour.max_protection == entry.max_protection
@@ -196,7 +202,7 @@ impl Map {
     ///
     /// If `submap` is set already.
     pub fn enter_submap(&self, size: usize, submap: &'static OnceLock<Self>) -> Result<(), Error> {
-        let mut contents = self.contents.write();
+        let mut contents = self.lock();
         let (previous, start) = contents.find_space(self.bounds.start, size, PAGE_SIZE)?;
         let next = previous
             .as_ref()
@@ -217,7 +223,7 @@ impl Map {
             protection: Protection::READ | Protection::WRITE,
             max_protection: Protection::all(),
             inheritance: Inheritance::Copy,
-            backing: submap.get().map(Backing::Submap),
+            backing: Backing::Submap(submap.get().unwrap()),
             wire_count: 0,
             wired_access: Protection::empty(),
         })?;
@@ -243,7 +249,7 @@ impl Map {
         max_protection: Protection,
         object: Option<&'static Object>,
     ) -> Result<Range<usize>, Error> {
-        let mut contents = self.contents.write();
+        let mut contents = self.lock();
         let (previous, start) = contents.find_space(self.bounds.start, size, align)?;
         let next = previous
             .as_ref()
@@ -259,11 +265,12 @@ impl Map {
             protection,
             max_protection,
             inheritance: Inheritance::Copy,
-            backing: object.map(|object| Backing::Object {
-                // SAFETY: the object is static.
-                object: unsafe { UnsafeRef::from_raw(ptr::from_ref(object)) },
-                offset: start - self.bounds.start,
-            }),
+            backing: Backing::Object {
+                object: AtomicPtr::new(
+                    object.map_or(ptr::null_mut(), |object| ptr::from_ref(object).cast_mut()),
+                ),
+                offset: AtomicUsize::new(object.map_or(0, |_| start - self.bounds.start)),
+            },
             wire_count: 1,
             wired_access: Protection::READ | Protection::WRITE,
         })?;
@@ -271,9 +278,92 @@ impl Map {
         drop(contents);
         Ok(range)
     }
+
+    /// Finds what `address` maps for a fault asking for `access`: the object
+    /// behind it, locked, made first if its entry has none, where `address`
+    /// is in it, what the entry allows, whether it is wired, and the map's
+    /// version.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidAddress` if no entry holds `address`.
+    ///
+    /// # Panics
+    ///
+    /// If its object can't be made. For a submap, an entry that doesn't
+    /// allow `access` or a wired one: not yet.
+    pub fn lookup(&self, address: usize, access: Protection) -> Result<Lookup, Error> {
+        let contents = self.contents.read();
+        let entry = contents.find(address).ok_or(Error::InvalidAddress)?;
+        let (object, offset) = entry.checked_backing(access);
+        // SAFETY: the entry holds a reference on its object, which lives
+        // until vm_object_deallocate frees it.
+        if let Some(object) = unsafe { object.load(Ordering::Relaxed).as_ref() } {
+            // The object's token, under the map's lock.
+            let state = object.lock();
+            let offset = offset.load(Ordering::Relaxed);
+            let lookup = entry.found(address, object, state, offset, contents.timestamp);
+            drop(contents);
+            return Ok(lookup);
+        }
+        drop(contents);
+        // The read lock is lost: the lookup runs again under the write lock,
+        // which makes the object if the entry still has none.
+        let contents = self.lock();
+        let entry = contents.find(address).ok_or(Error::InvalidAddress)?;
+        let (slot, offset) = entry.checked_backing(access);
+        // SAFETY: as above.
+        let object = unsafe { slot.load(Ordering::Relaxed).as_ref() }.unwrap_or_else(|| {
+            let object = object::allocate(entry.range.end - entry.range.start);
+            slot.store(ptr::from_ref(object).cast_mut(), Ordering::Relaxed);
+            offset.store(0, Ordering::Relaxed);
+            object
+        });
+        // The object's token, under the map's lock.
+        let state = object.lock();
+        let offset = offset.load(Ordering::Relaxed);
+        let lookup = entry.found(address, object, state, offset, contents.timestamp);
+        drop(contents);
+        Ok(lookup)
+    }
+
+    /// Takes its write lock, moving its version on.
+    fn lock(&self) -> impl DerefMut<Target = Contents> + '_ {
+        let mut contents = self.contents.write();
+        contents.timestamp = contents.timestamp.wrapping_add(1);
+        contents
+    }
+}
+
+/// What `Map::lookup` finds for an address.
+pub struct Lookup {
+    /// The object behind it.
+    pub object: &'static Object,
+    /// The object's state, locked.
+    pub state: TokenGuard<'static, ObjectState>,
+    /// Where the address is in the object.
+    #[expect(dead_code, reason = "vm_fault_page reads it")]
+    pub offset: usize,
+    /// What the entry allows.
+    #[expect(dead_code, reason = "vm_fault_page reads it")]
+    pub protection: Protection,
+    /// Whether the entry is wired.
+    #[expect(dead_code, reason = "vm_fault_page and pmap_enter read it")]
+    pub wired: bool,
+    /// The map's version at the lookup.
+    #[expect(dead_code, reason = "vm_map_verify reads it")]
+    pub version: u32,
 }
 
 impl Contents {
+    /// The entry that holds `address`.
+    fn find(&self, address: usize) -> Option<&Entry> {
+        self.entries
+            .upper_bound(Bound::Included(&address))
+            .get()
+            .filter(|entry| address < entry.range.end)
+    }
+
     /// Where `size` bytes fit at a multiple of `align`, a multiple of the
     /// page size, and the entry they would follow: after the smallest gap
     /// that holds them however far aligning skips, the lowest among equals,
@@ -328,8 +418,8 @@ impl Contents {
     }
 }
 
-/// A range of a map and what it maps; so far only what an entry with no
-/// object, a wired one or a submap sets.
+/// A range of a map and what it maps; so far only what an entry of an
+/// object, wired or not, or of a submap sets.
 pub struct Entry {
     /// Its place in its map's tree.
     tree_link: RBTreeAtomicLink,
@@ -346,8 +436,8 @@ pub struct Entry {
     max_protection: Protection,
     /// What a child task gets of it.
     inheritance: Inheritance,
-    /// What backs it; nothing while it is only reserved.
-    backing: Option<Backing>,
+    /// What backs it.
+    backing: Backing,
     /// How many times it is wired: its pages stay resident and mapped.
     wire_count: u32,
     /// What it allows while wired.
@@ -355,16 +445,59 @@ pub struct Entry {
     wired_access: Protection,
 }
 
+impl Entry {
+    /// Its object, from an offset, once `vm_map_lookup`'s checks find a fault
+    /// asking for `access` may be resolved in it.
+    ///
+    /// # Panics
+    ///
+    /// If it is a submap, doesn't allow `access` or is wired: not yet.
+    fn checked_backing(&self, access: Protection) -> (&AtomicPtr<Object>, &AtomicUsize) {
+        let Backing::Object { object, offset } = &self.backing else {
+            panic!("vm_map_lookup: a submap, not yet");
+        };
+        assert!(
+            self.protection.contains(access),
+            "vm_map_lookup: KERN_PROTECTION_FAILURE, not yet"
+        );
+        assert!(
+            self.wire_count == 0,
+            "vm_map_lookup: a wired entry, not yet"
+        );
+        (object, offset)
+    }
+
+    /// What a lookup of `address` in it finds, with `object` behind it from
+    /// `offset`, its `state` locked, at the map's `version`.
+    const fn found(
+        &self,
+        address: usize,
+        object: &'static Object,
+        state: TokenGuard<'static, ObjectState>,
+        offset: usize,
+        version: u32,
+    ) -> Lookup {
+        Lookup {
+            object,
+            state,
+            offset: address - self.range.start + offset,
+            protection: self.protection,
+            wired: self.wire_count != 0,
+            version,
+        }
+    }
+}
+
 /// What backs an entry; only the kinds used here.
 pub enum Backing {
     /// A map of its own over the same physical map, such as the kernel's
     /// IPC buffers.
     Submap(#[expect(dead_code, reason = "vm_map_lookup descends into it")] &'static Map),
-    /// An object, from `offset` on.
-    #[expect(dead_code, reason = "vm_map_lookup and vm_fault read them")]
+    /// An object from `offset` on; null until it has one. Both change only
+    /// under the map's write lock.
     Object {
-        object: UnsafeRef<Object>,
-        offset: usize,
+        object: AtomicPtr<Object>,
+        offset: AtomicUsize,
     },
 }
 
