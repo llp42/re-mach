@@ -45,6 +45,15 @@ bitflags::bitflags! {
     }
 }
 
+/// Whether a thread's quantum ran out at a tick.
+#[derive(Clone, Copy)]
+pub enum Quantum {
+    /// It ran out.
+    Expired,
+    /// Some of it is left.
+    Left,
+}
+
 /// A thread's timer ticks a second: thread times count microseconds.
 const TIMER_RATE: u32 = 1_000_000;
 
@@ -386,17 +395,17 @@ impl Thread {
         );
     }
 
-    /// Charges its use at a tick on the CPU running it, its quantum having
-    /// run out or not: it catches up with the scheduler's aging, or, when
-    /// timeshared, gathers the time it ran, and its priority follows once
-    /// its quantum runs out or it gathered enough.
-    pub fn charge_tick(&self, quantum_expired: bool) {
+    /// Charges its use at a tick on the CPU running it, with `quantum`
+    /// saying whether its quantum ran out: it catches up with the
+    /// scheduler's aging, or, when timeshared, gathers the time it ran, and
+    /// its priority follows once its quantum runs out or it gathered enough.
+    pub fn charge_tick(&self, quantum: Quantum) {
         if self.sched_stamp.load(Ordering::Relaxed) != sched::scheduler_tick() {
             self.update_priority();
         } else if self.usage_sets_priority() {
             self.take_time_delta();
             let delta = self.sched_delta.load(Ordering::Relaxed);
-            if quantum_expired || delta >= sched::USAGE_THRESHOLD {
+            if matches!(quantum, Quantum::Expired) || delta >= sched::USAGE_THRESHOLD {
                 let usage = self.sched_usage.load(Ordering::Relaxed);
                 self.sched_usage
                     .store(usage.wrapping_add(delta), Ordering::Relaxed);
