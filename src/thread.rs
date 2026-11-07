@@ -605,10 +605,8 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         set: AtomicPtr::new(ptr::null_mut()),
         may_assign: true,
         creation_time: clock::stamp(),
-        name: task
-            .name
-            .each_ref()
-            .map(|byte| AtomicU8::new(byte.load(Ordering::Relaxed))),
+        // Its task's, copied below under the task's token.
+        name: [const { AtomicU8::new(0) }; task::NAME_SIZE],
         // SAFETY: its box, unused until given up below, outlives the thread.
         pcb: unsafe { UnsafeRef::from_raw(ptr::from_mut(&mut *pcb)) },
         self_port: AtomicPtr::new(ptr::null_mut()),
@@ -669,6 +667,7 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
     *thread.sched_pri.get_mut() = computed_priority(priority, sched_usage);
     *thread.suspend_count.get_mut() =
         members.suspend_count + 1 + u32::from(set.empty.load(Ordering::Relaxed));
+    thread.name = members.name.map(AtomicU8::new);
     // Nothing is published yet; only the set's reference is undone, and
     // the stack stays taken, as stacks are not freed yet.
     if !members.active {
