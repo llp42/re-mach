@@ -57,6 +57,18 @@ pub trait Machine {
     /// If no thread runs on the CPU.
     fn copy_out(source: &[u8], destination: usize) -> Result<(), Error>;
 
+    /// Copies from `source` in the current task's space to `destination`.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidAddress` if `source` is not below `MAX_USER_ADDRESS` or the
+    /// bytes would end past it, or if a page of them can't be faulted in.
+    ///
+    /// # Panics
+    ///
+    /// If no thread runs on the CPU.
+    fn copy_in(source: usize, destination: &mut [u8]) -> Result<(), Error>;
+
     /// The EFI system table's physical address, when booted through UEFI.
     #[expect(dead_code, reason = "host_info reports it")]
     fn efi_system_table() -> Option<u64>;

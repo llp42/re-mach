@@ -345,6 +345,10 @@ impl Machine for X86_64 {
         copy::copy_out(source, destination)
     }
 
+    fn copy_in(source: usize, destination: &mut [u8]) -> Result<(), Error> {
+        copy::copy_in(source, destination)
+    }
+
     fn efi_system_table() -> Option<u64> {
         acpi::EFI_SYSTEM_TABLE.get().copied()
     }
