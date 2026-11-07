@@ -5,6 +5,8 @@
 //! them.
 
 pub mod entry;
+pub mod kmsg;
+pub mod mach_msg;
 pub mod mach_port;
 mod object;
 pub mod port;

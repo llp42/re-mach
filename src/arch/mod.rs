@@ -25,6 +25,9 @@ pub trait Machine {
     /// arrives; at once if the section holds one back already.
     fn idle();
 
+    /// Resets the machine.
+    fn halt_all_cpus() -> !;
+
     /// Writes `text` to the console, where `\n` ends a line.
     fn write_console(text: &str);
 

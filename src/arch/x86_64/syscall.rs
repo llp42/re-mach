@@ -10,7 +10,7 @@ use x86_64::registers::rflags::RFlags;
 
 use super::per_cpu::{KERNEL_STACK, PRIVILEGE_STACK, USER_STACK};
 use super::trap::TrapFrame;
-use super::{Pcb, gdt};
+use super::{Pcb, copy, gdt};
 use crate::syscall::MACH_TRAPS;
 use crate::thread::MachineThread as _;
 
@@ -67,8 +67,9 @@ unsafe extern "C" {
 }
 
 /// Runs the system call `frame` holds: the Mach trap its eax names,
-/// negated, with its register arguments; the result goes to its rax, and
-/// the thread returns to user mode.
+/// negated, with its register arguments, and those past the sixth from the
+/// user stack; the result goes to its rax, and the thread returns to user
+/// mode.
 ///
 /// # Safety
 ///
@@ -76,8 +77,8 @@ unsafe extern "C" {
 ///
 /// # Panics
 ///
-/// On a number outside the table, which raises an exception, or a trap
-/// not written yet: not yet.
+/// On a number outside the table or a stack argument that can't be copied
+/// in, which raise exceptions, or a trap not written yet: not yet.
 unsafe extern "sysv64" fn system_call(frame: *mut TrapFrame) -> ! {
     {
         // SAFETY: guaranteed by the caller; only the thread touches its
@@ -88,10 +89,23 @@ unsafe extern "sysv64" fn system_call(frame: *mut TrapFrame) -> ! {
             .ok()
             .and_then(|index| MACH_TRAPS.get(index))
             .unwrap_or_else(|| panic!("_syscall64_range: not yet"));
-        let arguments = [
-            frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9,
+        let mut arguments = [
+            frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9, 0,
         ]
         .map(|argument| usize::try_from(argument).unwrap());
+        // Past the sixth, from the user stack, above the return address.
+        let stack = usize::try_from(frame.interrupted.stack_pointer.as_u64())
+            .unwrap()
+            .wrapping_add(8);
+        let count = trap.argument_count().max(6);
+        for (index, argument) in arguments[6..count].iter_mut().enumerate() {
+            let mut bytes = [0; 8];
+            assert!(
+                copy::copy_in(stack.wrapping_add(8 * index), &mut bytes).is_ok(),
+                "_syscall64_addr_push: not yet"
+            );
+            *argument = usize::from_le_bytes(bytes);
+        }
         frame.rax = u64::from(trap.call(&arguments));
     }
     Pcb::return_to_user()
