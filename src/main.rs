@@ -28,6 +28,7 @@ mod slab;
 mod smp;
 mod startup;
 mod sync;
+mod syscall;
 mod task;
 mod thread;
 mod vm;

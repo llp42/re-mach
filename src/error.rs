@@ -22,3 +22,17 @@ pub enum Error {
     /// The name denotes a right already.
     NameExists = 13,
 }
+
+impl From<Error> for u32 {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::InvalidAddress => 1,
+            Error::ProtectionFailure => 2,
+            Error::NoSpace => 3,
+            Error::InvalidArgument => 4,
+            Error::Failure => 5,
+            Error::ResourceShortage => 6,
+            Error::NameExists => 13,
+        }
+    }
+}
