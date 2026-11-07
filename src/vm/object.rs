@@ -34,11 +34,6 @@ pub struct Object {
 
 /// What an object's token guards; so far only its pages, where the last
 /// one went in, its paging under way and its first values.
-#[expect(
-    dead_code,
-    reason = "vm_object_deallocate's last reference and the pager calls read them"
-)]
-#[expect(clippy::struct_excessive_bools, reason = "GNU Mach's object flags")]
 pub struct ObjectState {
     /// Its resident pages.
     pages: Pages,
@@ -50,14 +45,8 @@ pub struct ObjectState {
     pub(super) shadow: Option<&'static Object>,
     /// How many paging operations on it are under way.
     paging_in_progress: u32,
-    /// Whether a pager was ever made for it; none is yet.
-    pub(super) pager_created: bool,
-    /// Whether the kernel created it, so the default memory manager manages it.
-    internal: bool,
-    /// Whether changes stay in memory rather than going back to its manager.
-    temporary: bool,
-    /// Whether it is not yet terminated.
-    alive: bool,
+    /// Its `Flags`; no pager is made for it yet.
+    pub(super) flags: Flags,
 }
 
 /// An object's resident pages.
@@ -66,6 +55,20 @@ struct Pages {
     tree: RBTree<PageTreeAdapter>,
     /// How many there are.
     count: usize,
+}
+
+bitflags::bitflags! {
+    /// Whether an object had a pager, how it is managed and whether it lives.
+    pub(super) struct Flags: u8 {
+        /// A pager was ever made for it.
+        const PAGER_CREATED = 1;
+        /// The kernel created it, so the default memory manager manages it.
+        const INTERNAL = 1 << 1;
+        /// Changes stay in memory rather than going back to its manager.
+        const TEMPORARY = 1 << 2;
+        /// Not yet terminated.
+        const ALIVE = 1 << 3;
+    }
 }
 
 intrusive_adapter!(
@@ -93,10 +96,7 @@ impl Object {
                 copy: None,
                 shadow: None,
                 paging_in_progress: 0,
-                pager_created: false,
-                internal: true,
-                temporary: true,
-                alive: true,
+                flags: Flags::INTERNAL.union(Flags::TEMPORARY).union(Flags::ALIVE),
             }),
         }
     }
