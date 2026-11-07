@@ -3,12 +3,11 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Threads.
 
-use core::iter;
 use core::mem;
 use core::ops::Range;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{
-    AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+    AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering,
 };
 
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
@@ -16,11 +15,12 @@ use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 use crate::clock::{self, TimeValue};
 use crate::error::Error;
 use crate::ipc::port::{self, KernelObject, Port};
+use crate::name::Name;
 use crate::processor::{DEFAULT_SET, Processor, ProcessorSet};
 use crate::sched::{self, Policies, Preemption, RUN_QUEUES, SCHEDULER_SCALE};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{CriticalSection, OnceLock};
-use crate::task::{self, Task};
+use crate::task::Task;
 use crate::vm;
 use crate::vm::kernel::KernelStack;
 use crate::vm::pmap::MachinePmap as _;
@@ -92,8 +92,8 @@ pub struct Thread {
     may_assign: bool,
     /// When it was created.
     creation_time: TimeValue,
-    /// Its name, ending with a NUL.
-    name: [AtomicU8; task::NAME_SIZE],
+    /// Its name; racing sets may mix two, as in GNU Mach.
+    pub(super) name: Name,
     /// Its machine state.
     pub(super) pcb: UnsafeRef<arch::Pcb>,
     /// Its port, which controls it.
@@ -553,15 +553,6 @@ impl Thread {
         }
         Ok(())
     }
-
-    /// Names it `name`, cut to fit with its final NUL.
-    pub fn set_name(&self, name: &str) {
-        // Unlocked, as in GNU Mach: racing calls may mix two names.
-        let bytes = name.bytes().chain(iter::repeat(0));
-        for (stored, byte) in self.name[..task::NAME_SIZE - 1].iter().zip(bytes) {
-            stored.store(byte, Ordering::Relaxed);
-        }
-    }
 }
 
 /// A new thread of `task`, suspended, with the kernel stack it keeps for
@@ -606,7 +597,7 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         may_assign: true,
         creation_time: clock::stamp(),
         // Its task's, copied below under the task's token.
-        name: [const { AtomicU8::new(0) }; task::NAME_SIZE],
+        name: Name::new(),
         // SAFETY: its box, unused until given up below, outlives the thread.
         pcb: unsafe { UnsafeRef::from_raw(ptr::from_mut(&mut *pcb)) },
         self_port: AtomicPtr::new(ptr::null_mut()),
@@ -667,7 +658,7 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
     *thread.sched_pri.get_mut() = computed_priority(priority, sched_usage);
     *thread.suspend_count.get_mut() =
         members.suspend_count + 1 + u32::from(set.empty.load(Ordering::Relaxed));
-    thread.name = members.name.map(AtomicU8::new);
+    thread.name.copy_from(&members.name);
     // Nothing is published yet; only the set's reference is undone, and
     // the stack stays taken, as stacks are not freed yet.
     if !members.active {

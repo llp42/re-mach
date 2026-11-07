@@ -3,7 +3,6 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Tasks: an address space, a name space for ports, and threads.
 
-use core::iter;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
@@ -15,6 +14,7 @@ use crate::clock::{self, AtomicTimeValue};
 use crate::error::Error;
 use crate::ipc::port::{self, KernelObject, Port};
 use crate::ipc::space::Space;
+use crate::name::Name;
 use crate::processor::{DEFAULT_SET, ProcessorSet};
 use crate::sched::{RUN_QUEUES, USER_PRIORITY};
 use crate::slab::{Cache, CacheBox};
@@ -24,9 +24,6 @@ use crate::thread::{TaskThreadAdapter, Thread};
 use crate::vm::kernel::KERNEL_MAP;
 use crate::vm::map::Map;
 use crate::vm::pmap::MachinePmap as _;
-
-/// The bytes a task's name holds, its final NUL included.
-pub const NAME_SIZE: usize = 32;
 
 /// A task; so far only what a new task sets.
 #[expect(dead_code, reason = "the task calls read them")]
@@ -84,7 +81,7 @@ pub struct TaskMembers {
     /// How many threads there are.
     thread_count: u32,
     /// The task's name, ending with a NUL.
-    pub(super) name: [u8; NAME_SIZE],
+    pub(super) name: Name,
 }
 
 impl Task {
@@ -208,17 +205,6 @@ impl Task {
         drop(members);
     }
 
-    /// Names it `name`, cut to fit with its final NUL.
-    pub(super) fn set_name(&self, name: &str) {
-        // Under the task's token, so no reader sees two names mixed.
-        let bytes = name.bytes().chain(iter::repeat(0));
-        let mut members = self.members.lock();
-        for (stored, byte) in members.name[..NAME_SIZE - 1].iter_mut().zip(bytes) {
-            *stored = byte;
-        }
-        drop(members);
-    }
-
     /// Caps its priority at `max_priority`, as the boot script does with
     /// `host`, the host's port: its priority set to the cap, and its
     /// threads' too.
@@ -268,7 +254,7 @@ pub fn init() {
     arch::Current::task_module_init();
     let map = KERNEL_MAP.get().expect("task_init: no kernel map");
     let task = create_with_map(map).unwrap_or_else(|error| panic!("task_init: {error:?}"));
-    task.set_name("gnumach");
+    task.members.lock().name.set(format_args!("gnumach"));
     assert!(KERNEL_TASK.set(task).is_ok(), "task_init: twice");
 }
 
@@ -323,24 +309,15 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
             user_stop_count: 0,
             threads: LinkedList::new(TaskThreadAdapter::NEW),
             thread_count: 0,
-            name: [0; NAME_SIZE],
+            name: Name::new(),
         }),
         set: AtomicPtr::new(ptr::null_mut()),
         set_link: LinkedListAtomicLink::new(),
     })?;
-    // "%p": its address in hex, with no prefix, written from the end;
-    // without the token, as the task is not published yet.
-    let mut name = [0; 2 * size_of::<usize>()];
-    let (mut start, mut address) = (name.len(), ptr::from_ref(&*task).addr());
-    loop {
-        start -= 1;
-        name[start] = b"0123456789abcdef"[address % 16];
-        address /= 16;
-        if address == 0 {
-            break;
-        }
-    }
-    task.members.get_mut().name[..name.len() - start].copy_from_slice(&name[start..]);
+    // "%p": its address in hex, with no prefix; without the token, as the
+    // task is not published yet.
+    let address = ptr::from_ref(&*task).addr();
+    task.members.get_mut().name.set(format_args!("{address:x}"));
     // The task takes the space's first reference.
     CacheBox::into_raw(space);
     let task = CacheBox::into_raw(task);
