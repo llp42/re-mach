@@ -91,10 +91,18 @@ pub const SCHEDULER_SHIFT: u32 = 7;
 /// priority.
 pub const PRIORITY_SHIFT: u32 = 17;
 
+/// A thread's scheduling policy, one of `Policies`.
+pub enum Policy {
+    /// Its priority decays with use.
+    Timeshare,
+    /// Its priority stays, and it has its own quantum.
+    #[expect(dead_code, reason = "thread_policy sets it")]
+    FixedPriority,
+}
+
 bitflags::bitflags! {
-    /// Scheduling policies, as Mach's interface numbers them; only those
-    /// used here.
-    #[derive(PartialEq, Eq)]
+    /// The scheduling policies a processor set allows, as Mach's interface
+    /// numbers them; only those used here.
     pub struct Policies: u32 {
         /// Priorities decay with use.
         const TIMESHARE = 1;

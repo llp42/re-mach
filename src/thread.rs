@@ -18,7 +18,7 @@ use crate::ipc::port::{self, KernelObject, Port};
 use crate::machine::Mode;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, Processor, ProcessorSet};
-use crate::sched::{self, Policies, Preemption, RUN_QUEUES, SCHEDULER_SCALE};
+use crate::sched::{self, Policy, Preemption, RUN_QUEUES, SCHEDULER_SCALE};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{CriticalSection, OnceLock};
 use crate::task::Task;
@@ -87,7 +87,7 @@ pub struct Thread {
     /// The priority it is scheduled at, its base aged by its use.
     pub(super) sched_pri: AtomicU32,
     /// Its scheduling policy.
-    pub(super) policy: Policies,
+    pub(super) policy: Policy,
     /// Its recent processor use, scaled.
     cpu_usage: AtomicU32,
     /// Its use, as its priority ages it.
@@ -416,18 +416,17 @@ impl Thread {
     }
 
     /// Its next quantum: `quantum` when timeshared, else its own.
-    pub fn next_quantum(&self, quantum: u32) -> u32 {
-        if self.policy == Policies::TIMESHARE {
-            quantum
-        } else {
-            self.fixed_quantum
+    pub const fn next_quantum(&self, quantum: u32) -> u32 {
+        match self.policy {
+            Policy::Timeshare => quantum,
+            Policy::FixedPriority => self.fixed_quantum,
         }
     }
 
     /// Whether its use sets its priority: it is timeshared and not
     /// depressed.
     fn usage_sets_priority(&self) -> bool {
-        self.policy == Policies::TIMESHARE && self.depressed_from.load(Ordering::Relaxed) < 0
+        matches!(self.policy, Policy::Timeshare) && self.depressed_from.load(Ordering::Relaxed) < 0
     }
 
     /// Adds the CPU time it ran since its use was last charged to its
@@ -596,7 +595,7 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         priority: AtomicU32::new(0),
         max_priority: AtomicU32::new(0),
         sched_pri: AtomicU32::new(0),
-        policy: Policies::TIMESHARE,
+        policy: Policy::Timeshare,
         cpu_usage: AtomicU32::new(TIMER_RATE),
         sched_usage: AtomicU32::new(sched_usage),
         sched_stamp: AtomicU32::new(sched::scheduler_tick()),
