@@ -5,7 +5,8 @@
 
 use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::error::Error;
-use crate::print;
+use crate::ipc::port;
+use crate::{print, smp};
 
 /// A Mach trap, as the table holds it.
 pub enum MachTrap {
@@ -43,7 +44,7 @@ pub static MACH_TRAPS: [MachTrap; COUNT] = {
     traps[13] = MachTrap::NotYet("null_port");
     traps[17] = MachTrap::NotYet("evc_wait");
     traps[18] = MachTrap::NotYet("evc_wait_clear");
-    traps[25] = MachTrap::NotYet("mach_msg_trap");
+    traps[25] = MachTrap::Written(message);
     traps[26] = MachTrap::Written(reply_port);
     traps[27] = MachTrap::NotYet("mach_thread_self");
     traps[28] = MachTrap::NotYet("mach_task_self");
@@ -77,10 +78,24 @@ fn invalid(_: &[usize; 6]) -> u32 {
     Error::InvalidArgument.into()
 }
 
-/// Gives the caller a reply port: not written yet, so the run halts here,
-/// where it grows next.
-fn reply_port(_: &[usize; 6]) -> u32 {
+/// Sends a message and receives one: not written yet, so the run halts
+/// here, where it grows next.
+fn message(_: &[usize; 6]) -> u32 {
     arch::Current::halt()
+}
+
+/// Gives the caller a reply port: a new port its task's space receives on,
+/// under the lowest free name there, which it returns.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU. If the port can't be allocated: not yet;
+/// as `port::allocate`.
+fn reply_port(_: &[usize; 6]) -> u32 {
+    let thread = smp::current()
+        .active_thread()
+        .expect("mach_reply_port: no current thread");
+    port::allocate(&thread.task.space).expect("mach_reply_port: a failed allocation, not yet")
 }
 
 /// How many bytes `print` copies in at a time, at most.

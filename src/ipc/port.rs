@@ -3,9 +3,10 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Ports.
 
-use core::ptr::NonNull;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use super::object;
 use super::space::{self, Space};
 use crate::error::Error;
 use crate::host::Host;
@@ -25,12 +26,14 @@ pub struct Port {
 }
 
 /// A port's state under its lock; so far only whether it is alive, its
-/// receiver, its send rights and what it stands for.
+/// receiver and its name there, its send rights and what it stands for.
 pub(super) struct PortState {
     /// Whether it is alive.
     pub(super) active: bool,
     /// The space that holds its receive right.
     pub(super) receiver: NonNull<Space>,
+    /// Its receive right's name in that space.
+    pub(super) receiver_name: u32,
     /// How many send rights for it there are.
     send_rights: u32,
     /// How many send rights have been made from its receive right.
@@ -108,14 +111,44 @@ pub(super) static CACHE: Cache<Port> = Cache::new("ipc_port");
 ///
 /// `ResourceShortage` if no port can be allocated.
 pub fn allocate_kernel() -> Result<CacheBox<Port>, Error> {
-    CACHE.allocate(Port {
+    let mut port = CACHE.allocate(Port {
         references: AtomicU32::new(1),
         state: Spinlock::new(PortState {
             active: true,
             receiver: NonNull::from(&space::KERNEL_SPACE),
+            receiver_name: 0,
             send_rights: 0,
             make_send_count: 0,
             kernel_object: None,
         }),
-    })
+    })?;
+    // Its address's low 32 bits, as GNU Mach names kernel ports.
+    let address = ptr::from_ref(&*port).addr() & 0xffff_ffff;
+    port.state.get_mut().receiver_name = u32::try_from(address).unwrap();
+    Ok(port)
+}
+
+/// A new port that `space` receives on, under the lowest free name there,
+/// its one reference the receive right's; gives the name.
+///
+/// # Errors
+///
+/// As `object::allocate`.
+///
+/// # Panics
+///
+/// As `object::allocate`.
+pub fn allocate(space: &Space) -> Result<u32, Error> {
+    let port = CACHE.allocate(Port {
+        references: AtomicU32::new(1),
+        state: Spinlock::new(PortState {
+            active: true,
+            receiver: NonNull::from(space),
+            receiver_name: 0,
+            send_rights: 0,
+            make_send_count: 0,
+            kernel_object: None,
+        }),
+    })?;
+    object::allocate(space, port)
 }

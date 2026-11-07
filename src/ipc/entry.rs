@@ -45,6 +45,8 @@ bitflags::bitflags! {
     pub(super) struct Rights: u16 {
         /// A send right.
         const SEND = 1;
+        /// The receive right.
+        const RECEIVE = 1 << 1;
     }
 }
 

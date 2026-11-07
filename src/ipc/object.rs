@@ -5,10 +5,39 @@
 
 use core::ptr::NonNull;
 
+use super::entry::Rights;
 use super::port::Port;
 use super::space::Space;
 use super::{MessageType, right};
 use crate::error::Error;
+use crate::slab::CacheBox;
+
+/// Puts the receive right for `port`, new, in `space` under the lowest
+/// free name, and gives the name; the entry takes the right and the
+/// port's reference, linked only once the port knows the name.
+///
+/// # Errors
+///
+/// `ResourceShortage` if no entry or map node can be allocated; the port
+/// is freed.
+///
+/// # Panics
+///
+/// As `SpaceState::allocate`.
+pub(super) fn allocate(space: &Space, mut port: CacheBox<Port>) -> Result<u32, Error> {
+    let mut state = space.state.write();
+    let (name, entry) = state.allocate()?;
+    port.state.get_mut().receiver_name = name;
+    let port = CacheBox::into_raw(port);
+    // SAFETY: the space's lock, held, guards its entries, and no reference
+    // to this new one is alive.
+    let entry = unsafe { &mut *entry.as_ptr() };
+    // The receive right, with no user references.
+    entry.bits.rights |= Rights::RECEIVE;
+    entry.object = Some(port);
+    drop(state);
+    Ok(name)
+}
 
 /// Puts the right `message_type` names, for `port`, in `space` as `name`;
 /// the space takes the right and its reference.

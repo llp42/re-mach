@@ -69,6 +69,41 @@ impl Space {
 }
 
 impl SpaceState {
+    /// The lowest free name, and a new entry for it that holds no rights.
+    ///
+    /// # Errors
+    ///
+    /// `ResourceShortage` if the entry or a map node can't be allocated.
+    ///
+    /// # Panics
+    ///
+    /// If the space is dead: not yet.
+    pub(super) fn allocate(&mut self) -> Result<(u32, NonNull<Entry>), Error> {
+        assert!(self.active, "ipc_entry_alloc: a dead space, not yet");
+        // Entries are never freed yet, so there is no free list to take from.
+        let entry = CacheBox::into_raw(entry::CACHE.allocate(Entry {
+            name: 0,
+            bits: EntryBits {
+                rights: Rights::empty(),
+                user_references: 0,
+            },
+            object: None,
+            request: 0,
+        })?);
+        let Ok(key) = self.map.insert_alloc(entry) else {
+            // SAFETY: it came from `into_raw` of an entry box, and the map
+            // didn't take it.
+            drop(unsafe { CacheBox::from_raw(&entry::CACHE, entry) });
+            return Err(Error::ResourceShortage);
+        };
+        self.size += 1;
+        let name = u32::try_from(key).unwrap();
+        // SAFETY: the space's lock, held, guards its entries, and no
+        // reference to this one is alive.
+        unsafe { (*entry.as_ptr()).name = name };
+        Ok((name, entry))
+    }
+
     /// The entry of `name`, which holds rights, else a new one for it.
     ///
     /// # Errors
