@@ -4,7 +4,7 @@
 //! Tasks: an address space, a name space for ports, and threads.
 
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 use core::{iter, str};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
@@ -44,6 +44,10 @@ pub struct Task {
     may_assign: bool,
     /// When it was created.
     pub(super) creation_time: AtomicTimeValue,
+    /// Its page faults: each search for a faulting page counts one.
+    pub(super) faults: AtomicUsize,
+    /// Its pages filled with zeros on a fault.
+    pub(super) zero_fills: AtomicUsize,
     /// Its name, ending with a NUL.
     pub(super) name: [AtomicU8; NAME_SIZE],
     /// Whether it is alive, its priorities and suspensions, and its threads.
@@ -191,6 +195,8 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
         self_send: AtomicPtr::new(ptr::null_mut()),
         may_assign: true,
         creation_time: clock::stamp().into(),
+        faults: AtomicUsize::new(0),
+        zero_fills: AtomicUsize::new(0),
         name: [const { AtomicU8::new(0) }; NAME_SIZE],
         members: Token::new(TaskMembers {
             active: true,

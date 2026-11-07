@@ -13,6 +13,8 @@ pub mod pmap;
 pub mod proxy;
 pub mod user;
 
+use core::sync::atomic::AtomicU32;
+
 use pmap::MachinePmap as _;
 
 use crate::arch;
@@ -37,6 +39,21 @@ pub enum Inheritance {
     /// A copy of it.
     Copy = 1,
 }
+
+/// The VM's event counts, as Mach's `vm_statistics` reports them; only
+/// those kept so far.
+struct Statistics {
+    /// Faults: each search for a faulting page counts one.
+    faults: AtomicU32,
+    /// Pages filled with zeros on a fault.
+    zero_fill_count: AtomicU32,
+}
+
+/// The VM's event counts.
+static STATISTICS: Statistics = Statistics {
+    faults: AtomicU32::new(0),
+    zero_fill_count: AtomicU32::new(0),
+};
 
 /// Sets up virtual memory before IPC, on the boot CPU.
 pub fn bootstrap() {

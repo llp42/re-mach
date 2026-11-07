@@ -5,7 +5,7 @@
 
 use core::mem::MaybeUninit;
 use core::ops::Range;
-use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 use core::{ptr, slice};
 
 use intrusive_collections::{
@@ -32,6 +32,9 @@ pub struct Page {
     object: AtomicPtr<Object>,
     /// Where it is in its object, in bytes; changed as `object` is.
     offset: AtomicUsize,
+    /// Its busy word: `HARD_BUSY` while the thread that set it fills or
+    /// maps it, and others keep off it.
+    busy: AtomicU32,
     /// Its state while it is a slab.
     pub slab: Slab,
 }
@@ -44,6 +47,7 @@ impl Page {
             object_link: RBTreeAtomicLink::new(),
             object: AtomicPtr::new(ptr::null_mut()),
             offset: AtomicUsize::new(0),
+            busy: AtomicU32::new(0),
             slab: Slab::new(),
         }
     }
@@ -61,6 +65,31 @@ impl Page {
         self.offset.load(Ordering::Relaxed)
     }
 
+    /// Makes it busy, before it goes into an object.
+    pub(super) fn set_busy(&self) {
+        self.busy.fetch_or(HARD_BUSY, Ordering::Relaxed);
+    }
+
+    /// Whether it is busy, behind its object's token.
+    pub(super) fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::Relaxed) & HARD_BUSY != 0
+    }
+
+    /// Fills it with zeros.
+    ///
+    /// # Safety
+    ///
+    /// Nothing else may use its memory meanwhile.
+    pub(super) unsafe fn zero_fill(&'static self) {
+        // SAFETY: the caller has the page to itself, and the direct map
+        // reaches all of it.
+        unsafe {
+            self.address()
+                .direct_map_ptr::<u8>()
+                .write_bytes(0, PAGE_SIZE);
+        }
+    }
+
     /// Where the page is.
     ///
     /// # Panics
@@ -72,6 +101,9 @@ impl Page {
         array.start + index * PAGE_SIZE
     }
 }
+
+/// The busy word's bit for a page one thread has to itself.
+const HARD_BUSY: u32 = 1 << 31;
 
 intrusive_adapter!(
     #[expect(
@@ -474,12 +506,7 @@ pub fn allocate(index: usize) -> Option<&'static Page> {
 /// zeros; `None` when no page is free.
 pub fn allocate_zeroed(index: usize) -> Option<&'static Page> {
     let page = allocate(index)?;
-    // SAFETY: the page is free, so the kernel's alone, and the direct map
-    // reaches all of it.
-    unsafe {
-        page.address()
-            .direct_map_ptr::<u8>()
-            .write_bytes(0, PAGE_SIZE);
-    }
+    // SAFETY: the page is free, so the kernel's alone.
+    unsafe { page.zero_fill() };
     Some(page)
 }
