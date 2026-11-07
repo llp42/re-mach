@@ -124,6 +124,47 @@ impl Task {
         }
     }
 
+    /// Lifts one stop users asked for; the last releases it.
+    ///
+    /// # Errors
+    ///
+    /// `Failure` if users have not stopped it.
+    ///
+    /// # Panics
+    ///
+    /// As `release`.
+    pub(super) fn resume(&self) -> Result<(), Error> {
+        let mut members = self.members.lock();
+        if members.user_stop_count == 0 {
+            return Err(Error::Failure);
+        }
+        members.user_stop_count -= 1;
+        let release = members.user_stop_count == 0;
+        drop(members);
+        if release {
+            self.release();
+        }
+        Ok(())
+    }
+
+    /// Lifts one suspension, releasing each of its threads once.
+    ///
+    /// # Panics
+    ///
+    /// If it is not alive: not yet. As `Thread::release`.
+    fn release(&self) {
+        let mut members = self.members.lock();
+        assert!(members.active, "task_release: an inactive task, not yet");
+        members.suspend_count -= 1;
+        let mut cursor = members.threads.front();
+        while let Some(thread) = cursor.clone_pointer() {
+            // SAFETY: a thread leaves its task before it is freed.
+            unsafe { &*UnsafeRef::into_raw(thread) }.release();
+            cursor.move_next();
+        }
+        drop(members);
+    }
+
     /// Suspends it once more, holding its threads but the current one.
     ///
     /// # Panics
