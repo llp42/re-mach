@@ -191,6 +191,41 @@ impl Table {
     }
 }
 
+/// The root table, which lists the others.
+enum RootTable {
+    /// The RSDT, with 32-bit entries.
+    Rsdt(Table),
+    /// The XSDT, with 64-bit entries.
+    Xsdt(Table),
+}
+
+impl RootTable {
+    /// Its table.
+    const fn table(&self) -> &Table {
+        match self {
+            Self::Rsdt(table) | Self::Xsdt(table) => table,
+        }
+    }
+
+    /// How many entries it has.
+    const fn count(&self) -> usize {
+        match self {
+            Self::Rsdt(table) => (table.0.len() - Table::HEADER_SIZE) / 4,
+            Self::Xsdt(table) => (table.0.len() - Table::HEADER_SIZE) / 8,
+        }
+    }
+
+    /// The address its entry `index` holds.
+    fn entry(&self, index: usize) -> u64 {
+        match self {
+            Self::Rsdt(table) => u64::from(u32::from_le_bytes(
+                table.bytes(Table::HEADER_SIZE + index * 4),
+            )),
+            Self::Xsdt(table) => u64::from_le_bytes(table.bytes(Table::HEADER_SIZE + index * 8)),
+        }
+    }
+}
+
 /// The HPET's registers, once `init_apics` maps them.
 pub static HPET: OnceLock<Registers> = OnceLock::new();
 
@@ -212,12 +247,14 @@ const IO_APIC_SIZE: usize = 0x20;
 ///
 /// On a second call.
 pub fn init_apics() -> Result<(), Error> {
-    let (root, wide) = root_table()?;
-    let size = if wide { 8 } else { 4 };
-    let count = (root.0.len() - Table::HEADER_SIZE) / size;
-    let madt = find_tables(&root, wide, count)?;
+    let root = root_table()?;
+    let madt = find_tables(&root)?;
     println!("ACPI:");
-    println!(" rsdt/xsdt = {:#x} (n = {count})", root.0.as_ptr().addr());
+    println!(
+        " rsdt/xsdt = {:#x} (n = {})",
+        root.table().0.as_ptr().addr(),
+        root.count()
+    );
     let local_apic = u32::from_le_bytes(madt.bytes(36));
     let local_apic = Registers::map(
         PhysAddr(usize::try_from(local_apic).unwrap()),
@@ -254,45 +291,39 @@ pub fn init_apics() -> Result<(), Error> {
     Ok(())
 }
 
-/// The RSDT, or the XSDT when the RSDP gives one, and whether it is the
-/// XSDT, with 64-bit entries.
-fn root_table() -> Result<(Table, bool), Error> {
-    let (root, wide) = match RSDP.get().ok_or(Error::NoRsdp)? {
+/// The RSDT, or the XSDT when the RSDP gives one.
+fn root_table() -> Result<RootTable, Error> {
+    let at = |address| Table::at(PhysAddr(usize::try_from(address).unwrap()));
+    let root = match RSDP.get().ok_or(Error::NoRsdp)? {
         Rsdp::V2(rsdp) if u64::from_le_bytes(rsdp[24..32].try_into().unwrap()) != 0 => {
-            (u64::from_le_bytes(rsdp[24..32].try_into().unwrap()), true)
+            RootTable::Xsdt(at(u64::from_le_bytes(rsdp[24..32].try_into().unwrap())))
         }
-        Rsdp::V1(rsdp) => (
-            u64::from(u32::from_le_bytes(rsdp[16..20].try_into().unwrap())),
-            false,
-        ),
-        Rsdp::V2(rsdp) => (
-            u64::from(u32::from_le_bytes(rsdp[16..20].try_into().unwrap())),
-            false,
-        ),
+        Rsdp::V1(rsdp) => RootTable::Rsdt(at(u64::from(u32::from_le_bytes(
+            rsdp[16..20].try_into().unwrap(),
+        )))),
+        Rsdp::V2(rsdp) => RootTable::Rsdt(at(u64::from(u32::from_le_bytes(
+            rsdp[16..20].try_into().unwrap(),
+        )))),
     };
-    let root = Table::at(PhysAddr(usize::try_from(root).unwrap()));
-    if root.signature() != if wide { b"XSDT" } else { b"RSDT" } {
+    let (table, signature) = match &root {
+        RootTable::Rsdt(table) => (table, b"RSDT"),
+        RootTable::Xsdt(table) => (table, b"XSDT"),
+    };
+    if table.signature() != signature {
         return Err(Error::NoRsdt);
     }
-    if !root.is_valid() {
+    if !table.is_valid() {
         return Err(Error::BadChecksum);
     }
-    Ok((root, wide))
+    Ok(root)
 }
 
-/// Looks through the root table's `count` entries: maps the HPET's
-/// registers, if listed, and returns the MADT.
-fn find_tables(root: &Table, wide: bool, count: usize) -> Result<Table, Error> {
+/// Looks through the root table's entries: maps the HPET's registers, if
+/// listed, and returns the MADT.
+fn find_tables(root: &RootTable) -> Result<Table, Error> {
     let mut madt = None;
-    for index in 0..count {
-        let address = if wide {
-            u64::from_le_bytes(root.bytes(Table::HEADER_SIZE + index * 8))
-        } else {
-            u64::from(u32::from_le_bytes(
-                root.bytes(Table::HEADER_SIZE + index * 4),
-            ))
-        };
-        let table = Table::at(PhysAddr(usize::try_from(address).unwrap()));
+    for index in 0..root.count() {
+        let table = Table::at(PhysAddr(usize::try_from(root.entry(index)).unwrap()));
         match table.signature() {
             b"APIC" => madt = Some(table),
             b"HPET" => {
