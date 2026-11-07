@@ -124,7 +124,7 @@ fn create_task(path: &str) -> &'static Task {
     let task = task::create(None).unwrap_or_else(|error| {
         panic!("boot_script_task_create failed with {error:?}, cleanup not yet")
     });
-    task.set_name(path);
+    task.members.lock().name.set(format_args!("{path}"));
     // SAFETY: the host's ports are never freed.
     let host = unsafe { HOST.port.load(Ordering::Acquire).as_ref() }
         .expect("boot_script_task_create: no host port");

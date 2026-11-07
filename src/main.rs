@@ -22,6 +22,7 @@ mod ipc_host;
 mod ipc_kobject;
 mod kalloc;
 mod machine;
+mod name;
 mod panic;
 mod processor;
 mod sched;

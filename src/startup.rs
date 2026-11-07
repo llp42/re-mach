@@ -3,8 +3,6 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Machine-independent startup.
 
-use core::str;
-
 use crate::arch::{self, Machine as _};
 use crate::collections::radix_tree;
 use crate::config::MAX_CPUS;
@@ -24,20 +22,7 @@ fn start_kernel_threads() -> ! {
     for cpu in (0..MAX_CPUS).filter(|&cpu| machine::has_processor(cpu)) {
         let thread = thread::create(kernel_task)
             .unwrap_or_else(|error| panic!("start_kernel_threads: thread_create: {error:?}"));
-        // "idle/" and the CPU's number, written from the end.
-        let mut name = [0; 25];
-        let (mut start, mut number) = (name.len(), cpu);
-        loop {
-            start -= 1;
-            name[start] = b'0' + u8::try_from(number % 10).unwrap();
-            number /= 10;
-            if number == 0 {
-                break;
-            }
-        }
-        start -= 5;
-        name[start..start + 5].copy_from_slice(b"idle/");
-        thread.set_name(str::from_utf8(&name[start..]).unwrap());
+        thread.name.set(format_args!("idle/{cpu}"));
         thread.bind(smp::of(cpu).processor());
         thread.start(sched::idle_thread);
         thread
@@ -50,7 +35,8 @@ fn start_kernel_threads() -> ! {
     smp::current()
         .active_thread()
         .expect("start_kernel_threads: no current thread")
-        .set_name("pageout");
+        .name
+        .set(format_args!("pageout"));
     vm::pageout::run()
 }
 
@@ -73,7 +59,7 @@ pub fn start() -> ! {
     let kernel_task = task::KERNEL_TASK.get().expect("startup: no kernel task");
     let startup = thread::create(kernel_task)
         .unwrap_or_else(|error| panic!("startup: thread_create: {error:?}"));
-    startup.set_name("startup");
+    startup.name.set(format_args!("startup"));
     startup.start(start_kernel_threads);
     // It looks as if it runs already, so resuming it puts it on no run
     // queue.
