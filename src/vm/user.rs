@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The virtual memory calls of Mach's interface.
 
-use super::map::Map;
+use super::map::{Change, Map};
 use super::{Inheritance, Protection};
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
@@ -57,4 +57,37 @@ pub fn allocate(
         Inheritance::Copy,
     )?;
     Ok(start)
+}
+
+/// Sets what `size` bytes of `map` from `address`, rounded out to pages,
+/// allow to `protection`, as `change` says.
+///
+/// # Errors
+///
+/// `InvalidArgument` if `protection` holds more than reading, writing,
+/// running and `VM_PROT_NOTIFY`, and as `Map::protect`.
+///
+/// # Panics
+///
+/// If `protection` holds `VM_PROT_NOTIFY`: not yet. As `Map::protect`.
+pub fn protect(
+    map: &Map,
+    address: usize,
+    size: usize,
+    change: Change,
+    protection: Protection,
+) -> Result<(), Error> {
+    /// `VM_PROT_NOTIFY`, which GNU Mach lets through.
+    const NOTIFY: u32 = 0x10;
+    if protection.bits() & !(Protection::all().bits() | NOTIFY) != 0 {
+        return Err(Error::InvalidArgument);
+    }
+    assert!(
+        Protection::all().contains(protection),
+        "vm_protect: VM_PROT_NOTIFY, not yet"
+    );
+    // GNU Mach's rounding, which wraps past the top.
+    let start = address & !(PAGE_SIZE - 1);
+    let end = address.wrapping_add(size).wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    map.protect(start..end, protection, change)
 }

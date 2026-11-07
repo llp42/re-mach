@@ -61,6 +61,15 @@ pub trait MachinePmap {
     /// outside the page array, or for `Wiring::Wired`: not yet.
     fn enter(&self, address: usize, physical: PhysAddr, protection: Protection, wiring: Wiring);
 
+    /// Cuts the mappings of user `range` down to `protection`, skipping the
+    /// pages and tables not there.
+    ///
+    /// # Panics
+    ///
+    /// If it is the kernel's, `protection` lacks reading, or it is active on
+    /// another CPU: not yet.
+    fn protect(&self, range: Range<usize>, protection: Protection);
+
     /// Maps kernel `address` to the page at `physical`, read-write.
     fn enter_kernel(address: usize, physical: PhysAddr);
     /// The page `enter_kernel` mapped kernel `address` to; `None` if none.

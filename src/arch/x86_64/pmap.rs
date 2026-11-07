@@ -8,6 +8,7 @@ use core::ops::Range;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use core::{ptr, slice};
 
+use x86_64::VirtAddr;
 use x86_64::instructions::tlb;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr3Flags, Cr4, Cr4Flags};
 use x86_64::registers::model_specific::{Pat, PatMemoryType};
@@ -247,6 +248,61 @@ impl MachinePmap for Pmap {
         for spare in spares.into_iter().flatten() {
             page::free(spare);
         }
+    }
+
+    fn protect(&self, range: Range<usize>, protection: Protection) {
+        // Writing stays: nothing to do.
+        if protection.contains(Protection::READ | Protection::WRITE) {
+            return;
+        }
+        assert!(
+            !ptr::eq(self, Self::kernel()),
+            "pmap_protect: the kernel pmap, not yet"
+        );
+        assert!(
+            protection.contains(Protection::READ),
+            "pmap_protect: pmap_remove, not yet"
+        );
+        let tables = self.lock.lock();
+        let current = 1 << smp::current().id();
+        let active = self.active_cpus.load(Ordering::Relaxed) & current != 0;
+        let mut address = range.start;
+        while address < range.end {
+            // The end of the page table's span, or of the range.
+            let next = address
+                .checked_add(LARGE_PAGE_SIZE)
+                .map_or(range.end, |next| {
+                    (next & !(LARGE_PAGE_SIZE - 1)).min(range.end)
+                });
+            if let Ok(table) = self.expand(address, &mut []) {
+                let entries = page::lookup(table)
+                    .expect("pmap_protect: a page table outside the page array")
+                    .table_lock
+                    .lock();
+                for page in (address..next).step_by(PAGE_SIZE) {
+                    let entry = table_entry(table, index(page, PAGE_SIZE));
+                    // Only the table's lock holder clears writing.
+                    if !PageTableFlags::from_bits_truncate(entry.load(Ordering::Relaxed))
+                        .contains(PageTableFlags::PRESENT | PageTableFlags::WRITABLE)
+                    {
+                        continue;
+                    }
+                    // Atomic, as the CPU sets accessed and dirty bits.
+                    entry.fetch_and(!PageTableFlags::WRITABLE.bits(), Ordering::SeqCst);
+                    if active {
+                        tlb::flush(VirtAddr::new(u64::try_from(page).unwrap()));
+                    }
+                }
+                drop(entries);
+            }
+            address = next;
+        }
+        // After the entries change, as `activate` sets its bit before CR3.
+        assert!(
+            self.active_cpus.load(Ordering::SeqCst) & !current == 0,
+            "PMAP_UPDATE_TLBS: signal_cpus, not yet"
+        );
+        drop(tables);
     }
 
     fn enter_kernel(address: usize, physical: PhysAddr) {

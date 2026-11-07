@@ -20,7 +20,8 @@ use crate::ipc::{MessageType, mach_port};
 use crate::sched::{self, Event, USER_PRIORITY};
 use crate::sync::Spinlock;
 use crate::task::{self, Task};
-use crate::vm::map::Map;
+use crate::vm::Protection;
+use crate::vm::map::{Change, Map};
 use crate::vm::user::Placement;
 use crate::{device, print, println, smp, thread, vm};
 use elf_load::{SectionType, Segment};
@@ -180,9 +181,8 @@ fn run_command(module: &'static BootModule, task: &'static Task, line: &[u8], ar
 }
 
 /// The work of a thread `run_command` makes, in its boot task: loads the
-/// module's program into the task and starts it; so far it reads the
-/// program's image and starts on its first segment, where it stops its
-/// CPU.
+/// module's program into the task and starts it; so far it loads the
+/// program, prints so and stops its CPU.
 ///
 /// # Panics
 ///
@@ -222,12 +222,13 @@ fn load_program() -> ! {
     for segment in image.segments() {
         load_segment(&thread.task.map, bytes, &segment).unwrap_or_else(|error| fail(error));
     }
+    print!("task loaded:");
     arch::Current::halt()
 }
 
-/// Loads `segment` of the image in `bytes` into `map`, the current task's;
-/// so far it checks the segment, allocates its pages and copies its file
-/// bytes in, then stops its CPU.
+/// Loads `segment` of the image in `bytes` into `map`, the current task's:
+/// checks the segment, allocates its pages, copies its file bytes in and
+/// protects its pages as it asks.
 ///
 /// # Errors
 ///
@@ -236,8 +237,8 @@ fn load_program() -> ! {
 /// # Panics
 ///
 /// If the segment takes no memory, less than its file bytes, or pages past
-/// the address space's end, if its pages can't be allocated where it asks,
-/// or if its file bytes can't be copied in.
+/// the address space's end, if its pages can't be allocated where it asks
+/// or protected, or if its file bytes can't be copied in.
 fn load_segment(map: &Map, bytes: &[u8], segment: &Segment) -> Result<(), elf_load::Error> {
     if segment
         .offset
@@ -265,7 +266,18 @@ fn load_segment(map: &Map, bytes: &[u8], segment: &Segment) -> Result<(), elf_lo
         arch::Current::copy_out(file, segment.address)
             .unwrap_or_else(|error| panic!("read_exec: copyout: {error:?}"));
     }
-    arch::Current::halt()
+    let protection = Protection::from_bits_truncate(segment.section_type.bits());
+    if protection != Protection::all() {
+        vm::user::protect(
+            map,
+            pages.start,
+            pages.end - pages.start,
+            Change::Current,
+            protection,
+        )
+        .unwrap_or_else(|error| panic!("read_exec: vm_protect: {error:?}"));
+    }
+    Ok(())
 }
 
 /// The boot script's insert of a port argument: a send right made for
