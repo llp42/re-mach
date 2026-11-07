@@ -7,7 +7,7 @@ use core::ptr;
 use core::sync::atomic::Ordering;
 
 use super::map::Map;
-use super::object::{Object, ObjectState};
+use super::object::{Flags, Object, ObjectState};
 use super::page::{self, Page};
 use super::pmap::{MachinePmap as _, Wiring};
 use super::{Protection, STATISTICS};
@@ -135,7 +135,7 @@ fn fault_page(
     page.set_busy();
     state.insert(object, page, offset);
     assert!(
-        !state.pager_created,
+        !state.flags.contains(Flags::PAGER_CREATED),
         "vm_fault_page: a pager (look_for_page), not yet"
     );
     assert!(
