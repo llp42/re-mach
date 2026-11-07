@@ -342,13 +342,12 @@ pub struct Lookup {
     /// The object's state, locked.
     pub state: TokenGuard<'static, ObjectState>,
     /// Where the address is in the object.
-    #[expect(dead_code, reason = "vm_fault_page reads it")]
     pub offset: usize,
     /// What the entry allows.
-    #[expect(dead_code, reason = "vm_fault_page reads it")]
+    #[expect(dead_code, reason = "pmap_enter reads it")]
     pub protection: Protection,
     /// Whether the entry is wired.
-    #[expect(dead_code, reason = "vm_fault_page and pmap_enter read it")]
+    #[expect(dead_code, reason = "pmap_enter reads it")]
     pub wired: bool,
     /// The map's version at the lookup.
     #[expect(dead_code, reason = "vm_map_verify reads it")]

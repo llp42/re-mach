@@ -38,11 +38,18 @@ pub struct Object {
     dead_code,
     reason = "vm_object_deallocate and the pager calls read them"
 )]
+#[expect(clippy::struct_excessive_bools, reason = "GNU Mach's object flags")]
 pub struct ObjectState {
     /// Its resident pages.
     pages: Pages,
+    /// The object its pages are copied into before they change; none yet.
+    pub(super) copy: Option<&'static Object>,
+    /// The object behind it, whose pages show where it has none; none yet.
+    pub(super) shadow: Option<&'static Object>,
     /// How many paging operations on it are under way.
     paging_in_progress: u32,
+    /// Whether a pager was ever made for it; none is yet.
+    pub(super) pager_created: bool,
     /// Whether the kernel created it, so the default memory manager manages it.
     internal: bool,
     /// Whether changes stay in memory rather than going back to its manager.
@@ -80,7 +87,10 @@ impl Object {
                     tree: RBTree::new(PageTreeAdapter::NEW),
                     count: 0,
                 },
+                copy: None,
+                shadow: None,
                 paging_in_progress: 0,
+                pager_created: false,
                 internal: true,
                 temporary: true,
                 alive: true,
@@ -105,9 +115,7 @@ impl Object {
     /// If `page` belongs to an object.
     pub fn insert(&self, page: &'static Page, offset: usize) {
         let mut state = self.lock();
-        page.set_object(self, offset);
-        state.pages.tree.insert(page);
-        state.pages.count += 1;
+        state.insert(self, page, offset);
         drop(state);
     }
 }
@@ -116,6 +124,23 @@ impl ObjectState {
     /// Notes a paging operation under way.
     pub const fn begin_paging(&mut self) {
         self.paging_in_progress += 1;
+    }
+
+    /// Puts `page`, which belongs to no object, in `object`, whose state
+    /// this is, at `offset`.
+    ///
+    /// # Panics
+    ///
+    /// If `page` belongs to an object.
+    pub(super) fn insert(&mut self, object: &Object, page: &'static Page, offset: usize) {
+        page.set_object(object, offset);
+        self.pages.tree.insert(page);
+        self.pages.count += 1;
+    }
+
+    /// The page at `offset`; `None` if none is resident.
+    pub(super) fn lookup(&self, offset: usize) -> Option<&'static Page> {
+        self.pages.tree.find(&offset).clone_pointer()
     }
 }
 

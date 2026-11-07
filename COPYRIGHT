@@ -159,6 +159,13 @@ SPDX-FileContributor: Avadis Tevanian, Jr.
 SPDX-FileContributor: Michael Wayne Young
 SPDX-License-Identifier: CMU-Mach
 
+SPDX-FileName: include/mach/vm_statistics.h
+SPDX-FileCopyrightText: 1993-1987 Carnegie Mellon University
+SPDX-FileContributor: Avadis Tevanian, Jr.
+SPDX-FileContributor: Michael Wayne Young
+SPDX-FileContributor: David Golub
+SPDX-License-Identifier: CMU-Mach
+
 SPDX-FileName: ipc/ipc_entry.c
 SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
 SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
