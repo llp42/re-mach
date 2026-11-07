@@ -15,6 +15,7 @@ use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 use crate::clock::{self, TimeValue};
 use crate::error::Error;
 use crate::ipc::port::{self, KernelObject, Port};
+use crate::machine::Mode;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, Processor, ProcessorSet};
 use crate::sched::{self, Policies, Preemption, RUN_QUEUES, SCHEDULER_SCALE};
@@ -373,13 +374,11 @@ impl Thread {
         unsafe { self.bound.load(Ordering::Acquire).as_ref() }
     }
 
-    /// Adds `microseconds` to its time in user mode or in the kernel, on the
-    /// CPU it runs on.
-    pub fn add_time(&self, microseconds: u32, user_mode: bool) {
-        let time = if user_mode {
-            &self.user_time
-        } else {
-            &self.system_time
+    /// Adds `microseconds` to its time in `mode`, on the CPU it runs on.
+    pub fn add_time(&self, microseconds: u32, mode: Mode) {
+        let time = match mode {
+            Mode::User => &self.user_time,
+            Mode::Kernel => &self.system_time,
         };
         time.store(
             time.load(Ordering::Relaxed) + u64::from(microseconds),

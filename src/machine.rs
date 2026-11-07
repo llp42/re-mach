@@ -43,6 +43,15 @@ pub struct Slot {
 /// How many states a CPU's ticks are counted in.
 const CPU_STATES: usize = 3;
 
+/// What an interrupted CPU was running.
+#[derive(Clone, Copy)]
+pub enum Mode {
+    /// User code.
+    User,
+    /// The kernel.
+    Kernel,
+}
+
 /// What a CPU spent a tick on, as Mach numbers it; only the states used
 /// here.
 #[derive(Clone, Copy)]
