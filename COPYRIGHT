@@ -427,6 +427,12 @@ SPDX-FileCopyrightText: 2010-2014 Free Software Foundation, Inc.
 SPDX-FileContributor: Richard Braun
 SPDX-License-Identifier: GPL-2.0-or-later
 
+SPDX-FileName: vm/vm_page.h
+SPDX-FileCopyrightText: 1993-1988 Carnegie Mellon University
+SPDX-FileContributor: Avadis Tevanian, Jr.
+SPDX-FileContributor: Michael Wayne Young
+SPDX-License-Identifier: CMU-Mach
+
 SPDX-FileName: vm/vm_pageout.c
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
 SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)

@@ -11,15 +11,14 @@ use super::object::{Object, ObjectState};
 use super::page::{self, Page};
 use super::pmap::{MachinePmap as _, Wiring};
 use super::{Protection, STATISTICS};
-use crate::arch::{self, Machine as _, PAGE_SIZE};
+use crate::arch::PAGE_SIZE;
 use crate::error::Error;
 use crate::smp;
 use crate::sync::TokenGuard;
 
 /// Resolves a fault on the page at `address` in `map`, which asked for
-/// `access`; so far it looks the address up, finds the page, checks the
-/// map's version and maps the page, then stops its CPU where it activates
-/// the page.
+/// `access`: looks the address up, finds the page, checks the map's
+/// version, maps the page and activates it.
 ///
 /// # Errors
 ///
@@ -27,9 +26,10 @@ use crate::sync::TokenGuard;
 ///
 /// # Panics
 ///
-/// As `Map::lookup`, `fault_page` and `MachinePmap::enter`. If a lookup
-/// after a change to the map fails or finds another page, the object's
-/// copy changed, or a wired page lost the access it asked for: not yet.
+/// As `Map::lookup`, `fault_page`, `MachinePmap::enter`, `Page::activate`
+/// and `Object::deallocate`. If a lookup after a change to the map fails or
+/// finds another page, the object's copy changed, or a wired page lost the
+/// access it asked for: not yet.
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the lookups' and vm_fault_page's guards are moved out and dropped first"
@@ -45,7 +45,7 @@ pub fn fault(map: &Map, address: usize, access: Protection) -> Result<(), Error>
     // With no shadows, the page's object is the lookup's.
     let old_copy = found.state.copy.map(ptr::from_ref);
     drop(found.state);
-    let _verified = loop {
+    let verified = loop {
         if let Some(verified) = map.verify(version) {
             break verified;
         }
@@ -82,7 +82,18 @@ pub fn fault(map: &Map, address: usize, access: Protection) -> Result<(), Error>
     };
     map.pmap()
         .enter(address, found.page.address(), protection, wiring);
-    arch::Current::halt()
+    let mut state = lookup.object.lock();
+    // Reference bits are kept in software: a page on a paging queue stays.
+    if !found.page.is_on_paging_queue() {
+        found.page.activate();
+    }
+    found.page.set_referenced();
+    drop(verified);
+    found.page.wake_done();
+    state.end_paging();
+    drop(state);
+    lookup.object.deallocate();
+    Ok(())
 }
 
 /// What `fault_page` finds.
