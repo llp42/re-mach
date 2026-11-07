@@ -17,6 +17,7 @@ bench = false
 [dependencies]
 bit_field = "0.10"
 bitflags = "2"
+elf = { version = "=0.8.0", default-features = false }
 intrusive-collections = { version = "0.10", default-features = false }
 lock_api = { version = "0.4", default-features = false }
 raw-cpuid = "11"

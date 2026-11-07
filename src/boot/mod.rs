@@ -12,7 +12,6 @@ use crate::arch::PhysAddr;
 /// A boot module, copied into boot memory.
 pub struct BootModule {
     /// Its physical range.
-    #[expect(dead_code, reason = "exec_load and free_bootstrap_pages read it")]
     pub range: Range<PhysAddr>,
     pub command_line: &'static CStr,
 }
