@@ -4,22 +4,27 @@
 
 use core::arch::global_asm;
 use core::fmt::Write;
+use core::mem::offset_of;
 
 use x86_64::VirtAddr;
 
 use x86_64::PrivilegeLevel;
+use x86_64::structures::idt::InterruptStackFrameValue;
 
-use super::per_cpu::PerCpu;
+use super::per_cpu::{KERNEL_STACK, PerCpu};
 use super::serial::Serial;
 use super::trap::TrapFrame;
-use super::{apic, idt};
+use super::{Pcb, apic, idt};
 use crate::clock;
 use crate::config::HZ;
 use crate::smp::MachinePerCpu as _;
 use crate::sync::CriticalSection;
+use crate::thread::MachineThread as _;
 
 // Each entry pushes a zero error code and its vector, and adds its address
-// to `entries`; the common path saves the registers as a `TrapFrame`, calls
+// to `entries`; the common path saves the registers as a `TrapFrame`. An
+// interrupt from user mode, saved in the thread's PCB, swaps the GS base and
+// calls `user_interrupt` on the kernel stack; one from kernel mode calls
 // `interrupt` and returns.
 global_asm!(
     ".pushsection .text, \"ax\"",
@@ -55,11 +60,18 @@ global_asm!(
     "pushq %r13",
     "pushq %r14",
     "pushq %r15",
-    // TODO: swap the GS base on interrupts from user mode.
+    "testb $3, {code_segment}(%rsp)",
+    "jz .Linterrupt_from_kernel",
+    "swapgs",
+    "cld",
+    "movq %rsp, %rdi",
+    "movq %gs:{kernel_stack}, %rsp",
+    "call {user_interrupt}",
+    "ud2",
+    ".Linterrupt_from_kernel:",
     "cld",
     "movq %rsp, %rdi",
     "call {interrupt}",
-    // TODO: swap it back on returns to user mode.
     "popq %r15",
     "popq %r14",
     "popq %r13",
@@ -78,6 +90,10 @@ global_asm!(
     "addq $16, %rsp",
     "iretq",
     ".popsection",
+    code_segment = const offset_of!(TrapFrame, interrupted)
+        + offset_of!(InterruptStackFrameValue, code_segment),
+    kernel_stack = const KERNEL_STACK,
+    user_interrupt = sym user_interrupt,
     interrupt = sym interrupt,
     options(att_syntax),
 );
@@ -85,6 +101,13 @@ global_asm!(
 unsafe extern "C" {
     /// The entries of vectors 0x20 to 0xff, in order.
     pub safe static entries: [u64; 224];
+}
+
+/// Takes an interrupt from user mode, then returns the thread to user mode,
+/// taking its ASTs first.
+extern "sysv64" fn user_interrupt(frame: &TrapFrame) -> ! {
+    interrupt(frame);
+    Pcb::return_to_user()
 }
 
 /// Holds the interrupt back inside a critical section, and handles it in

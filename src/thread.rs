@@ -263,7 +263,7 @@ pub trait MachineThread: Sized {
     /// If `stack` is not aligned, or no thread runs on the CPU.
     fn set_user_registers(stack: Range<usize>, entry: usize, argument_size: usize) -> usize;
     /// Takes the current CPU's ASTs until none is pending, then returns its
-    /// thread to user mode; so far it stops the CPU there.
+    /// thread to user mode.
     fn return_to_user() -> !;
 }
 

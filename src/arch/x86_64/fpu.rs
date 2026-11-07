@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
+// Inspired by GNU Mach; see COPYRIGHT.
 //! The floating-point unit: x87, SSE and the states XSAVE adds.
 
 use core::arch::asm;
 use core::ptr::NonNull;
+use core::sync::atomic::Ordering;
 
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
 use x86_64::registers::xcontrol::XCr0;
 
 use super::cpuid;
 use super::memory_layout::PAGE_SIZE;
+use super::per_cpu::PerCpu;
 use crate::slab::RawCache;
-use crate::sync::OnceLock;
+use crate::smp::{self, MachinePerCpu as _};
+use crate::sync::{CriticalSection, OnceLock};
 
 /// How a thread's floating-point state is saved; always in the standard
 /// layout, so the state a thread reads back is laid out alike on every CPU.
@@ -99,7 +103,7 @@ const AREA_OFFSET: usize = 64;
 static STATE_CACHE: OnceLock<RawCache> = OnceLock::new();
 
 /// A buffer holding the state a fresh FPU has, which threads start from.
-struct DefaultState(#[expect(dead_code, reason = "fpinit copies it into new threads")] NonNull<u8>);
+struct DefaultState(NonNull<u8>);
 
 // SAFETY: written once, before it is shared, and only read after.
 unsafe impl Send for DefaultState {}
@@ -149,4 +153,53 @@ pub fn module_init() {
         DEFAULT_STATE.set(DefaultState(buffer)).is_ok(),
         "fpu: module set up twice"
     );
+}
+
+/// Gives the current thread the FPU at its first use, which trapped: a
+/// buffer for its state, holding the default one, and the FPU loaded with it.
+///
+/// # Panics
+///
+/// If the FPU holds a thread's state, or the thread has a buffer: not yet;
+/// if no buffer can be allocated.
+pub fn no_extension_fault() {
+    let thread = smp::current()
+        .active_thread()
+        .expect("fpnoextflt: no current thread");
+    assert!(
+        thread.pcb.fpu.load(Ordering::Relaxed).is_null(),
+        "fp_load: a saved state, not yet"
+    );
+    let size = AREA_OFFSET + *STATE_SIZE.get().expect("fpu: not set up");
+    let state = STATE_CACHE
+        .get()
+        .expect("fpu: module not set up")
+        .allocate()
+        .unwrap_or_else(|error| panic!("fp_load: {error:?}"));
+    let default = DEFAULT_STATE.get().expect("fpu: module not set up").0;
+    // SAFETY: both buffers hold `size` bytes; the new one is the thread's
+    // alone.
+    unsafe { state.copy_from_nonoverlapping(default, size) };
+    thread.pcb.fpu.store(state.as_ptr(), Ordering::Relaxed);
+    let _section = CriticalSection::enter();
+    let cpu = PerCpu::current();
+    assert!(
+        cpu.fpu_owner().is_null(),
+        "fpnoextflt: the FPU holds a thread's state, not yet"
+    );
+    // SAFETY: the FPU is this thread's from here; the default area holds a
+    // state `module_init` saved, 64-byte aligned.
+    unsafe {
+        let area = default.add(AREA_OFFSET).as_ptr();
+        asm!("clts", options(att_syntax, nostack));
+        match SAVE.get().copied() {
+            Some(Save::Fxsave) | None => {
+                asm!("fxrstor64 ({0})", in(reg) area, options(att_syntax, nostack));
+            }
+            Some(Save::Xsave | Save::XsaveOptimized) => {
+                asm!("xrstor64 ({0})", in(reg) area, in("eax") u32::MAX, in("edx") u32::MAX, options(att_syntax, nostack));
+            }
+        }
+    }
+    cpu.set_fpu_owner(thread);
 }

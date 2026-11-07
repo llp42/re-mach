@@ -5,6 +5,7 @@
 
 use core::arch::global_asm;
 use core::fmt::{self, Write};
+use core::mem::offset_of;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
@@ -14,16 +15,20 @@ use x86_64::registers::control::Cr2;
 use x86_64::registers::rflags::RFlags;
 use x86_64::structures::idt::{ExceptionVector, InterruptStackFrameValue, PageFaultErrorCode};
 
-use super::gdt;
 use super::memory_layout::{MAX_USER_ADDRESS, PAGE_SIZE};
+use super::per_cpu::KERNEL_STACK;
 use super::serial::Serial;
+use super::{Pcb, fpu, gdt};
 use crate::smp;
+use crate::thread::MachineThread as _;
 use crate::vm::kernel::KERNEL_MAP;
 use crate::vm::{self, Protection};
 
 // Each entry pushes a zero error code, unless the CPU pushed one, and its
-// vector; the common path saves the registers as a `TrapFrame`, calls
-// `kernel_trap` and returns.
+// vector; the common path saves the registers as a `TrapFrame`. A trap from
+// user mode, saved in the thread's PCB, swaps the GS base and calls
+// `user_trap` on the kernel stack; one from kernel mode calls `kernel_trap`
+// and returns.
 global_asm!(
     ".pushsection .text, \"ax\"",
     ".macro entry name, vector",
@@ -76,7 +81,15 @@ global_asm!(
     "pushq %r13",
     "pushq %r14",
     "pushq %r15",
-    // TODO: swap the GS base on traps from user mode.
+    "testb $3, {code_segment}(%rsp)",
+    "jz .Ltrap_from_kernel",
+    "swapgs",
+    "cld",
+    "movq %rsp, %rdi",
+    "movq %gs:{kernel_stack}, %rsp",
+    "call {user_trap}",
+    "ud2",
+    ".Ltrap_from_kernel:",
     "cld",
     "movq %rsp, %rdi",
     "call {kernel_trap}",
@@ -98,6 +111,10 @@ global_asm!(
     "addq $16, %rsp",
     "iretq",
     ".popsection",
+    code_segment = const offset_of!(TrapFrame, interrupted)
+        + offset_of!(InterruptStackFrameValue, code_segment),
+    kernel_stack = const KERNEL_STACK,
+    user_trap = sym user_trap,
     kernel_trap = sym kernel_trap,
     options(att_syntax),
 );
@@ -215,6 +232,57 @@ impl fmt::Display for TrapFrame {
             interrupted.stack_segment.0,
         )
     }
+}
+
+/// Takes a trap from user mode, then returns the thread to user mode: a page
+/// fault is resolved in its task's map, and a first use of the FPU gives the
+/// thread the FPU.
+///
+/// # Panics
+///
+/// On any other trap, or a page fault that does not resolve or is in kernel
+/// space: they raise exceptions, not yet.
+extern "sysv64" fn user_trap(frame: &TrapFrame) -> ! {
+    let cr2 = Cr2::read_raw();
+    // The interrupt gate turned interrupts off; user mode had them on.
+    if frame.interrupted.cpu_flags.contains(RFlags::INTERRUPT_FLAG) {
+        interrupts::enable();
+    }
+    let vector = u8::try_from(frame.vector)
+        .ok()
+        .and_then(|vector| ExceptionVector::try_from(vector).ok());
+    match vector {
+        Some(ExceptionVector::Page) => {
+            let address = usize::try_from(cr2).unwrap();
+            assert!(
+                address < MAX_USER_ADDRESS,
+                "i386_exception: a page fault in kernel space, not yet"
+            );
+            let thread = smp::current()
+                .active_thread()
+                .expect("user_trap: no current thread");
+            let access = if PageFaultErrorCode::from_bits_truncate(frame.error_code)
+                .contains(PageFaultErrorCode::CAUSED_BY_WRITE)
+            {
+                Protection::READ | Protection::WRITE
+            } else {
+                Protection::READ
+            };
+            vm::fault::fault(&thread.task.map, address & !(PAGE_SIZE - 1), access).unwrap_or_else(
+                |error| panic!("user_page_fault_continue: i386_exception {error:?}, not yet"),
+            );
+        }
+        Some(ExceptionVector::DeviceNotAvailable) => fpu::no_extension_fault(),
+        _ => {
+            let _ = write!(
+                Serial,
+                "user trap {}, code {:#x}, cr2 {cr2:#x}\r\n{frame}",
+                frame.vector, frame.error_code,
+            );
+            panic!("i386_exception: not yet")
+        }
+    }
+    Pcb::return_to_user()
 }
 
 /// Takes a trap from kernel mode: a page fault on a user address is
