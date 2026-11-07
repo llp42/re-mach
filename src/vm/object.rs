@@ -4,7 +4,7 @@
 //! Memory objects' kernel side.
 
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use intrusive_collections::{
     LinkedList, LinkedListAtomicLink, RBTree, UnsafeRef, intrusive_adapter,
@@ -14,31 +14,41 @@ use super::page::{Page, PageTreeAdapter};
 use crate::arch::{MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS};
 use crate::ipc::port::{self, KernelObject, Port};
 use crate::slab::{Cache, CacheBox};
-use crate::sync::Token;
+use crate::sync::{Token, TokenGuard};
 
-/// The kernel's side of a memory object; so far only its first values, its
-/// name port, its place in the list of persisting objects and its pages.
-#[expect(
-    dead_code,
-    reason = "vm_object_reference, vm_object_deallocate and the pager calls read them"
-)]
+/// The kernel's side of a memory object; so far only its size, references
+/// and name port, its place in the list of persisting objects and its state.
 pub struct Object {
     /// Its size, in bytes.
+    #[expect(dead_code, reason = "vm_object_coalesce and the pager calls read it")]
     size: usize,
     /// How many references it has.
-    references: u32,
+    references: AtomicU32,
+    /// Its name port, which names it to `vm_region`; null until it has one.
+    pager_name: AtomicPtr<Port>,
+    /// Its place in the list of persisting objects.
+    persisting_link: LinkedListAtomicLink,
+    /// Its state, behind its token.
+    state: Token<ObjectState>,
+}
+
+/// What an object's token guards; so far only its pages, its paging under
+/// way and its first values.
+#[expect(
+    dead_code,
+    reason = "vm_object_deallocate and the pager calls read them"
+)]
+pub struct ObjectState {
+    /// Its resident pages.
+    pages: Pages,
+    /// How many paging operations on it are under way.
+    paging_in_progress: u32,
     /// Whether the kernel created it, so the default memory manager manages it.
     internal: bool,
     /// Whether changes stay in memory rather than going back to its manager.
     temporary: bool,
     /// Whether it is not yet terminated.
     alive: bool,
-    /// Its name port, which names it to `vm_region`; null until it has one.
-    pager_name: AtomicPtr<Port>,
-    /// Its place in the list of persisting objects.
-    persisting_link: LinkedListAtomicLink,
-    /// Its resident pages, behind its token.
-    pages: Token<Pages>,
 }
 
 /// An object's resident pages.
@@ -62,17 +72,30 @@ impl Object {
     const fn new(size: usize) -> Self {
         Self {
             size,
-            references: 1,
-            internal: true,
-            temporary: true,
-            alive: true,
+            references: AtomicU32::new(1),
             pager_name: AtomicPtr::new(ptr::null_mut()),
             persisting_link: LinkedListAtomicLink::new(),
-            pages: Token::new(Pages {
-                tree: RBTree::new(PageTreeAdapter::NEW),
-                count: 0,
+            state: Token::new(ObjectState {
+                pages: Pages {
+                    tree: RBTree::new(PageTreeAdapter::NEW),
+                    count: 0,
+                },
+                paging_in_progress: 0,
+                internal: true,
+                temporary: true,
+                alive: true,
             }),
         }
+    }
+
+    /// Takes a reference on it.
+    pub fn reference(&self) {
+        self.references.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Takes its token.
+    pub fn lock(&self) -> TokenGuard<'_, ObjectState> {
+        self.state.lock()
     }
 
     /// Puts `page`, which belongs to no object, in it at `offset`.
@@ -81,11 +104,18 @@ impl Object {
     ///
     /// If `page` belongs to an object.
     pub fn insert(&self, page: &'static Page, offset: usize) {
-        let mut pages = self.pages.lock();
+        let mut state = self.lock();
         page.set_object(self, offset);
-        pages.tree.insert(page);
-        pages.count += 1;
-        drop(pages);
+        state.pages.tree.insert(page);
+        state.pages.count += 1;
+        drop(state);
+    }
+}
+
+impl ObjectState {
+    /// Notes a paging operation under way.
+    pub const fn begin_paging(&mut self) {
+        self.paging_in_progress += 1;
     }
 }
 
@@ -118,4 +148,26 @@ pub fn init() {
     KERNEL_OBJECT
         .pager_name
         .store(CacheBox::into_raw(port).as_ptr(), Ordering::Release);
+}
+
+/// A new internal, temporary object of `size` bytes, with one reference
+/// and a name port.
+///
+/// # Panics
+///
+/// If the object or its port can't be allocated.
+pub fn allocate(size: usize) -> &'static Object {
+    let object = CACHE
+        .allocate(Object::new(size))
+        .unwrap_or_else(|error| panic!("vm_object_allocate: {error:?}"));
+    // SAFETY: an object lives until vm_object_deallocate frees it, which
+    // comes later.
+    let object = unsafe { CacheBox::into_raw(object).as_ref() };
+    let port =
+        port::allocate_kernel().unwrap_or_else(|error| panic!("vm_object_allocate: {error:?}"));
+    port.set_kernel_object(KernelObject::PagerName(NonNull::from(object)));
+    object
+        .pager_name
+        .store(CacheBox::into_raw(port).as_ptr(), Ordering::Release);
+    object
 }

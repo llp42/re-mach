@@ -19,7 +19,7 @@ use crate::arch;
 
 bitflags::bitflags! {
     /// What memory allows, as Mach's interface numbers it.
-    #[derive(PartialEq, Eq)]
+    #[derive(Clone, Copy, PartialEq, Eq)]
     pub struct Protection: u32 {
         /// Reading it.
         const READ = 1;
