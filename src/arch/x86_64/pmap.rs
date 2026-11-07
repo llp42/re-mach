@@ -18,14 +18,15 @@ use super::address::PhysAddr;
 use super::boot_memory;
 use super::cpuid;
 use super::memory_layout::{
-    DIRECT_MAP_BASE, KERNEL_BASE, MIN_KERNEL_ADDRESS, PAGE_SIZE, PAGE_TABLE_BASE,
+    DIRECT_MAP_BASE, KERNEL_BASE, MAX_USER_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE, PAGE_TABLE_BASE,
 };
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
 use crate::smp;
-use crate::sync::OnceLock;
-use crate::vm::page;
-use crate::vm::pmap::MachinePmap;
+use crate::sync::{OnceLock, Spinlock};
+use crate::vm::Protection;
+use crate::vm::page::{self, Page};
+use crate::vm::pmap::{MachinePmap, Wiring};
 
 /// Entries per table.
 const ENTRIES: usize = 512;
@@ -38,6 +39,10 @@ const DIRECTORY_SIZE: usize = 1 << 30;
 
 /// Bytes one PML4 slot maps.
 const SLOT_SIZE: usize = 1 << 39;
+
+/// Bytes one entry maps at each level above the page tables, from the PML4
+/// down.
+const UPPER_LEVELS: [usize; 3] = [SLOT_SIZE, DIRECTORY_SIZE, LARGE_PAGE_SIZE];
 
 /// PML4 slots of the page table window, the direct map and kernel space.
 const PAGE_TABLE_SLOT: usize = index(PAGE_TABLE_BASE, SLOT_SIZE);
@@ -67,6 +72,15 @@ const DIRECT_MAP_PAGE: PageTableFlags = LARGE_PAGE
 /// Kernel memory's page: writable.
 const KERNEL_PAGE: PageTableFlags = TABLE;
 
+/// Entry of a lower table in a user pmap.
+const USER_TABLE: PageTableFlags = TABLE.union(PageTableFlags::USER_ACCESSIBLE);
+
+/// User memory's page, accessed preset: read-only unless `enter` adds
+/// writing.
+const USER_PAGE: PageTableFlags = PageTableFlags::PRESENT
+    .union(PageTableFlags::USER_ACCESSIBLE)
+    .union(PageTableFlags::ACCESSED);
+
 /// Device memory's page: writable, uncached (PAT entry 3).
 const DEVICE_PAGE: PageTableFlags = TABLE
     .union(PageTableFlags::WRITE_THROUGH)
@@ -94,6 +108,10 @@ pub struct Pmap {
     references: AtomicUsize,
     /// The CPUs it is active on, a bit each.
     active_cpus: AtomicUsize,
+    /// How many pages it maps.
+    resident: AtomicUsize,
+    /// Its lock: tables are linked into it only under it.
+    lock: Spinlock<()>,
 }
 
 impl MachinePmap for Pmap {
@@ -110,6 +128,8 @@ impl MachinePmap for Pmap {
             pml4: PhysAddr(0),
             references: AtomicUsize::new(1),
             active_cpus: AtomicUsize::new(0),
+            resident: AtomicUsize::new(0),
+            lock: Spinlock::new(()),
         })?;
         // In no object, so at index 0.
         let pml4 = page::allocate_zeroed(0).expect("pmap_create").address();
@@ -164,6 +184,71 @@ impl MachinePmap for Pmap {
         );
     }
 
+    fn enter(&self, address: usize, physical: PhysAddr, protection: Protection, wiring: Wiring) {
+        assert!(
+            !ptr::eq(self, Self::kernel()),
+            "pmap_enter: the kernel pmap, not yet"
+        );
+        assert!(
+            address < MAX_USER_ADDRESS,
+            "pmap_enter: {address:#x} is not a user address"
+        );
+        // Tables come before the lock, and go in under it where still missing.
+        let mut spares = [None; UPPER_LEVELS.len()];
+        let (tables, table) = loop {
+            if let Err(missing) = self.expand(address, &mut []) {
+                for spare in spares
+                    .iter_mut()
+                    .filter(|spare| spare.is_none())
+                    .take(missing)
+                {
+                    // In no object, so at index 0.
+                    *spare =
+                        Some(page::allocate_zeroed(0).expect("pmap_expand: VM_PAGE_WAIT, not yet"));
+                }
+            }
+            let tables = self.lock.lock();
+            if let Ok(table) = self.expand(address, &mut spares) {
+                break (tables, table);
+            }
+        };
+        assert!(
+            page::lookup(physical).is_some(),
+            "pmap_enter: memory outside the page array, uncached, not yet"
+        );
+        // The page table's lock, before the pmap's drops.
+        let entries = page::lookup(table)
+            .expect("pmap_enter: a page table outside the page array")
+            .table_lock
+            .lock();
+        drop(tables);
+        let entry = table_entry(table, index(address, PAGE_SIZE));
+        let old = entry.load(Ordering::Relaxed);
+        assert!(
+            old == 0 || entry_address(old) != physical,
+            "pmap_enter: the page mapped there already, not yet"
+        );
+        assert!(
+            old == 0,
+            "pmap_enter: pmap_remove_range on the page mapped there, not yet"
+        );
+        self.resident.fetch_add(1, Ordering::Relaxed);
+        assert!(
+            matches!(wiring, Wiring::Pageable),
+            "pmap_enter: wired, not yet"
+        );
+        let mut flags = USER_PAGE;
+        if protection.contains(Protection::WRITE) {
+            flags |= PageTableFlags::WRITABLE;
+        }
+        // A page that was not present is in no TLB, so nothing to invalidate.
+        entry.store(frame(physical).as_u64() | flags.bits(), Ordering::Release);
+        drop(entries);
+        for spare in spares.into_iter().flatten() {
+            page::free(spare);
+        }
+    }
+
     fn enter_kernel(address: usize, physical: PhysAddr) {
         enter_kernel_page(address, physical, KERNEL_PAGE);
     }
@@ -200,6 +285,35 @@ impl MachinePmap for Pmap {
 
     fn init() {
         CACHE.register();
+    }
+}
+
+impl Pmap {
+    /// The page table that maps user `address`, found from the PML4 through
+    /// the direct map, a table from `spares` linked in where one is missing;
+    /// only the lock's holder passes any. `Err` with how many are missing
+    /// once `spares` run out.
+    fn expand(
+        &self,
+        address: usize,
+        spares: &mut [Option<&'static Page>],
+    ) -> Result<PhysAddr, usize> {
+        let mut table = self.pml4;
+        for (level, size) in UPPER_LEVELS.into_iter().enumerate() {
+            let entry = table_entry(table, index(address, size));
+            let mut value = entry.load(Ordering::Acquire);
+            if !PageTableFlags::from_bits_truncate(value).contains(PageTableFlags::PRESENT) {
+                let spare = spares
+                    .iter_mut()
+                    .find_map(Option::take)
+                    .ok_or(UPPER_LEVELS.len() - level)?;
+                value = frame(spare.address()).as_u64() | USER_TABLE.bits();
+                // After the table's zeroing.
+                entry.store(value, Ordering::Release);
+            }
+            table = entry_address(value);
+        }
+        Ok(table)
     }
 }
 
@@ -264,6 +378,19 @@ fn enter_kernel_page(address: usize, physical: PhysAddr, flags: PageTableFlags) 
     );
 }
 
+/// Entry `index` of the table at `table`, through the direct map.
+fn table_entry(table: PhysAddr, index: usize) -> &'static AtomicU64 {
+    // SAFETY: a table is an array of entries, and the direct map reaches all
+    // physical memory.
+    unsafe { &*table.direct_map_ptr::<AtomicU64>().add(index) }
+}
+
+/// The table or page `entry` points at.
+fn entry_address(entry: u64) -> PhysAddr {
+    let address = x86_64::PhysAddr::new_truncate(entry).as_u64();
+    PhysAddr(usize::try_from(address).unwrap()).align_down()
+}
+
 /// `address` as the `x86_64` crate's.
 fn frame(address: PhysAddr) -> x86_64::PhysAddr {
     x86_64::PhysAddr::new(u64::try_from(address.0).unwrap())
@@ -326,6 +453,8 @@ pub unsafe fn bootstrap() {
         pml4,
         references: AtomicUsize::new(1),
         active_cpus: AtomicUsize::new(usize::MAX),
+        resident: AtomicUsize::new(0),
+        lock: Spinlock::new(()),
     };
     assert!(
         KERNEL_PMAP.set(kernel_pmap).is_ok()

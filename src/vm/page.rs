@@ -35,6 +35,8 @@ pub struct Page {
     /// Its busy word: `HARD_BUSY` while the thread that set it fills or
     /// maps it, and others keep off it.
     busy: AtomicU32,
+    /// Its lock while it is a user page table, over its entries.
+    pub table_lock: Spinlock<()>,
     /// Its state while it is a slab.
     pub slab: Slab,
 }
@@ -48,6 +50,7 @@ impl Page {
             object: AtomicPtr::new(ptr::null_mut()),
             offset: AtomicUsize::new(0),
             busy: AtomicU32::new(0),
+            table_lock: Spinlock::new(()),
             slab: Slab::new(),
         }
     }
@@ -500,6 +503,14 @@ pub fn allocate(index: usize) -> Option<&'static Page> {
         size *= 2;
     }
     None
+}
+
+/// Puts `page`, which `allocate` gave and nothing uses now, back on its
+/// colour's free queue.
+pub fn free(page: &'static Page) {
+    let frame = page.address().0 / PAGE_SIZE;
+    let color = (frame ^ (frame / COLORS) ^ (frame / (COLORS * COLORS))) % COLORS;
+    QUEUES.free[color].push(page, &QUEUES.free_pages);
 }
 
 /// Takes a free page as `allocate` does for `index`, and fills it with
