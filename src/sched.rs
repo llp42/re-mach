@@ -16,7 +16,7 @@ use crate::machine::CpuState;
 use crate::processor::{self, ActionQueueAdapter, Processor, State};
 use crate::smp;
 use crate::sync::{CriticalSection, SpinlockGuard};
-use crate::thread::{RunQueueAdapter, SleepQueueAdapter, Thread, ThreadState};
+use crate::thread::{Quantum, RunQueueAdapter, SleepQueueAdapter, Thread, ThreadState};
 
 /// The threads sleeping on the events that hash to one slot.
 pub type SleepQueue = LinkedList<SleepQueueAdapter>;
@@ -135,12 +135,12 @@ pub fn quantum_update(thread: &'static Thread, ticks: u32, state: CpuState) {
         quantum = set.adjust_quantum(quantum);
     }
     if left <= 0 {
-        thread.charge_tick(true);
+        thread.charge_tick(Quantum::Expired);
         processor.first_quantum.store(false, Ordering::Relaxed);
         let next = i32::try_from(thread.next_quantum(quantum)).unwrap();
         processor.quantum.store(left + next, Ordering::Relaxed);
     } else {
-        thread.charge_tick(false);
+        thread.charge_tick(Quantum::Left);
     }
     ast::check(thread);
 }
