@@ -327,6 +327,13 @@ impl Map {
         Ok(lookup)
     }
 
+    /// Takes its read lock if it is still at `version`, as a lookup found
+    /// it; it stays locked until what is returned drops.
+    pub fn verify(&self, version: u32) -> Option<impl Sized + '_> {
+        let contents = self.contents.read();
+        (contents.timestamp == version).then_some(contents)
+    }
+
     /// Takes its write lock, moving its version on.
     fn lock(&self) -> impl DerefMut<Target = Contents> + '_ {
         let mut contents = self.contents.write();
@@ -344,13 +351,10 @@ pub struct Lookup {
     /// Where the address is in the object.
     pub offset: usize,
     /// What the entry allows.
-    #[expect(dead_code, reason = "pmap_enter reads it")]
     pub protection: Protection,
     /// Whether the entry is wired.
-    #[expect(dead_code, reason = "pmap_enter reads it")]
     pub wired: bool,
     /// The map's version at the lookup.
-    #[expect(dead_code, reason = "vm_map_verify reads it")]
     pub version: u32,
 }
 

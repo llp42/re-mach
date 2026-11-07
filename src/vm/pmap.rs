@@ -4,8 +4,17 @@
 
 use core::ops::Range;
 
+use super::Protection;
 use crate::arch::PhysAddr;
 use crate::error::Error;
+
+/// Whether a mapping is wired: its page stays resident and mapped.
+pub enum Wiring {
+    /// Its page may be paged out.
+    Pageable,
+    /// It is wired.
+    Wired,
+}
 
 /// The machine's physical maps.
 pub trait MachinePmap {
@@ -41,6 +50,16 @@ pub trait MachinePmap {
     ///
     /// If it is a user task's: not yet.
     fn deactivate(&self);
+
+    /// Maps user `address` to the page at `physical`, allowing `protection`
+    /// and wired as `wiring` says, adding the tables it lacks.
+    ///
+    /// # Panics
+    ///
+    /// If `address` is not a user address. If it is the kernel's, no page
+    /// is free for a table, `address` maps a page already, `physical` is
+    /// outside the page array, or for `Wiring::Wired`: not yet.
+    fn enter(&self, address: usize, physical: PhysAddr, protection: Protection, wiring: Wiring);
 
     /// Maps kernel `address` to the page at `physical`, read-write.
     fn enter_kernel(address: usize, physical: PhysAddr);
