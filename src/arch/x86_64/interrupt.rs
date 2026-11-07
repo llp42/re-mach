@@ -17,6 +17,7 @@ use super::trap::TrapFrame;
 use super::{Pcb, apic, idt};
 use crate::clock;
 use crate::config::HZ;
+use crate::machine::Mode;
 use crate::smp::MachinePerCpu as _;
 use crate::sync::CriticalSection;
 use crate::thread::MachineThread as _;
@@ -137,9 +138,13 @@ extern "sysv64" fn interrupt(frame: &TrapFrame) {
 pub fn handle(vector: usize, frame: Option<&TrapFrame>) {
     if vector == apic::TIMER_VECTOR {
         // A tick held back interrupted the kernel.
-        let user_mode = frame
-            .is_some_and(|frame| frame.interrupted.code_segment.rpl() != PrivilegeLevel::Ring0);
-        clock::interrupt(1_000_000 / HZ, user_mode);
+        let mode = match frame {
+            Some(frame) if frame.interrupted.code_segment.rpl() != PrivilegeLevel::Ring0 => {
+                Mode::User
+            }
+            _ => Mode::Kernel,
+        };
+        clock::interrupt(1_000_000 / HZ, mode);
         return;
     }
     let _ = write!(Serial, "Unexpected interrupt {vector}");
