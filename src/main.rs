@@ -19,6 +19,7 @@ mod gsync;
 mod host;
 mod ipc;
 mod ipc_host;
+mod ipc_kobject;
 mod kalloc;
 mod machine;
 mod panic;

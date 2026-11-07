@@ -137,9 +137,27 @@ SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Syste
 SPDX-FileContributor: Avadis Tevanian, Jr.
 SPDX-License-Identifier: LicenseRef-CMU-CSL
 
+SPDX-FileName: include/mach/mach_host.defs
+SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
+SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
+SPDX-License-Identifier: LicenseRef-CMU-CSL
+
+SPDX-FileName: include/mach/mach_types.defs
+SPDX-FileCopyrightText: 1994-1988 Carnegie Mellon University
+SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
+SPDX-License-Identifier: LicenseRef-CMU-CSL
+
 SPDX-FileName: include/mach/machine.h
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
 SPDX-FileContributor: Avadis Tevanian, Jr.
+SPDX-License-Identifier: CMU-Mach
+
+SPDX-FileName: include/mach/message.h
+SPDX-FileCopyrightText: 1992-1987 Carnegie Mellon University
+SPDX-License-Identifier: CMU-Mach
+
+SPDX-FileName: include/mach/mig_errors.h
+SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
 
 SPDX-FileName: include/mach/policy.h
@@ -173,6 +191,10 @@ SPDX-FileContributor: Michael Wayne Young
 SPDX-FileContributor: David Golub
 SPDX-License-Identifier: CMU-Mach
 
+SPDX-FileName: ipc/copy_user.c
+SPDX-FileCopyrightText: 2023 Free Software Foundation
+SPDX-License-Identifier: GPL-2.0-or-later
+
 SPDX-FileName: ipc/ipc_entry.c
 SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
 SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
@@ -190,6 +212,17 @@ SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
 SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
 SPDX-FileContributor: Rich Draves
 SPDX-License-Identifier: LicenseRef-CMU-CSL
+
+SPDX-FileName: ipc/ipc_kmsg.c
+SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
+SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
+SPDX-FileContributor: Rich Draves
+SPDX-License-Identifier: LicenseRef-CMU-CSL
+
+SPDX-FileName: ipc/ipc_kmsg.h
+SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
+SPDX-FileContributor: Rich Draves
+SPDX-License-Identifier: CMU-Mach
 
 SPDX-FileName: ipc/ipc_object.c
 SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
@@ -225,6 +258,12 @@ SPDX-FileContributor: Rich Draves
 SPDX-License-Identifier: LicenseRef-CMU-CSL
 
 SPDX-FileName: ipc/ipc_space.h
+SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
+SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
+SPDX-FileContributor: Rich Draves
+SPDX-License-Identifier: LicenseRef-CMU-CSL
+
+SPDX-FileName: ipc/mach_msg.c
 SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
 SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
 SPDX-FileContributor: Rich Draves

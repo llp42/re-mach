@@ -69,6 +69,17 @@ impl Space {
 }
 
 impl SpaceState {
+    /// The entry of `name`, if it holds rights, as `ipc_entry_lookup` finds
+    /// it.
+    pub(super) fn lookup(&self, name: u32) -> Option<&Entry> {
+        self.map
+            .lookup(u64::from(name))
+            // SAFETY: the space's lock, held, guards its entries, and no
+            // mutable reference to one is alive while the state is shared.
+            .map(|entry| unsafe { entry.as_ref() })
+            .filter(|entry| entry.in_use())
+    }
+
     /// The lowest free name, and a new entry for it that holds no rights.
     ///
     /// # Errors

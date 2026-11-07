@@ -5,7 +5,9 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use crate::arch::{self, Machine as _};
 use crate::config::MAX_CPUS;
+use crate::host::Host;
 use crate::processor;
 use crate::sync::OnceLock;
 use crate::vm;
@@ -159,4 +161,16 @@ pub fn count_tick(cpu: usize, state: CpuState) {
         let ticks = &slot.cpu_ticks[state.index()];
         ticks.store(ticks.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
     }
+}
+
+/// Reboots the machine, as `host_reboot` does with `host`, the host a
+/// privileged port stands for, and no options.
+///
+/// # Panics
+///
+/// With no host, or with options: not yet.
+pub fn host_reboot(host: Option<&Host>, options: i32) -> ! {
+    assert!(host.is_some(), "host_reboot: KERN_INVALID_HOST, not yet");
+    assert!(options == 0, "host_reboot: options {options:#x}, not yet");
+    arch::Current::halt_all_cpus()
 }

@@ -26,7 +26,8 @@ pub struct Port {
 }
 
 /// A port's state under its lock; so far only whether it is alive, its
-/// receiver and its name there, its send rights and what it stands for.
+/// receiver and its name there, its send and send-once rights and what it
+/// stands for.
 pub(super) struct PortState {
     /// Whether it is alive.
     pub(super) active: bool,
@@ -35,7 +36,9 @@ pub(super) struct PortState {
     /// Its receive right's name in that space.
     pub(super) receiver_name: u32,
     /// How many send rights for it there are.
-    send_rights: u32,
+    pub(super) send_rights: u32,
+    /// How many send-once rights for it there are.
+    pub(super) send_once_rights: u32,
     /// How many send rights have been made from its receive right.
     make_send_count: u32,
     /// What it stands for, when the kernel receives on it.
@@ -60,6 +63,11 @@ impl Port {
         object
     }
 
+    /// Takes a reference to it.
+    pub(super) fn reference(&self) {
+        self.references.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Makes a send right for it from its receive right, which holds a
     /// reference.
     pub fn make_send(&self) {
@@ -79,9 +87,7 @@ pub enum KernelObject {
     /// The host's port.
     Host(#[expect(dead_code, reason = "convert_port_to_host reads it")] &'static Host),
     /// The host's privileged port.
-    HostPrivileged(
-        #[expect(dead_code, reason = "convert_port_to_host_priv reads it")] &'static Host,
-    ),
+    HostPrivileged(&'static Host),
     /// A processor set's port.
     ProcessorSet(
         #[expect(dead_code, reason = "convert_port_to_pset reads it")] NonNull<ProcessorSet>,
@@ -118,6 +124,7 @@ pub fn allocate_kernel() -> Result<CacheBox<Port>, Error> {
             receiver: NonNull::from(&space::KERNEL_SPACE),
             receiver_name: 0,
             send_rights: 0,
+            send_once_rights: 0,
             make_send_count: 0,
             kernel_object: None,
         }),
@@ -146,6 +153,7 @@ pub fn allocate(space: &Space) -> Result<u32, Error> {
             receiver: NonNull::from(space),
             receiver_name: 0,
             send_rights: 0,
+            send_once_rights: 0,
             make_send_count: 0,
             kernel_object: None,
         }),

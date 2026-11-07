@@ -25,6 +25,7 @@ mod pcb;
 mod per_cpu;
 mod pic;
 mod pmap;
+mod reset;
 mod rtc;
 mod serial;
 mod stack;
@@ -296,6 +297,10 @@ impl Machine for X86_64 {
         } else {
             interrupts::enable_and_hlt();
         }
+    }
+
+    fn halt_all_cpus() -> ! {
+        reset::reset()
     }
 
     fn write_console(text: &str) {

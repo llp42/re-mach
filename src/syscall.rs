@@ -5,27 +5,35 @@
 
 use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::error::Error;
-use crate::ipc::port;
+use crate::ipc::{mach_msg, port};
 use crate::{print, smp};
 
 /// A Mach trap, as the table holds it.
 pub enum MachTrap {
-    /// What it runs, given the caller's register arguments; its result goes
-    /// to the caller's rax, zero-extended.
-    Written(fn(&[usize; 6]) -> u32),
+    /// What it runs, given the caller's arguments, and how many it takes;
+    /// its result goes to the caller's rax, zero-extended.
+    Written(fn(&[usize; 7]) -> u32, usize),
     /// Not written yet: GNU Mach's name for it.
     NotYet(&'static str),
 }
 
 impl MachTrap {
+    /// How many arguments it takes; none if not written yet.
+    pub const fn argument_count(&self) -> usize {
+        match self {
+            Self::Written(_, count) => *count,
+            Self::NotYet(_) => 0,
+        }
+    }
+
     /// Runs it with `arguments`, giving its result.
     ///
     /// # Panics
     ///
     /// If it is not written yet.
-    pub fn call(&self, arguments: &[usize; 6]) -> u32 {
+    pub fn call(&self, arguments: &[usize; 7]) -> u32 {
         match self {
-            Self::Written(function) => function(arguments),
+            Self::Written(function, _) => function(arguments),
             Self::NotYet(name) => panic!("{name}: not yet"),
         }
     }
@@ -37,19 +45,19 @@ const COUNT: usize = 130;
 /// The Mach traps, indexed by the trap number negated; `kern_invalid` for
 /// the numbers Mach leaves unused.
 pub static MACH_TRAPS: [MachTrap; COUNT] = {
-    let mut traps = [const { MachTrap::Written(invalid) }; COUNT];
+    let mut traps = [const { MachTrap::Written(invalid, 0) }; COUNT];
     traps[10] = MachTrap::NotYet("null_port");
     traps[11] = MachTrap::NotYet("null_port");
     traps[12] = MachTrap::NotYet("null_port");
     traps[13] = MachTrap::NotYet("null_port");
     traps[17] = MachTrap::NotYet("evc_wait");
     traps[18] = MachTrap::NotYet("evc_wait_clear");
-    traps[25] = MachTrap::Written(message);
-    traps[26] = MachTrap::Written(reply_port);
+    traps[25] = MachTrap::Written(message, 7);
+    traps[26] = MachTrap::Written(reply_port, 0);
     traps[27] = MachTrap::NotYet("mach_thread_self");
     traps[28] = MachTrap::NotYet("mach_task_self");
     traps[29] = MachTrap::NotYet("mach_host_self");
-    traps[30] = MachTrap::Written(print);
+    traps[30] = MachTrap::Written(print, 1);
     traps[39] = MachTrap::NotYet("syscall_device_writev_request");
     traps[40] = MachTrap::NotYet("syscall_device_write_request");
     traps[55] = MachTrap::NotYet("null_port");
@@ -74,14 +82,37 @@ pub static MACH_TRAPS: [MachTrap; COUNT] = {
 };
 
 /// A number Mach leaves unused.
-fn invalid(_: &[usize; 6]) -> u32 {
+fn invalid(_: &[usize; 7]) -> u32 {
     Error::InvalidArgument.into()
 }
 
-/// Sends a message and receives one: not written yet, so the run halts
-/// here, where it grows next.
-fn message(_: &[usize; 6]) -> u32 {
-    arch::Current::halt()
+/// Sends a message and receives one, as `mach_msg_trap`: from the
+/// message's address, the option, both sizes, the name received on, the
+/// timeout and the notify port, the 32-bit ones in their arguments' low
+/// halves.
+///
+/// # Panics
+///
+/// As `mach_msg::trap`.
+fn message(arguments: &[usize; 7]) -> u32 {
+    let [message, rest @ ..] = *arguments;
+    let [
+        option,
+        send_size,
+        receive_size,
+        receive_name,
+        timeout,
+        notify,
+    ] = rest.map(|argument| u32::try_from(argument & 0xffff_ffff).unwrap());
+    mach_msg::trap(
+        message,
+        option,
+        send_size,
+        receive_size,
+        receive_name,
+        timeout,
+        notify,
+    )
 }
 
 /// Gives the caller a reply port: a new port its task's space receives on,
@@ -91,7 +122,7 @@ fn message(_: &[usize; 6]) -> u32 {
 ///
 /// If no thread runs on the CPU. If the port can't be allocated: not yet;
 /// as `port::allocate`.
-fn reply_port(_: &[usize; 6]) -> u32 {
+fn reply_port(_: &[usize; 7]) -> u32 {
     let thread = smp::current()
         .active_thread()
         .expect("mach_reply_port: no current thread");
@@ -103,7 +134,7 @@ const PRINT_CHUNK: usize = 64;
 
 /// Prints the string at the caller's first argument, copied in by chunks;
 /// a fault ends it.
-fn print(arguments: &[usize; 6]) -> u32 {
+fn print(arguments: &[usize; 7]) -> u32 {
     let mut buffer = [0; PRINT_CHUNK];
     let mut address = arguments[0];
     loop {

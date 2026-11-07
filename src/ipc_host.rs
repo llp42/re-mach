@@ -6,7 +6,7 @@
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use crate::host::HOST;
+use crate::host::{HOST, Host};
 use crate::ipc::port::{self, KernelObject, Port};
 use crate::processor::{BOOT_PROCESSOR, DEFAULT_SET, Processor, ProcessorSet};
 use crate::slab::CacheBox;
@@ -62,6 +62,15 @@ pub fn init_set(set: &'static ProcessorSet) {
     );
     if set.active {
         set.references.fetch_add(2, Ordering::Relaxed);
+    }
+}
+
+/// The host `port` stands for while alive, if it is a host's privileged
+/// port, as `convert_port_to_host_priv` finds it.
+pub fn privileged_host(port: &Port) -> Option<&'static Host> {
+    match port.kernel_object() {
+        Some(KernelObject::HostPrivileged(host)) => Some(host),
+        _ => None,
     }
 }
 
