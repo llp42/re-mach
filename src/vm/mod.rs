@@ -10,6 +10,7 @@ pub mod page;
 pub mod pageout;
 pub mod pmap;
 pub mod proxy;
+pub mod user;
 
 use pmap::MachinePmap as _;
 
@@ -17,6 +18,7 @@ use crate::arch;
 
 bitflags::bitflags! {
     /// What memory allows, as Mach's interface numbers it.
+    #[derive(PartialEq, Eq)]
     pub struct Protection: u32 {
         /// Reading it.
         const READ = 1;
@@ -29,6 +31,7 @@ bitflags::bitflags! {
 
 /// What a child task gets of memory, as Mach's interface numbers it; only
 /// the values used here.
+#[derive(PartialEq, Eq)]
 pub enum Inheritance {
     /// A copy of it.
     Copy = 1,

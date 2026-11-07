@@ -60,7 +60,7 @@ pub struct Thread {
     /// How many references it has.
     references: AtomicU32,
     /// Its task.
-    task: UnsafeRef<Task>,
+    pub(super) task: UnsafeRef<Task>,
     /// What it is doing, as `ThreadState` bits.
     pub(super) state: AtomicU32,
     /// The address of the event it waits for; 0 for none.

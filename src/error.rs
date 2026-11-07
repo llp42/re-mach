@@ -8,8 +8,11 @@
 pub enum Error {
     /// The address is not valid for it.
     InvalidAddress = 1,
-    /// The range is in use, or no free range is large enough.
+    /// The range is in use, no free range is large enough, or the map's size
+    /// limit would be passed.
     NoSpace = 3,
+    /// An argument is not valid for it.
+    InvalidArgument = 4,
     /// The call does not apply to the object as it stands.
     Failure = 5,
     /// A resource it needed could not be allocated, perhaps for now only.

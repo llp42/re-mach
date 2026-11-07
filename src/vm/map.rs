@@ -22,10 +22,7 @@ use crate::sync::{OnceLock, SleepLock};
 
 /// An address map: ranges of virtual memory and what they map; so far only
 /// what a new map sets.
-#[expect(
-    dead_code,
-    reason = "pmap_enter, vm_map_reference and vm_map_enter read them"
-)]
+#[expect(dead_code, reason = "vm_map_reference and vm_set_size_limit read them")]
 pub struct Map {
     /// The addresses it may map.
     bounds: Range<usize>,
@@ -99,9 +96,15 @@ impl Map {
     ///
     /// # Errors
     ///
-    /// `InvalidAddress` if `range` is empty or not inside the map, `NoSpace`
-    /// if it overlaps an entry, and `ResourceShortage` if no entry can be
+    /// `InvalidArgument` if `range` is empty, `InvalidAddress` if it is not
+    /// inside the map, `NoSpace` if it overlaps an entry or takes the map
+    /// past its size limit, and `ResourceShortage` if no entry can be
     /// allocated.
+    ///
+    /// # Panics
+    ///
+    /// If `max_protection` is none, or a neighbouring entry could be
+    /// extended over `range`: not yet.
     pub fn enter(
         &self,
         range: Range<usize>,
@@ -109,8 +112,24 @@ impl Map {
         max_protection: Protection,
         inheritance: Inheritance,
     ) -> Result<(), Error> {
+        if range.is_empty() {
+            return Err(Error::InvalidArgument);
+        }
+        // Allocated before the lock; a failed check frees it after.
+        let entry = ENTRY_CACHE.allocate(Entry {
+            tree_link: RBTreeAtomicLink::new(),
+            gap_link: RBTreeAtomicLink::new(),
+            range: range.clone(),
+            gap: AtomicUsize::new(0),
+            protection,
+            max_protection,
+            inheritance,
+            backing: None,
+            wire_count: 0,
+            wired_access: Protection::empty(),
+        })?;
         let mut contents = self.contents.write();
-        if range.start < self.bounds.start || range.end > self.bounds.end || range.is_empty() {
+        if range.start < self.bounds.start || range.end > self.bounds.end {
             return Err(Error::InvalidAddress);
         }
         let below = contents.entries.upper_bound(Bound::Included(&range.start));
@@ -124,23 +143,42 @@ impl Map {
         {
             return Err(Error::NoSpace);
         }
+        assert!(
+            !entry.max_protection.is_empty(),
+            "vm_map_enter: a VM_PROT_NONE maximum, not yet"
+        );
+        // vm_map_enforce_limit, which the kernel's maps always pass.
+        let size = contents
+            .size
+            .checked_add(range.end - range.start)
+            .ok_or(Error::InvalidArgument)?;
+        if size > self.size_limit {
+            return Err(Error::NoSpace);
+        }
+        let extends = |neighbour: &Entry| {
+            !matches!(neighbour.backing, Some(Backing::Submap(_)))
+                && neighbour.inheritance == entry.inheritance
+                && neighbour.protection == entry.protection
+                && neighbour.max_protection == entry.max_protection
+                && neighbour.wire_count == 0
+        };
+        assert!(
+            !below
+                .get()
+                .is_some_and(|previous| previous.range.end == range.start && extends(previous)),
+            "vm_map_enter: vm_object_coalesce with the previous entry, not yet"
+        );
+        assert!(
+            !above
+                .get()
+                .is_some_and(|next| next.range.start == range.end && extends(next)),
+            "vm_map_enter: vm_object_coalesce with the next entry, not yet"
+        );
         let previous = below.clone_pointer();
         let next = above
             .get()
             .map_or(self.bounds.end, |entry| entry.range.start);
-        let gap = next - range.end;
-        let entry = ENTRY_CACHE.allocate(Entry {
-            tree_link: RBTreeAtomicLink::new(),
-            gap_link: RBTreeAtomicLink::new(),
-            range,
-            gap: AtomicUsize::new(gap),
-            protection,
-            max_protection,
-            inheritance,
-            backing: None,
-            wire_count: 0,
-            wired_access: Protection::empty(),
-        })?;
+        entry.gap.store(next - range.end, Ordering::Relaxed);
         contents.link(self.bounds.start, previous, entry);
         drop(contents);
         Ok(())
@@ -303,19 +341,14 @@ pub struct Entry {
     /// changed only under the map's write lock.
     gap: AtomicUsize,
     /// What it allows now.
-    #[expect(dead_code, reason = "vm_fault and vm_map_protect read it")]
     protection: Protection,
     /// The most it may ever allow.
-    #[expect(dead_code, reason = "vm_map_protect reads it")]
     max_protection: Protection,
     /// What a child task gets of it.
-    #[expect(dead_code, reason = "vm_map_fork reads it")]
     inheritance: Inheritance,
     /// What backs it; nothing while it is only reserved.
-    #[expect(dead_code, reason = "vm_map_lookup and vm_fault read it")]
     backing: Option<Backing>,
     /// How many times it is wired: its pages stay resident and mapped.
-    #[expect(dead_code, reason = "vm_map_pageable and vm_fault read it")]
     wire_count: u32,
     /// What it allows while wired.
     #[expect(dead_code, reason = "vm_map_pageable and vm_fault read it")]

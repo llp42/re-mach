@@ -20,7 +20,9 @@ use crate::ipc::{MessageType, mach_port};
 use crate::sched::{self, Event, USER_PRIORITY};
 use crate::sync::Spinlock;
 use crate::task::{self, Task};
-use crate::{device, print, println, smp, thread};
+use crate::vm::map::Map;
+use crate::vm::user::Placement;
+use crate::{device, print, println, smp, thread, vm};
 use elf_load::{SectionType, Segment};
 use script::{Script, Value};
 
@@ -218,13 +220,14 @@ fn load_program() -> ! {
         unsafe { slice::from_raw_parts(range.start.direct_map_ptr(), range.end - range.start) };
     let image = elf_load::parse(bytes).unwrap_or_else(|error| fail(error));
     for segment in image.segments() {
-        load_segment(bytes, &segment).unwrap_or_else(|error| fail(error));
+        load_segment(&thread.task.map, bytes, &segment).unwrap_or_else(|error| fail(error));
     }
     arch::Current::halt()
 }
 
-/// Loads `segment` of the image in `bytes` into the current task; so far
-/// it checks the segment and finds its pages, then stops its CPU.
+/// Loads `segment` of the image in `bytes` into `map`, the current task's;
+/// so far it checks the segment and allocates its pages, then stops its
+/// CPU.
 ///
 /// # Errors
 ///
@@ -233,8 +236,9 @@ fn load_program() -> ! {
 /// # Panics
 ///
 /// If the segment takes no memory, less than its file bytes, or pages past
-/// the address space's end.
-fn load_segment(bytes: &[u8], segment: &Segment) -> Result<(), elf_load::Error> {
+/// the address space's end, or if its pages can't be allocated where it
+/// asks.
+fn load_segment(map: &Map, bytes: &[u8], segment: &Segment) -> Result<(), elf_load::Error> {
     if segment
         .offset
         .checked_add(segment.file_size)
@@ -252,8 +256,10 @@ fn load_segment(bytes: &[u8], segment: &Segment) -> Result<(), elf_load::Error> 
         .checked_add(segment.memory_size)
         .and_then(|end| end.checked_next_multiple_of(PAGE_SIZE))
         .expect("read_exec: a segment past the address space's end");
-    #[expect(unused_variables, reason = "vm_allocate takes them")]
     let pages = segment.address & !(PAGE_SIZE - 1)..end;
+    let start = vm::user::allocate(map, pages.start, pages.end - pages.start, Placement::Fixed)
+        .unwrap_or_else(|error| panic!("read_exec: vm_allocate: {error:?}"));
+    assert_eq!(start, pages.start);
     arch::Current::halt()
 }
 
