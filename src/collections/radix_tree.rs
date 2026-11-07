@@ -2,8 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Radix trees of pointers under 64-bit keys, after GNU Mach's rdxtree;
-//! so far insertion and lookup. A level takes six bits of the key, and a
-//! tree is only as tall as its largest key needs.
+//! so far insertion, under a key or the lowest free one, and lookup. A
+//! level takes six bits of the key, and a tree is only as tall as its
+//! largest key needs.
 
 use core::marker::PhantomData;
 use core::ptr::{self, NonNull};
@@ -172,6 +173,64 @@ impl<T> RadixTree<T> {
             }
         }
         Ok(())
+    }
+
+    /// Stores `pointer`, two-byte aligned, under the lowest free key, and
+    /// gives that key.
+    ///
+    /// # Errors
+    ///
+    /// `ResourceShortage` if a node could not be allocated.
+    pub fn insert_alloc(&mut self, pointer: NonNull<T>) -> Result<u64, Error> {
+        if self.height == 0 {
+            if self.root.is_null() {
+                self.root = pointer.as_ptr().cast();
+                return Ok(0);
+            }
+        } else {
+            let mut key = 0;
+            // SAFETY: the tree's nodes are live and only it reaches them, and
+            // `&mut self` makes this the only use; a tree with levels has a
+            // top node.
+            unsafe {
+                let mut node = node_of(self.root);
+                for level in (0..self.height).rev() {
+                    // Only the top node can lack room below.
+                    if (*node).bitmap == 0 {
+                        break;
+                    }
+                    let mut index = usize::try_from((*node).bitmap.trailing_zeros()).unwrap();
+                    key |= u64::try_from(index).unwrap() << (u32::from(level) * RADIX);
+                    if level == 0 {
+                        (*node).entries[index] = pointer.as_ptr().cast();
+                        (*node).count += 1;
+                        // The slot is taken; a full node leaves no room below
+                        // its parent.
+                        loop {
+                            (*node).bitmap &= !(1 << index);
+                            if usize::from((*node).count) != SIZE || (*node).parent.is_null() {
+                                break;
+                            }
+                            index = usize::from((*node).index);
+                            node = (*node).parent;
+                        }
+                        return Ok(key);
+                    }
+                    if (*node).entries[index].is_null() {
+                        let next = Node::create(level - 1).inspect_err(|_| self.cleanup(node))?;
+                        (*next).parent = node;
+                        (*next).index = u16::try_from(index).unwrap();
+                        (*node).entries[index] = child(next);
+                        (*node).count += 1;
+                    }
+                    node = node_of((*node).entries[index]);
+                }
+            }
+        }
+        // Every key the tree's height reaches is taken: the next one.
+        let key = max_key(self.height) + 1;
+        self.insert(key, pointer)?;
+        Ok(key)
     }
 
     /// The pointer stored under `key`, if any.
