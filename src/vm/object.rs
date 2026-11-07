@@ -11,7 +11,7 @@ use intrusive_collections::{
 };
 
 use super::page::{Page, PageTreeAdapter};
-use crate::arch::{MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS};
+use crate::arch::{MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE};
 use crate::ipc::port::{self, KernelObject, Port};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{Token, TokenGuard};
@@ -32,16 +32,18 @@ pub struct Object {
     state: Token<ObjectState>,
 }
 
-/// What an object's token guards; so far only its pages, its paging under
-/// way and its first values.
+/// What an object's token guards; so far only its pages, where the last
+/// one went in, its paging under way and its first values.
 #[expect(
     dead_code,
-    reason = "vm_object_deallocate and the pager calls read them"
+    reason = "vm_object_deallocate's last reference and the pager calls read them"
 )]
 #[expect(clippy::struct_excessive_bools, reason = "GNU Mach's object flags")]
 pub struct ObjectState {
     /// Its resident pages.
     pages: Pages,
+    /// The offset its last page went in at.
+    last_alloc: usize,
     /// The object its pages are copied into before they change; none yet.
     pub(super) copy: Option<&'static Object>,
     /// The object behind it, whose pages show where it has none; none yet.
@@ -87,6 +89,7 @@ impl Object {
                     tree: RBTree::new(PageTreeAdapter::NEW),
                     count: 0,
                 },
+                last_alloc: 0,
                 copy: None,
                 shadow: None,
                 paging_in_progress: 0,
@@ -103,20 +106,26 @@ impl Object {
         self.references.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Takes its token.
-    pub fn lock(&self) -> TokenGuard<'_, ObjectState> {
-        self.state.lock()
-    }
-
-    /// Puts `page`, which belongs to no object, in it at `offset`.
+    /// Drops a reference on it, which is not its last.
     ///
     /// # Panics
     ///
-    /// If `page` belongs to an object.
-    pub fn insert(&self, page: &'static Page, offset: usize) {
-        let mut state = self.lock();
-        state.insert(self, page, offset);
-        drop(state);
+    /// On its last reference: not yet.
+    pub fn deallocate(&self) {
+        // Only the last reference's drop needs the token.
+        assert!(
+            self.references
+                .try_update(Ordering::Release, Ordering::Relaxed, |references| {
+                    (references > 1).then(|| references - 1)
+                })
+                .is_ok(),
+            "vm_object_deallocate: the last reference, not yet"
+        );
+    }
+
+    /// Takes its token.
+    pub fn lock(&self) -> TokenGuard<'_, ObjectState> {
+        self.state.lock()
     }
 }
 
@@ -126,16 +135,36 @@ impl ObjectState {
         self.paging_in_progress += 1;
     }
 
-    /// Puts `page`, which belongs to no object, in `object`, whose state
-    /// this is, at `offset`.
+    /// Notes the end of a paging operation under way.
     ///
     /// # Panics
     ///
-    /// If `page` belongs to an object.
+    /// If none is under way.
+    pub(super) const fn end_paging(&mut self) {
+        assert!(self.paging_in_progress != 0, "vm_object_paging_end");
+        self.paging_in_progress -= 1;
+        // Nothing waits for paging to end yet, so none is woken.
+    }
+
+    /// Puts `page`, which belongs to no object, in `object`, whose state
+    /// this is, at `offset`; the page put in last, if just before it and
+    /// not busy, is deactivated.
+    ///
+    /// # Panics
+    ///
+    /// If `page` belongs to an object, or as `Page::deactivate`.
     pub(super) fn insert(&mut self, object: &Object, page: &'static Page, offset: usize) {
         page.set_object(object, offset);
         self.pages.tree.insert(page);
         self.pages.count += 1;
+        // Sequential access: the page before is no longer interesting.
+        if offset == self.last_alloc + PAGE_SIZE
+            && let Some(last) = self.lookup(self.last_alloc)
+            && !last.is_busy()
+        {
+            last.deactivate();
+        }
+        self.last_alloc = offset;
     }
 
     /// The page at `offset`; `None` if none is resident.

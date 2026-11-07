@@ -143,14 +143,17 @@ pub fn page_of(address: usize) -> Option<&'static Page> {
     arch::Pmap::extract_kernel(address).and_then(page::lookup)
 }
 
-/// Maps a zeroed page of the kernel object at each page of `range`, at the
-/// offset of its address in the kernel map.
+/// Maps a zeroed, wired page of the kernel object at each page of `range`,
+/// at the offset of its address in the kernel map.
 fn fill(range: Range<usize>) -> Result<(), Error> {
     for address in range.step_by(PAGE_SIZE) {
         let offset = address - MIN_KERNEL_ADDRESS;
         // The kernel object's colour is 0.
         let page = page::allocate_zeroed(offset / PAGE_SIZE).ok_or(Error::ResourceShortage)?;
-        KERNEL_OBJECT.insert(page, offset);
+        let mut state = KERNEL_OBJECT.lock();
+        state.insert(&KERNEL_OBJECT, page, offset);
+        page.wire();
+        drop(state);
         arch::Pmap::enter_kernel(address, page.address());
     }
     Ok(())

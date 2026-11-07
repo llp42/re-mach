@@ -5,7 +5,7 @@
 
 use core::mem::MaybeUninit;
 use core::ops::Range;
-use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicUsize, Ordering};
 use core::{ptr, slice};
 
 use intrusive_collections::{
@@ -35,6 +35,11 @@ pub struct Page {
     /// Its busy word: `HARD_BUSY` while the thread that set it fills or
     /// maps it, and others keep off it.
     busy: AtomicU32,
+    /// How many times it is wired, which keeps it off the active and
+    /// inactive queues; changed only behind its object's token.
+    wire_count: AtomicU16,
+    /// Its `Flags`; changed only behind its object's token.
+    flags: AtomicU8,
     /// Its lock while it is a user page table, over its entries.
     pub table_lock: Spinlock<()>,
     /// Its state while it is a slab.
@@ -50,6 +55,8 @@ impl Page {
             object: AtomicPtr::new(ptr::null_mut()),
             offset: AtomicUsize::new(0),
             busy: AtomicU32::new(0),
+            wire_count: AtomicU16::new(0),
+            flags: AtomicU8::new(0),
             table_lock: Spinlock::new(()),
             slab: Slab::new(),
         }
@@ -76,6 +83,94 @@ impl Page {
     /// Whether it is busy, behind its object's token.
     pub(super) fn is_busy(&self) -> bool {
         self.busy.load(Ordering::Relaxed) & HARD_BUSY != 0
+    }
+
+    /// Makes it no longer busy, behind its object's token.
+    pub(super) fn wake_done(&self) {
+        // Nothing waits on a busy page yet, so none is woken.
+        self.busy.fetch_and(!HARD_BUSY, Ordering::Relaxed);
+    }
+
+    /// Whether it is on the active or the inactive queue, behind its
+    /// object's token.
+    pub(super) fn is_on_paging_queue(&self) -> bool {
+        Flags::from_bits_retain(self.flags.load(Ordering::Relaxed))
+            .intersects(Flags::ACTIVE | Flags::INACTIVE)
+    }
+
+    /// Notes that it was used, behind its object's token.
+    pub(super) fn set_referenced(&self) {
+        self.flags
+            .fetch_or(Flags::REFERENCED.bits(), Ordering::Relaxed);
+    }
+
+    /// Puts it, referenced, at the end of its colour's active queue, behind
+    /// its object's token.
+    ///
+    /// # Panics
+    ///
+    /// If it is on a paging queue or wired: not yet.
+    pub(super) fn activate(&'static self) {
+        let flags = Flags::from_bits_retain(self.flags.load(Ordering::Relaxed));
+        assert!(
+            !flags.intersects(Flags::ACTIVE | Flags::INACTIVE),
+            "vm_page_activate: a page on a paging queue, not yet"
+        );
+        assert!(
+            self.wire_count.load(Ordering::Relaxed) == 0,
+            "vm_page_activate: a wired page, not yet"
+        );
+        let color = color(self.address().0 / PAGE_SIZE);
+        QUEUES.active[color].push(self, &QUEUES.active_pages);
+        self.flags.store(
+            (flags | Flags::ACTIVE | Flags::REFERENCED).bits(),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// Takes it off the active queue, unreferenced, and puts it at the end of
+    /// its colour's inactive queue unless it is wired or there already,
+    /// behind its object's token.
+    ///
+    /// # Panics
+    ///
+    /// If it is inactive and referenced: not yet.
+    pub(super) fn deactivate(&'static self) {
+        let mut flags = Flags::from_bits_retain(self.flags.load(Ordering::Relaxed));
+        assert!(
+            !flags.contains(Flags::INACTIVE | Flags::REFERENCED),
+            "vm_page_deactivate: a referenced inactive page, not yet"
+        );
+        let color = color(self.address().0 / PAGE_SIZE);
+        if flags.contains(Flags::ACTIVE) {
+            // pmap_clear_reference has no counterpart until pageout reads
+            // accessed bits.
+            flags.remove(Flags::ACTIVE | Flags::REFERENCED);
+            // SAFETY: an active page is on its colour's active queue.
+            unsafe { QUEUES.active[color].remove(self, &QUEUES.active_pages) };
+        }
+        if self.wire_count.load(Ordering::Relaxed) == 0 && !flags.contains(Flags::INACTIVE) {
+            QUEUES.inactive[color].push(self, &QUEUES.inactive_pages);
+            flags.insert(Flags::INACTIVE);
+        }
+        self.flags.store(flags.bits(), Ordering::Relaxed);
+    }
+
+    /// Wires it once more, behind its object's token.
+    ///
+    /// # Panics
+    ///
+    /// If it is unwired and on a paging queue: not yet.
+    pub(super) fn wire(&self) {
+        let count = self.wire_count.load(Ordering::Relaxed);
+        if count == 0 {
+            assert!(
+                !self.is_on_paging_queue(),
+                "vm_page_wire: a page on a paging queue, not yet"
+            );
+            QUEUES.wired_pages.fetch_add(1, Ordering::Relaxed);
+        }
+        self.wire_count.store(count + 1, Ordering::Relaxed);
     }
 
     /// Fills it with zeros.
@@ -107,6 +202,18 @@ impl Page {
 
 /// The busy word's bit for a page one thread has to itself.
 const HARD_BUSY: u32 = 1 << 31;
+
+bitflags::bitflags! {
+    /// A page's paging queue, and whether it was used.
+    struct Flags: u8 {
+        /// On its colour's active queue.
+        const ACTIVE = 1;
+        /// On its colour's inactive queue.
+        const INACTIVE = 1 << 1;
+        /// Used since it was last deactivated.
+        const REFERENCED = 1 << 2;
+    }
+}
 
 intrusive_adapter!(
     #[expect(
@@ -168,6 +275,11 @@ static PAGES: OnceLock<PageArray> = OnceLock::new();
 /// or of its frame number's three lowest digits in base `COLORS`.
 const COLORS: usize = 1024;
 
+/// The colour of frame number `frame`.
+const fn color(frame: usize) -> usize {
+    (frame ^ (frame / COLORS) ^ (frame / (COLORS * COLORS))) % COLORS
+}
+
 intrusive_adapter!(
     #[expect(
         clippy::expl_impl_clone_on_copy,
@@ -211,6 +323,22 @@ impl PageQueue {
         drop(list);
     }
 
+    /// Takes `page` off it, dropping it from its pool's `total` too.
+    ///
+    /// # Safety
+    ///
+    /// `page` must be on it.
+    unsafe fn remove(&self, page: &'static Page, total: &AtomicUsize) {
+        let mut list = self.list.lock();
+        // SAFETY: the caller's.
+        unsafe { list.cursor_mut_from_ptr(page).remove() };
+        // The count changes only under the lock.
+        self.pages
+            .store(self.pages.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
+        total.fetch_sub(1, Ordering::Relaxed);
+        drop(list);
+    }
+
     /// Takes its first page, dropping it from its pool's `total` too; an
     /// empty queue is passed by without its lock.
     fn pop(&self, total: &AtomicUsize) -> Option<&'static Page> {
@@ -228,11 +356,18 @@ impl PageQueue {
     }
 }
 
-/// The page queues, a list per colour each, each on its own cache lines.
+/// The page queues, a list per colour each, each on its own cache lines,
+/// and their page counts.
 struct PageQueues {
     /// How many pages the free queues hold; changed under the lock of the
     /// queue changed.
     free_pages: AtomicUsize,
+    /// How many pages the inactive queues hold; changed as `free_pages` is.
+    inactive_pages: AtomicUsize,
+    /// How many pages the active queues hold; changed as `free_pages` is.
+    active_pages: AtomicUsize,
+    /// How many pages are wired.
+    wired_pages: AtomicUsize,
     /// Free pages.
     free: [CachePadded<PageQueue>; COLORS],
     /// Pages in use, not referenced lately.
@@ -265,6 +400,9 @@ static DMA_RESERVE: Spinlock<Reserve> = Spinlock::new(Reserve {
 
 static QUEUES: PageQueues = PageQueues {
     free_pages: AtomicUsize::new(0),
+    inactive_pages: AtomicUsize::new(0),
+    active_pages: AtomicUsize::new(0),
+    wired_pages: AtomicUsize::new(0),
     free: [const { CachePadded::new(PageQueue::new()) }; COLORS],
     inactive: [const { CachePadded::new(PageQueue::new()) }; COLORS],
     active: [const { CachePadded::new(PageQueue::new()) }; COLORS],
@@ -386,8 +524,7 @@ pub fn release(range: Range<PhysAddr>) {
             }
             drop(reserve);
         } else {
-            let color = (frame ^ (frame / COLORS) ^ (frame / (COLORS * COLORS))) % COLORS;
-            QUEUES.free[color].push(&array.pages[frame - first], &QUEUES.free_pages);
+            QUEUES.free[color(frame)].push(&array.pages[frame - first], &QUEUES.free_pages);
         }
     }
 }
@@ -508,9 +645,7 @@ pub fn allocate(index: usize) -> Option<&'static Page> {
 /// Puts `page`, which `allocate` gave and nothing uses now, back on its
 /// colour's free queue.
 pub fn free(page: &'static Page) {
-    let frame = page.address().0 / PAGE_SIZE;
-    let color = (frame ^ (frame / COLORS) ^ (frame / (COLORS * COLORS))) % COLORS;
-    QUEUES.free[color].push(page, &QUEUES.free_pages);
+    QUEUES.free[color(page.address().0 / PAGE_SIZE)].push(page, &QUEUES.free_pages);
 }
 
 /// Takes a free page as `allocate` does for `index`, and fills it with
