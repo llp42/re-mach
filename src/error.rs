@@ -3,24 +3,24 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Why kernel calls fail.
 
-/// Why a kernel call failed, numbered as Mach's return codes.
+/// Why a kernel call failed; `u32::from` gives Mach's return code for it.
 #[derive(Debug)]
 pub enum Error {
     /// The address is not valid for it.
-    InvalidAddress = 1,
+    InvalidAddress,
     /// The memory is there, but doesn't allow the access asked for.
-    ProtectionFailure = 2,
+    ProtectionFailure,
     /// The range is in use, no free range is large enough, or the map's size
     /// limit would be passed.
-    NoSpace = 3,
+    NoSpace,
     /// An argument is not valid for it.
-    InvalidArgument = 4,
+    InvalidArgument,
     /// The call does not apply to the object as it stands.
-    Failure = 5,
+    Failure,
     /// A resource it needed could not be allocated, perhaps for now only.
-    ResourceShortage = 6,
+    ResourceShortage,
     /// The name denotes a right already.
-    NameExists = 13,
+    NameExists,
 }
 
 impl From<Error> for u32 {
