@@ -27,6 +27,11 @@ pub struct Pcb {
     /// Its kernel stack pointer while it does not run: the callee-saved
     /// registers a switch pushed, then where it returns.
     stack_pointer: AtomicUsize,
+    /// Where a copy resumes after a fault on user memory that can't be
+    /// resolved; 0 outside a copy.
+    pub(super) onfault: AtomicUsize,
+    /// The stack pointer of the copy `onfault` serves.
+    pub(super) onfault_stack: AtomicUsize,
 }
 
 // A new thread's first return: interrupts on, then `begin` with the thread
@@ -107,6 +112,8 @@ impl MachineThread for Pcb {
         CACHE.allocate(Self {
             user: TrapFrame::user(),
             stack_pointer: AtomicUsize::new(0),
+            onfault: AtomicUsize::new(0),
+            onfault_stack: AtomicUsize::new(0),
         })
     }
 

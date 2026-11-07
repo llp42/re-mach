@@ -10,6 +10,7 @@ mod apic;
 mod boot_header;
 mod boot_memory;
 mod boot_stack;
+mod copy;
 mod counter;
 mod cpuid;
 mod fpu;
@@ -45,6 +46,7 @@ use crate::arch::Machine;
 use crate::boot::multiboot2::{self, ElfSectionType, Tag};
 use crate::boot::{self, BootModule};
 use crate::clock::{self, TimeValue};
+use crate::error::Error;
 use crate::machine::{self, CpuSubtype, CpuType, Slot};
 use crate::println;
 use crate::smp::{self, MachinePerCpu as _};
@@ -337,6 +339,10 @@ impl Machine for X86_64 {
 
     fn boot_modules() -> &'static [BootModule] {
         BOOT_MODULES.get().copied().unwrap_or_default()
+    }
+
+    fn copy_out(source: &[u8], destination: usize) -> Result<(), Error> {
+        copy::copy_out(source, destination)
     }
 
     fn efi_system_table() -> Option<u64> {
