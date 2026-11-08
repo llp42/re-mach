@@ -53,7 +53,7 @@ pub fn trap(
     let thread = smp::current()
         .active_thread()
         .expect("mach_msg_trap: no current thread");
-    let space = &thread.task.space;
+    let space = &thread.task().space;
     // With no cached buffer, fast_get goes to slow_get.
     let mut kmsg = kmsg::get(message, send_size);
     // fast_copyin.

@@ -193,7 +193,7 @@ impl MachineThread for Pcb {
         let owner = cpu.fpu_owner();
         let kernel = KERNEL_MAP
             .get()
-            .is_some_and(|map| ptr::eq(map, &raw const *next_thread.task.map));
+            .is_some_and(|map| ptr::eq(map, &raw const *next_thread.task().map));
         assert!(
             owner.is_null() || ptr::eq(owner, next_thread) || kernel,
             "fpu_save_context: not yet"
@@ -231,7 +231,7 @@ impl MachineThread for Pcb {
             .expect("set_user_regs: no current thread");
         // SAFETY: the current thread's own registers, written by nothing else
         // while it runs in the kernel.
-        let user = unsafe { &mut *thread.pcb.user.get() };
+        let user = unsafe { &mut *thread.pcb().user.get() };
         user.interrupted.stack_pointer = VirtAddr::new(u64::try_from(arguments).unwrap());
         user.interrupted.instruction_pointer = VirtAddr::new(u64::try_from(entry).unwrap());
         arguments
@@ -275,7 +275,7 @@ impl MachineThread for Pcb {
                 "addq $16, %rsp",
                 "swapgs",
                 "iretq",
-                user = in(reg) thread.pcb.user.get(),
+                user = in(reg) thread.pcb().user.get(),
                 options(att_syntax, noreturn),
             );
         }

@@ -72,7 +72,7 @@ pub struct Thread {
     /// How many references it has.
     references: AtomicU32,
     /// Its task.
-    pub(super) task: UnsafeRef<Task>,
+    task: UnsafeRef<Task>,
     /// What it is doing, as `ThreadState` bits.
     state: AtomicU32,
     /// The address of the event it waits for; 0 for none.
@@ -106,7 +106,7 @@ pub struct Thread {
     /// Its name; racing sets may mix two, as in GNU Mach.
     pub(super) name: Name,
     /// Its machine state.
-    pub(super) pcb: UnsafeRef<arch::Pcb>,
+    pcb: UnsafeRef<arch::Pcb>,
     /// Its port, which controls it.
     self_port: AtomicPtr<Port>,
     /// The send right for its port it hands out.
@@ -562,6 +562,11 @@ impl Thread {
         Ok(())
     }
 
+    /// Its task, which lives while it has threads.
+    pub(super) fn task(&self) -> &Task {
+        &self.task
+    }
+
     /// What it is doing.
     pub(super) fn state(&self) -> ThreadState {
         ThreadState::from_bits_retain(self.state.load(Ordering::Relaxed))
@@ -621,6 +626,11 @@ impl Thread {
     pub(super) fn set_processor_set(&self, set: &'static ProcessorSet) {
         self.set
             .store(ptr::from_ref(set).cast_mut(), Ordering::Release);
+    }
+
+    /// Its machine state.
+    pub(super) fn pcb(&self) -> &arch::Pcb {
+        &self.pcb
     }
 
     /// Its ASTs, which the CPU running it takes.
