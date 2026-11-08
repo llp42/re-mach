@@ -18,13 +18,13 @@ const RADIX: u32 = 6;
 const SIZE: usize = 64;
 
 /// One level of a tree: an entry per digit, each a child node or a leaf.
-#[repr(C)]
 struct Node {
     /// Its parent; null at the root.
     parent: *mut Self,
     /// Its entry in its parent.
     index: u16,
     /// How many levels lie below it.
+    #[expect(dead_code, reason = "rdxtree_walk reads it")]
     height: u16,
     /// How many of its entries are occupied.
     count: u16,
@@ -79,8 +79,8 @@ fn node_of(entry: *mut ()) -> *mut Node {
 }
 
 /// The largest key a tree of `height` levels holds.
-const fn max_key(height: u16) -> u64 {
-    let shift = height as u32 * RADIX;
+fn max_key(height: u16) -> u64 {
+    let shift = u32::from(height) * RADIX;
     if shift < u64::BITS {
         (1 << shift) - 1
     } else {
