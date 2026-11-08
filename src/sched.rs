@@ -170,7 +170,7 @@ pub enum Preemption {
 ///
 /// If `thread` is bound to another running CPU, or is not bound and in
 /// another set than the current CPU's: those come with SMP.
-pub fn set_run(thread: &'static Thread, preemption: Preemption) {
+pub fn make_runnable(thread: &'static Thread, preemption: Preemption) {
     let _section = CriticalSection::enter();
     thread.catch_up();
     let cpu = smp::current();
@@ -258,7 +258,7 @@ pub fn wakeup(event: Event) {
             state.bits()
         );
         thread.set_state((state - ThreadState::WAIT) | ThreadState::RUN);
-        set_run(thread, Preemption::Allowed);
+        make_runnable(thread, Preemption::Allowed);
     }
 }
 
@@ -347,7 +347,7 @@ fn invoke(old: &'static Thread, new: &'static Thread) {
 /// If its state is not one of those.
 pub fn dispatch(thread: &'static Thread) {
     match thread.state() {
-        state if state == ThreadState::RUN => set_run(thread, Preemption::Forbidden),
+        state if state == ThreadState::RUN => make_runnable(thread, Preemption::Forbidden),
         state if state == ThreadState::RUN | ThreadState::SUSPENDED => {
             thread.remove_state(ThreadState::RUN);
         }
