@@ -121,7 +121,7 @@ impl Page {
             "vm_page_activate: a wired page, not yet"
         );
         let color = color(self.address().0 / PAGE_SIZE);
-        QUEUES.active[color].push(self, &QUEUES.active_pages);
+        QUEUES.active.push(color, self);
         self.flags.store(
             (flags | Flags::ACTIVE | Flags::REFERENCED).bits(),
             Ordering::Relaxed,
@@ -147,10 +147,10 @@ impl Page {
             // accessed bits.
             flags.remove(Flags::ACTIVE | Flags::REFERENCED);
             // SAFETY: an active page is on its colour's active queue.
-            unsafe { QUEUES.active[color].remove(self, &QUEUES.active_pages) };
+            unsafe { QUEUES.active.remove(color, self) };
         }
         if self.wire_count.load(Ordering::Relaxed) == 0 && !flags.contains(Flags::INACTIVE) {
-            QUEUES.inactive[color].push(self, &QUEUES.inactive_pages);
+            QUEUES.inactive.push(color, self);
             flags.insert(Flags::INACTIVE);
         }
         self.flags.store(flags.bits(), Ordering::Relaxed);
@@ -356,24 +356,60 @@ impl PageQueue {
     }
 }
 
-/// The page queues, a list per colour each, each on its own cache lines,
-/// and their page counts.
+/// A page queue per colour, each on its own cache lines, and how many
+/// pages they hold.
+struct ColorQueues {
+    /// How many pages its queues hold; changed under the lock of the queue
+    /// changed.
+    pages: AtomicUsize,
+    /// Its queues, by colour.
+    queues: [CachePadded<PageQueue>; COLORS],
+}
+
+impl ColorQueues {
+    /// Empty ones.
+    #[expect(
+        clippy::large_stack_arrays,
+        reason = "only QUEUES' initializer calls it, at compile time"
+    )]
+    const fn new() -> Self {
+        Self {
+            pages: AtomicUsize::new(0),
+            queues: [const { CachePadded::new(PageQueue::new()) }; COLORS],
+        }
+    }
+
+    /// Puts `page` at the end of `color`'s queue.
+    fn push(&self, color: usize, page: &'static Page) {
+        self.queues[color].push(page, &self.pages);
+    }
+
+    /// Takes `page` off `color`'s queue.
+    ///
+    /// # Safety
+    ///
+    /// `page` must be on it.
+    unsafe fn remove(&self, color: usize, page: &'static Page) {
+        // SAFETY: the caller's.
+        unsafe { self.queues[color].remove(page, &self.pages) };
+    }
+
+    /// Takes the first page of `color`'s queue.
+    fn pop(&self, color: usize) -> Option<&'static Page> {
+        self.queues[color].pop(&self.pages)
+    }
+}
+
+/// The page queues, by use, and how many pages are wired.
 struct PageQueues {
-    /// How many pages the free queues hold; changed under the lock of the
-    /// queue changed.
-    free_pages: AtomicUsize,
-    /// How many pages the inactive queues hold; changed as `free_pages` is.
-    inactive_pages: AtomicUsize,
-    /// How many pages the active queues hold; changed as `free_pages` is.
-    active_pages: AtomicUsize,
     /// How many pages are wired.
     wired_pages: AtomicUsize,
     /// Free pages.
-    free: [CachePadded<PageQueue>; COLORS],
+    free: ColorQueues,
     /// Pages in use, not referenced lately.
-    inactive: [CachePadded<PageQueue>; COLORS],
+    inactive: ColorQueues,
     /// Pages in use, referenced lately.
-    active: [CachePadded<PageQueue>; COLORS],
+    active: ColorQueues,
 }
 
 /// Most low memory kept for DMA.
@@ -399,13 +435,10 @@ static DMA_RESERVE: Spinlock<Reserve> = Spinlock::new(Reserve {
 });
 
 static QUEUES: PageQueues = PageQueues {
-    free_pages: AtomicUsize::new(0),
-    inactive_pages: AtomicUsize::new(0),
-    active_pages: AtomicUsize::new(0),
     wired_pages: AtomicUsize::new(0),
-    free: [const { CachePadded::new(PageQueue::new()) }; COLORS],
-    inactive: [const { CachePadded::new(PageQueue::new()) }; COLORS],
-    active: [const { CachePadded::new(PageQueue::new()) }; COLORS],
+    free: ColorQueues::new(),
+    inactive: ColorQueues::new(),
+    active: ColorQueues::new(),
 };
 
 /// The cache fictitious pages come from: pages outside the page array, such
@@ -524,7 +557,7 @@ pub fn release(range: Range<PhysAddr>) {
             }
             drop(reserve);
         } else {
-            QUEUES.free[color(frame)].push(&array.pages[frame - first], &QUEUES.free_pages);
+            QUEUES.free.push(color(frame), &array.pages[frame - first]);
         }
     }
 }
@@ -538,7 +571,7 @@ pub fn release(range: Range<PhysAddr>) {
 pub fn print_pools() {
     let array = PAGES.get().expect("vm_page: not set up");
     let reserve_free = DMA_RESERVE.lock().free;
-    let queue_free = QUEUES.free_pages.load(Ordering::Relaxed);
+    let queue_free = QUEUES.free.pages.load(Ordering::Relaxed);
     for (name, pool, free) in [
         ("DMA", &array.reserve, reserve_free),
         ("DIRECTMAP", &array.queues, queue_free),
@@ -567,10 +600,11 @@ pub(super) fn usable() -> bool {
     let array = PAGES.get().expect("vm_page: not set up");
     QUEUES
         .active
+        .queues
         .iter()
-        .chain(&QUEUES.inactive)
+        .chain(&QUEUES.inactive.queues)
         .all(|queue| queue.pages.load(Ordering::Relaxed) == 0)
-        || QUEUES.free_pages.load(Ordering::Relaxed) >= array.queues.high
+        || QUEUES.free.pages.load(Ordering::Relaxed) >= array.queues.high
 }
 
 /// The bytes the page array covers, holes included.
@@ -606,8 +640,8 @@ pub fn init() {
 pub fn allocate(index: usize) -> Option<&'static Page> {
     let cpu_colors = COLORS / machine::processor_count();
     let first = smp::current().id() * cpu_colors + index % cpu_colors;
-    let queue = &QUEUES.free[first];
-    if let Some(page) = queue.pop(&QUEUES.free_pages) {
+    let queue = &QUEUES.free.queues[first];
+    if let Some(page) = QUEUES.free.pop(first) {
         queue.last.store(0, Ordering::Relaxed);
         return Some(page);
     }
@@ -625,10 +659,10 @@ pub fn allocate(index: usize) -> Option<&'static Page> {
             if searched.contains(&color) {
                 continue;
             }
-            if QUEUES.free_pages.load(Ordering::Relaxed) == 0 {
+            if QUEUES.free.pages.load(Ordering::Relaxed) == 0 {
                 return None;
             }
-            if let Some(page) = QUEUES.free[color].pop(&QUEUES.free_pages) {
+            if let Some(page) = QUEUES.free.pop(color) {
                 if looked >= 8 {
                     queue.last.store(color + 1, Ordering::Relaxed);
                 }
@@ -645,7 +679,7 @@ pub fn allocate(index: usize) -> Option<&'static Page> {
 /// Puts `page`, which `allocate` gave and nothing uses now, back on its
 /// colour's free queue.
 pub fn free(page: &'static Page) {
-    QUEUES.free[color(page.address().0 / PAGE_SIZE)].push(page, &QUEUES.free_pages);
+    QUEUES.free.push(color(page.address().0 / PAGE_SIZE), page);
 }
 
 /// Takes a free page as `allocate` does for `index`, and fills it with
