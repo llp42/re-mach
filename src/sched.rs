@@ -92,6 +92,7 @@ pub const SCHEDULER_SHIFT: u32 = 7;
 pub const PRIORITY_SHIFT: u32 = 17;
 
 /// A thread's scheduling policy, one of `Policies`.
+#[derive(Clone, Copy)]
 pub enum Policy {
     /// Its priority decays with use.
     Timeshare,
@@ -183,9 +184,7 @@ pub fn set_run(thread: &'static Thread, preemption: Preemption) {
         return;
     }
     assert!(
-        processor
-            .set()
-            .is_some_and(|set| ptr::eq(set, thread.set.load(Ordering::Acquire))),
+        processor.set().is_some_and(|set| thread.is_in(set)),
         "thread_setrun: another set's run queue, not yet"
     );
     processor.enqueue(thread);
@@ -193,7 +192,7 @@ pub fn set_run(thread: &'static Thread, preemption: Preemption) {
         let current = cpu
             .active_thread()
             .expect("thread_setrun: no current thread");
-        if current.sched_pri.load(Ordering::Relaxed) > thread.sched_pri.load(Ordering::Relaxed) {
+        if current.scheduled_priority() > thread.scheduled_priority() {
             processor.end_first_quantum();
             cpu.add_asts(Ast::BLOCK);
         }
@@ -210,18 +209,15 @@ fn assert_wait(event: Event) {
     let _section = CriticalSection::enter();
     let cpu = smp::current();
     let thread = cpu.active_thread().expect("assert_wait: no current thread");
-    let waited = thread.wait_event.load(Ordering::Relaxed);
+    let waited = thread.wait_event();
     assert!(
         waited == 0,
         "assert_wait: already asserted event {waited:#x}"
     );
     // SAFETY: a thread lives while it waits on a sleep queue.
     cpu.sleep_queues()[event.hash()].push_back(unsafe { UnsafeRef::from_raw(thread) });
-    thread.wait_event.store(event.0, Ordering::Relaxed);
-    thread.state.fetch_or(
-        (ThreadState::WAIT | ThreadState::UNINTERRUPTIBLE).bits(),
-        Ordering::Relaxed,
-    );
+    thread.set_wait_event(event.0);
+    thread.insert_state(ThreadState::WAIT | ThreadState::UNINTERRUPTIBLE);
 }
 
 /// Makes the current thread wait for `event`, releases `guard`'s lock and
@@ -243,14 +239,14 @@ pub fn wakeup(event: Event) {
     let mut queues = smp::current().sleep_queues();
     let mut cursor = queues[event.hash()].front_mut();
     while let Some(thread) = cursor.get() {
-        if thread.wait_event.load(Ordering::Relaxed) != event.0 {
+        if thread.wait_event() != event.0 {
             cursor.move_next();
             continue;
         }
         // SAFETY: it waited on the queue, and goes on a run queue.
         let thread = unsafe { &*UnsafeRef::into_raw(cursor.remove().unwrap()) };
-        thread.wait_event.store(0, Ordering::Relaxed);
-        let state = ThreadState::from_bits_retain(thread.state.load(Ordering::Relaxed));
+        thread.set_wait_event(0);
+        let state = thread.state();
         assert!(
             [
                 ThreadState::WAIT | ThreadState::SUSPENDED | ThreadState::UNINTERRUPTIBLE,
@@ -261,10 +257,7 @@ pub fn wakeup(event: Event) {
             "thread_wakeup_prim: thread {thread:p} in state {:#x}, not yet",
             state.bits()
         );
-        thread.state.store(
-            ((state - ThreadState::WAIT) | ThreadState::RUN).bits(),
-            Ordering::Relaxed,
-        );
+        thread.set_state((state - ThreadState::WAIT) | ThreadState::RUN);
         set_run(thread, Preemption::Allowed);
     }
 }
@@ -305,8 +298,8 @@ fn select(processor: &'static Processor, current: &'static Thread) -> &'static T
             return thread;
         }
         Some(thread) => thread,
-        None if current.state.load(Ordering::Relaxed) == ThreadState::RUN.bits()
-            && ptr::eq(current.set.load(Ordering::Acquire), set)
+        None if current.state() == ThreadState::RUN
+            && current.is_in(set)
             && current
                 .bound()
                 .is_none_or(|bound| ptr::eq(bound, processor)) =>
@@ -332,14 +325,13 @@ fn select(processor: &'static Processor, current: &'static Thread) -> &'static T
 /// `old`, the thread it runs, inside a critical section; returns once `old`
 /// runs again, having dispatched the thread switched from then.
 fn invoke(old: &'static Thread, new: &'static Thread) {
-    new.state
-        .fetch_and(!ThreadState::UNINTERRUPTIBLE.bits(), Ordering::Relaxed);
+    new.remove_state(ThreadState::UNINTERRUPTIBLE);
     if ptr::eq(old, new) {
         return;
     }
     new.run_here();
     // The CPU takes the new thread's ASTs; none is per-thread yet.
-    smp::current().add_asts(Ast::from_bits_retain(new.asts.load(Ordering::Relaxed)));
+    smp::current().add_asts(new.asts());
     // SAFETY: the CPU runs on `old`'s stack; `new` was switched away from,
     // or got its stack before it was made runnable.
     dispatch(unsafe { old.switch(new) });
@@ -354,12 +346,10 @@ fn invoke(old: &'static Thread, new: &'static Thread) {
 ///
 /// If its state is not one of those.
 pub fn dispatch(thread: &'static Thread) {
-    match ThreadState::from_bits_retain(thread.state.load(Ordering::Relaxed)) {
+    match thread.state() {
         state if state == ThreadState::RUN => set_run(thread, Preemption::Forbidden),
         state if state == ThreadState::RUN | ThreadState::SUSPENDED => {
-            thread
-                .state
-                .fetch_and(!ThreadState::RUN.bits(), Ordering::Relaxed);
+            thread.remove_state(ThreadState::RUN);
         }
         state
             if [
@@ -372,9 +362,7 @@ pub fn dispatch(thread: &'static Thread) {
             ]
             .contains(&state) =>
         {
-            thread
-                .state
-                .fetch_and(!ThreadState::RUN.bits(), Ordering::Relaxed);
+            thread.remove_state(ThreadState::RUN);
         }
         // Its processor chooses it when it has nothing else.
         state if state == ThreadState::RUN | ThreadState::IDLE => {}
@@ -398,11 +386,9 @@ pub fn idle_thread() -> ! {
     let cpu = smp::current();
     let thread = cpu.active_thread().expect("idle_thread: no current thread");
     let lowest = u32::try_from(RUN_QUEUES).unwrap() - 1;
-    thread.priority.store(lowest, Ordering::Relaxed);
-    thread.sched_pri.store(lowest, Ordering::Relaxed);
-    thread
-        .state
-        .fetch_or(ThreadState::IDLE.bits(), Ordering::Relaxed);
+    thread.set_priority(lowest);
+    thread.set_scheduled_priority(lowest);
+    thread.insert_state(ThreadState::IDLE);
     assert!(
         cpu.processor().set_idle_thread(thread).is_ok(),
         "idle_thread: twice"

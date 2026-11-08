@@ -12,6 +12,7 @@ use core::sync::atomic::{
 
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
+use crate::ast::Ast;
 use crate::clock::{self, TimeValue};
 use crate::error::Error;
 use crate::ipc::port::{self, KernelObject, Port};
@@ -30,7 +31,7 @@ use crate::{arch, smp};
 bitflags::bitflags! {
     /// What a thread is doing, as Mach numbers it; only the states used
     /// here.
-    #[derive(PartialEq, Eq)]
+    #[derive(Clone, Copy, PartialEq, Eq)]
     pub struct ThreadState: u32 {
         /// Waiting for an event.
         const WAIT = 0x01;
@@ -73,21 +74,21 @@ pub struct Thread {
     /// Its task.
     pub(super) task: UnsafeRef<Task>,
     /// What it is doing, as `ThreadState` bits.
-    pub(super) state: AtomicU32,
+    state: AtomicU32,
     /// The address of the event it waits for; 0 for none.
-    pub(super) wait_event: AtomicUsize,
+    wait_event: AtomicUsize,
     /// How many times it is suspended.
     pub(super) suspend_count: AtomicU32,
     /// How many of those suspensions user tasks asked for.
     pub(super) user_stop_count: AtomicU32,
     /// Its base priority.
-    pub(super) priority: AtomicU32,
+    priority: AtomicU32,
     /// The highest priority it may take.
     max_priority: AtomicU32,
     /// The priority it is scheduled at, its base aged by its use.
-    pub(super) sched_pri: AtomicU32,
+    sched_pri: AtomicU32,
     /// Its scheduling policy.
-    pub(super) policy: Policy,
+    policy: Policy,
     /// Its recent processor use, scaled.
     cpu_usage: AtomicU32,
     /// Its use, as its priority ages it.
@@ -97,7 +98,7 @@ pub struct Thread {
     /// Whether it is alive.
     active: AtomicBool,
     /// The processor set it runs on; set as the set takes it.
-    pub(super) set: AtomicPtr<ProcessorSet>,
+    set: AtomicPtr<ProcessorSet>,
     /// Whether it may be moved to another processor set.
     may_assign: bool,
     /// When it was created.
@@ -138,7 +139,7 @@ pub struct Thread {
     /// Its quantum, in ticks, under the fixed-priority policy.
     fixed_quantum: u32,
     /// Its ASTs, which the CPU running it takes.
-    pub(super) asts: AtomicU32,
+    asts: AtomicU32,
 }
 
 /// 5/8 to the power of a number of seconds, as two shifts: `x >> first`,
@@ -559,6 +560,72 @@ impl Thread {
             }
         }
         Ok(())
+    }
+
+    /// What it is doing.
+    pub(super) fn state(&self) -> ThreadState {
+        ThreadState::from_bits_retain(self.state.load(Ordering::Relaxed))
+    }
+
+    /// Adds `state` to what it is doing.
+    pub(super) fn insert_state(&self, state: ThreadState) {
+        self.state.fetch_or(state.bits(), Ordering::Relaxed);
+    }
+
+    /// Takes `state` off what it is doing.
+    pub(super) fn remove_state(&self, state: ThreadState) {
+        self.state.fetch_and(!state.bits(), Ordering::Relaxed);
+    }
+
+    /// Sets what it is doing.
+    pub(super) fn set_state(&self, state: ThreadState) {
+        self.state.store(state.bits(), Ordering::Relaxed);
+    }
+
+    /// The address of the event it waits for; 0 for none.
+    pub(super) fn wait_event(&self) -> usize {
+        self.wait_event.load(Ordering::Relaxed)
+    }
+
+    /// Sets the event it waits for; 0 for none.
+    pub(super) fn set_wait_event(&self, event: usize) {
+        self.wait_event.store(event, Ordering::Relaxed);
+    }
+
+    /// Sets its base priority, while it runs.
+    pub(super) fn set_priority(&self, priority: u32) {
+        self.priority.store(priority, Ordering::Relaxed);
+    }
+
+    /// The priority it is scheduled at.
+    pub(super) fn scheduled_priority(&self) -> u32 {
+        self.sched_pri.load(Ordering::Relaxed)
+    }
+
+    /// Sets the priority it is scheduled at, while on no run queue.
+    pub(super) fn set_scheduled_priority(&self, priority: u32) {
+        self.sched_pri.store(priority, Ordering::Relaxed);
+    }
+
+    /// Its scheduling policy.
+    pub(super) const fn policy(&self) -> Policy {
+        self.policy
+    }
+
+    /// Whether it runs on `set`.
+    pub(super) fn is_in(&self, set: &ProcessorSet) -> bool {
+        ptr::eq(self.set.load(Ordering::Acquire), set)
+    }
+
+    /// Sets the set it runs on, under that set's token.
+    pub(super) fn set_processor_set(&self, set: &'static ProcessorSet) {
+        self.set
+            .store(ptr::from_ref(set).cast_mut(), Ordering::Release);
+    }
+
+    /// Its ASTs, which the CPU running it takes.
+    pub(super) fn asts(&self) -> Ast {
+        Ast::from_bits_retain(self.asts.load(Ordering::Relaxed))
     }
 }
 
