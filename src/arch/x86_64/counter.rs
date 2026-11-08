@@ -4,6 +4,8 @@
 
 use core::arch::x86_64::_rdtsc;
 
+use raw_cpuid::CpuId;
+
 use super::hpet;
 use crate::sync::OnceLock;
 
@@ -32,8 +34,9 @@ const MEASURE_SPAN: u64 = 100_000_000_000_000;
 /// If there is neither, or on a second call.
 pub fn init() {
     let period = hpet::PERIOD.get().copied();
-    let invariant = raw_cpuid::cpuid!(0x8000_0000).eax >= 0x8000_0007
-        && raw_cpuid::cpuid!(0x8000_0007).edx & 1 << 8 != 0;
+    let invariant = CpuId::new()
+        .get_advanced_power_mgmt_info()
+        .is_some_and(|info| info.has_invariant_tsc());
     let counter = match (invariant, period) {
         (true, _) if let Some(frequency) = tsc_frequency() => Counter::Tsc(frequency),
         (true, Some(period)) => Counter::Tsc(measure_tsc(period)),
@@ -46,20 +49,17 @@ pub fn init() {
 /// The TSC's frequency as CPUID gives it: leaf 0x15's crystal and ratio,
 /// else leaf 0x16's base frequency.
 fn tsc_frequency() -> Option<u64> {
-    let max = raw_cpuid::cpuid!(0).eax;
-    if max >= 0x15 {
-        let leaf = raw_cpuid::cpuid!(0x15);
-        if leaf.eax != 0 && leaf.ebx != 0 && leaf.ecx != 0 {
-            return Some(u64::from(leaf.ecx) * u64::from(leaf.ebx) / u64::from(leaf.eax));
-        }
-    }
-    if max >= 0x16 {
-        let megahertz = raw_cpuid::cpuid!(0x16).eax & 0xffff;
-        if megahertz != 0 {
-            return Some(u64::from(megahertz) * 1_000_000);
-        }
-    }
-    None
+    let cpuid = CpuId::new();
+    cpuid
+        .get_tsc_info()
+        .and_then(|info| info.tsc_frequency())
+        .or_else(|| {
+            cpuid
+                .get_processor_frequency_info()
+                .map(|info| info.processor_base_frequency())
+                .filter(|&megahertz| megahertz != 0)
+                .map(|megahertz| u64::from(megahertz) * 1_000_000)
+        })
 }
 
 /// The TSC's frequency, counted over `MEASURE_SPAN` of the HPET, whose
