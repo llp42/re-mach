@@ -59,7 +59,8 @@ pub fn init_set(set: &'static ProcessorSet) {
         set.active.then_some(KernelObject::ProcessorSetName(object)),
     ));
     if set.active {
-        set.references.fetch_add(2, Ordering::Relaxed);
+        set.reference();
+        set.reference();
     }
 }
 
