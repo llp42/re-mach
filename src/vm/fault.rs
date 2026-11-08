@@ -118,10 +118,10 @@ fn fault_page(
     mut state: TokenGuard<'static, ObjectState>,
     offset: usize,
 ) -> Found {
-    let task = &smp::current()
+    let task = smp::current()
         .active_thread()
         .expect("vm_fault_page: no current thread")
-        .task;
+        .task();
     STATISTICS.faults.fetch_add(1, Ordering::Relaxed);
     task.faults.fetch_add(1, Ordering::Relaxed);
     if let Some(page) = state.lookup(offset) {

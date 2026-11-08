@@ -126,7 +126,7 @@ fn reply_port(_: &[usize; 7]) -> u32 {
     let thread = smp::current()
         .active_thread()
         .expect("mach_reply_port: no current thread");
-    port::allocate(&thread.task.space).expect("mach_reply_port: a failed allocation, not yet")
+    port::allocate(&thread.task().space).expect("mach_reply_port: a failed allocation, not yet")
 }
 
 /// How many bytes `print` copies in at a time, at most.

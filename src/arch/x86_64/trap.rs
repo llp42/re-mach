@@ -268,9 +268,10 @@ extern "sysv64" fn user_trap(frame: &TrapFrame) -> ! {
             } else {
                 Protection::READ
             };
-            vm::fault::fault(&thread.task.map, address & !(PAGE_SIZE - 1), access).unwrap_or_else(
-                |error| panic!("user_page_fault_continue: i386_exception {error:?}, not yet"),
-            );
+            vm::fault::fault(&thread.task().map, address & !(PAGE_SIZE - 1), access)
+                .unwrap_or_else(|error| {
+                    panic!("user_page_fault_continue: i386_exception {error:?}, not yet")
+                });
         }
         Some(ExceptionVector::DeviceNotAvailable) => fpu::no_extension_fault(),
         _ => {
@@ -312,7 +313,7 @@ extern "sysv64" fn kernel_trap(frame: &mut TrapFrame) {
         let thread = smp::current().active_thread().filter(|thread| {
             !KERNEL_MAP
                 .get()
-                .is_some_and(|kernel| ptr::eq(kernel, &raw const *thread.task.map))
+                .is_some_and(|kernel| ptr::eq(kernel, &raw const *thread.task().map))
         });
         let Some(thread) = thread else {
             let _ = write!(Serial, "kernel page fault at {address:#x}:\r\n{frame}");
@@ -325,12 +326,12 @@ extern "sysv64" fn kernel_trap(frame: &mut TrapFrame) {
         } else {
             Protection::READ
         };
-        if vm::fault::fault(&thread.task.map, address & !(PAGE_SIZE - 1), access).is_ok() {
+        if vm::fault::fault(&thread.task().map, address & !(PAGE_SIZE - 1), access).is_ok() {
             return;
         }
         // A copy's recovery point, for a fault at its stack pointer.
-        let recovery = thread.pcb.onfault.load(Ordering::Relaxed);
-        let stack = thread.pcb.onfault_stack.load(Ordering::Relaxed);
+        let recovery = thread.pcb().onfault.load(Ordering::Relaxed);
+        let stack = thread.pcb().onfault_stack.load(Ordering::Relaxed);
         if recovery != 0
             && u64::try_from(stack).unwrap() == frame.interrupted.stack_pointer.as_u64()
         {

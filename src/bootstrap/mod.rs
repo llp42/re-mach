@@ -236,7 +236,7 @@ fn load_program() -> ! {
         unsafe { slice::from_raw_parts(range.start.direct_map_ptr(), range.end - range.start) };
     let image = elf_load::parse(bytes).unwrap_or_else(|error| fail(error));
     for segment in image.segments() {
-        load_segment(&thread.task.map, bytes, &segment).unwrap_or_else(|error| fail(error));
+        load_segment(&thread.task().map, bytes, &segment).unwrap_or_else(|error| fail(error));
     }
     print!("task loaded:");
     // GNU Mach's argv.
@@ -244,14 +244,14 @@ fn load_program() -> ! {
         CStr::from_bytes_until_nul(&info.line[offset..])
             .expect("user_bootstrap: an argument with no NUL")
     });
-    build_arguments_and_stack(&thread.task.map, &image, argv.clone());
+    build_arguments_and_stack(&thread.task().map, &image, argv.clone());
     for argument in argv {
         let argument = argument
             .to_str()
             .expect("user_bootstrap: an argument not UTF-8");
         print!(" {argument}");
     }
-    thread.task.suspend();
+    thread.task().suspend();
     // `run_command` may drop the info once it is done, so the wakeup takes
     // its address alone.
     let event = Event::of(info);

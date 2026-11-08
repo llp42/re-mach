@@ -116,7 +116,7 @@ impl Task {
         let current = smp::current()
             .active_thread()
             .expect("task_suspend: no current thread");
-        if ptr::eq(&raw const *current.task, self) {
+        if ptr::eq(current.task(), self) {
             current.hold();
             let _section = CriticalSection::enter();
             smp::current().add_asts(Ast::BLOCK);
