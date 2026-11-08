@@ -4,9 +4,7 @@
 
 use core::arch::x86_64::_rdtsc;
 
-use raw_cpuid::CpuId;
-
-use super::hpet;
+use super::{cpuid, hpet};
 use crate::sync::OnceLock;
 
 /// What counts time, and how fast.
@@ -34,7 +32,7 @@ const MEASURE_SPAN: u64 = 100_000_000_000_000;
 /// If there is neither, or on a second call.
 pub fn init() {
     let period = hpet::PERIOD.get().copied();
-    let invariant = CpuId::new()
+    let invariant = cpuid::cpu_id()
         .get_advanced_power_mgmt_info()
         .is_some_and(|info| info.has_invariant_tsc());
     let counter = match (invariant, period) {
@@ -49,12 +47,12 @@ pub fn init() {
 /// The TSC's frequency as CPUID gives it: leaf 0x15's crystal and ratio,
 /// else leaf 0x16's base frequency.
 fn tsc_frequency() -> Option<u64> {
-    let cpuid = CpuId::new();
-    cpuid
+    let cpu_id = cpuid::cpu_id();
+    cpu_id
         .get_tsc_info()
         .and_then(|info| info.tsc_frequency())
         .or_else(|| {
-            cpuid
+            cpu_id
                 .get_processor_frequency_info()
                 .map(|info| info.processor_base_frequency())
                 .filter(|&megahertz| megahertz != 0)

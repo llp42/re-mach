@@ -7,7 +7,6 @@ use core::arch::asm;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 
-use raw_cpuid::CpuId;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
 use x86_64::registers::xcontrol::XCr0;
 
@@ -81,7 +80,7 @@ pub fn init() {
         }
         assert!(FEATURES.set(features).is_ok(), "fpu: set up twice");
         // Read again for the size of the states XCR0 now enables.
-        let state = CpuId::new()
+        let state = cpuid::cpu_id()
             .get_extended_state_info()
             .expect("fpu: no CPUID leaf 0xd");
         let size = usize::try_from(state.xsave_area_size_enabled_features()).unwrap();

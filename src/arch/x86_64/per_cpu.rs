@@ -8,14 +8,13 @@ use core::mem::{self, MaybeUninit, offset_of};
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
-use raw_cpuid::CpuId;
 use x86_64::VirtAddr;
 use x86_64::instructions::interrupts;
 use x86_64::registers::model_specific::{GsBase, KernelGsBase};
 use x86_64::structures::gdt::GlobalDescriptorTable;
 use x86_64::structures::tss::TaskStateSegment;
 
-use super::{gdt, interrupt};
+use super::{cpuid, gdt, interrupt};
 use crate::config::MAX_CPUS;
 use crate::smp::{self, MachinePerCpu};
 use crate::sync::OnceLock;
@@ -113,7 +112,7 @@ impl PerCpu {
     ///
     /// On a second call on this CPU.
     pub fn store_apic_id() {
-        let apic_id = CpuId::new()
+        let apic_id = cpuid::cpu_id()
             .get_feature_info()
             .expect("CPUID leaf 1")
             .initial_local_apic_id();
