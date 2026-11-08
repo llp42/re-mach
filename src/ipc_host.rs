@@ -4,7 +4,7 @@
 //! The ports of the host, processor sets and processors.
 
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::Ordering;
 
 use crate::host::{HOST, Host};
 use crate::ipc::port::{self, KernelObject, Port};
@@ -18,10 +18,13 @@ use crate::slab::CacheBox;
 ///
 /// If a port can't be allocated, or before the boot processor is recorded.
 pub fn init() {
-    store_port(&HOST.port, Some(KernelObject::Host(&HOST)));
-    store_port(
-        &HOST.privileged_port,
-        Some(KernelObject::HostPrivileged(&HOST)),
+    HOST.port.store(
+        allocate_port(Some(KernelObject::Host(&HOST))).as_ptr(),
+        Ordering::Release,
+    );
+    HOST.privileged_port.store(
+        allocate_port(Some(KernelObject::HostPrivileged(&HOST))).as_ptr(),
+        Ordering::Release,
     );
     init_set(&DEFAULT_SET);
     init_processor(
@@ -37,11 +40,8 @@ pub fn init() {
 ///
 /// If a port can't be allocated.
 pub fn init_processor(processor: &'static Processor) {
-    store_port(&processor.port, Some(KernelObject::Processor(processor)));
-    store_port(
-        &processor.name_port,
-        Some(KernelObject::ProcessorName(processor)),
-    );
+    processor.set_port(allocate_port(Some(KernelObject::Processor(processor))));
+    processor.set_name_port(allocate_port(Some(KernelObject::ProcessorName(processor))));
 }
 
 /// Gives `set` its ports, standing for it while it is active; no one else
@@ -52,14 +52,12 @@ pub fn init_processor(processor: &'static Processor) {
 /// If a port can't be allocated.
 pub fn init_set(set: &'static ProcessorSet) {
     let object = NonNull::from(set);
-    store_port(
-        &set.port,
+    set.set_port(allocate_port(
         set.active.then_some(KernelObject::ProcessorSet(object)),
-    );
-    store_port(
-        &set.name_port,
+    ));
+    set.set_name_port(allocate_port(
         set.active.then_some(KernelObject::ProcessorSetName(object)),
-    );
+    ));
     if set.active {
         set.references.fetch_add(2, Ordering::Relaxed);
     }
@@ -74,17 +72,16 @@ pub fn privileged_host(port: &Port) -> Option<&'static Host> {
     }
 }
 
-/// Stores in `slot` a new port the kernel receives on, standing for
-/// `object`.
+/// A new port the kernel receives on, standing for `object`.
 ///
 /// # Panics
 ///
 /// If the port can't be allocated.
-fn store_port(slot: &AtomicPtr<Port>, object: Option<KernelObject>) {
+fn allocate_port(object: Option<KernelObject>) -> NonNull<Port> {
     let port = port::allocate_kernel()
         .unwrap_or_else(|error| panic!("ipc_host_init: ipc_port_alloc_kernel failed: {error:?}"));
     if let Some(object) = object {
         port.set_kernel_object(object);
     }
-    slot.store(CacheBox::into_raw(port).as_ptr(), Ordering::Release);
+    CacheBox::into_raw(port)
 }

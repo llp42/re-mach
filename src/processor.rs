@@ -4,7 +4,7 @@
 //! Processors and processor sets.
 
 use core::ops::DerefMut;
-use core::ptr;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
@@ -42,9 +42,9 @@ pub struct Processor {
     /// Its place in the action queue.
     action_link: LinkedListAtomicLink,
     /// Its port, for controlling it.
-    pub(super) port: AtomicPtr<Port>,
+    port: AtomicPtr<Port>,
     /// Its name port, for information about it.
-    pub(super) name_port: AtomicPtr<Port>,
+    name_port: AtomicPtr<Port>,
 }
 
 intrusive_adapter!(
@@ -249,6 +249,16 @@ impl Processor {
     pub(super) fn set_idle_thread(&self, thread: &'static Thread) -> Result<(), &'static Thread> {
         self.idle_thread.set(thread)
     }
+
+    /// Sets its port, once, at boot.
+    pub(super) fn set_port(&self, port: NonNull<Port>) {
+        self.port.store(port.as_ptr(), Ordering::Release);
+    }
+
+    /// Sets its name port, once, at boot.
+    pub(super) fn set_name_port(&self, port: NonNull<Port>) {
+        self.name_port.store(port.as_ptr(), Ordering::Release);
+    }
 }
 
 /// A set of processors, and the threads that run on them.
@@ -279,9 +289,9 @@ pub struct ProcessorSet {
     /// Its load, scaled by `SCHEDULER_SCALE`.
     pub(super) load: u32,
     /// Its port, for controlling it.
-    pub(super) port: AtomicPtr<Port>,
+    port: AtomicPtr<Port>,
     /// Its name port, for information about it.
-    pub(super) name_port: AtomicPtr<Port>,
+    name_port: AtomicPtr<Port>,
     /// Its tasks and threads, and how many of each.
     pub(super) members: Token<Members>,
     /// Its place in the list of all sets.
@@ -349,6 +359,16 @@ impl ProcessorSet {
             }),
             all_link: LinkedListAtomicLink::new(),
         }
+    }
+
+    /// Sets its port, once, before others reach it.
+    pub(super) fn set_port(&self, port: NonNull<Port>) {
+        self.port.store(port.as_ptr(), Ordering::Release);
+    }
+
+    /// Sets its name port, once, before others reach it.
+    pub(super) fn set_name_port(&self, port: NonNull<Port>) {
+        self.name_port.store(port.as_ptr(), Ordering::Release);
     }
 
     /// A new set, in use, in the list of all sets, with its ports and
