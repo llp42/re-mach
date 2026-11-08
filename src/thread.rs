@@ -79,9 +79,9 @@ pub struct Thread {
     /// The address of the event it waits for; 0 for none.
     wait_event: AtomicUsize,
     /// How many times it is suspended.
-    pub(super) suspend_count: AtomicU32,
+    suspend_count: AtomicU32,
     /// How many of those suspensions user tasks asked for.
-    pub(super) user_stop_count: AtomicU32,
+    user_stop_count: AtomicU32,
     /// Its base priority.
     priority: AtomicU32,
     /// The highest priority it may take.
