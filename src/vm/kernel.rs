@@ -21,6 +21,16 @@ use crate::sync::OnceLock;
 /// The kernel's map, once `init` sets it up.
 pub static KERNEL_MAP: OnceLock<Map> = OnceLock::new();
 
+/// The kernel's map.
+///
+/// # Panics
+///
+/// If it is not set up.
+#[track_caller]
+fn kernel_map() -> &'static Map {
+    KERNEL_MAP.get().expect("vm_kernel: no kernel map")
+}
+
 /// Sets up the kernel's map, with the boot mappings in use, on the boot CPU.
 ///
 /// # Panics
@@ -49,7 +59,7 @@ pub fn init() {
 /// If the kernel map is not set up or has no room for it, or if `submap`
 /// is set already.
 pub fn submap(submap: &'static OnceLock<Map>, size: usize) {
-    let map = KERNEL_MAP.get().expect("kmem_submap: no kernel map");
+    let map = kernel_map();
     if let Err(error) = map.enter_submap(size.next_multiple_of(PAGE_SIZE), submap) {
         panic!("kmem_submap: vm_map_enter failed: {error:?}");
     }
@@ -67,9 +77,7 @@ pub fn submap(submap: &'static OnceLock<Map>, size: usize) {
 ///
 /// If the kernel map is not set up.
 pub fn map_device(physical: PhysAddr, size: usize) -> Result<NonNull<u8>, Error> {
-    let map = KERNEL_MAP
-        .get()
-        .expect("kmem_map_aligned_table: no kernel map");
+    let map = kernel_map();
     let offset = physical.0 % PAGE_SIZE;
     let range = map.enter_anywhere(
         (offset + size).next_multiple_of(PAGE_SIZE),
@@ -94,7 +102,7 @@ pub fn map_device(physical: PhysAddr, size: usize) -> Result<NonNull<u8>, Error>
 ///
 /// If the kernel map is not set up.
 pub fn allocate_wired(size: usize) -> Result<NonNull<u8>, Error> {
-    let map = KERNEL_MAP.get().expect("kmem_alloc_wired: no kernel map");
+    let map = kernel_map();
     let range = map.enter_anywhere(
         size.next_multiple_of(PAGE_SIZE),
         PAGE_SIZE,
@@ -119,7 +127,7 @@ pub fn allocate_wired(size: usize) -> Result<NonNull<u8>, Error> {
 /// If `size` is not a power of two, or the kernel map is not set up.
 pub fn allocate_aligned(size: usize) -> Result<NonNull<u8>, Error> {
     assert!(size.is_power_of_two(), "kmem_alloc_aligned");
-    let map = KERNEL_MAP.get().expect("kmem_alloc_aligned: no kernel map");
+    let map = kernel_map();
     let size = size.next_multiple_of(PAGE_SIZE);
     let range = map.enter_anywhere(
         size,
@@ -184,7 +192,7 @@ impl KernelStack {
 ///
 /// If the kernel map is not set up.
 pub fn allocate_stack() -> Result<KernelStack, Error> {
-    let map = KERNEL_MAP.get().expect("kmem_alloc_stack: no kernel map");
+    let map = kernel_map();
     let range = map.enter_anywhere(
         PAGE_SIZE + KERNEL_STACK_SIZE,
         PAGE_SIZE,
