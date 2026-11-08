@@ -633,12 +633,12 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
     // SAFETY: under the task's token its reference keeps its set alive, and
     // the one taken here does after.
     let mut set = unsafe { &*task.set.load(Ordering::Acquire) };
-    set.references.fetch_add(1, Ordering::Relaxed);
+    set.reference();
     drop(members);
     // The set's token, then the task's, again if the task changed sets; a
     // set out of use gives way to the default set.
     let (mut set_members, mut members) = loop {
-        let set_members = set.members.lock();
+        let set_members = set.lock();
         let members = task.members.lock();
         // SAFETY: as above; a new set gets its reference before the tokens
         // drop.
@@ -651,11 +651,11 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         if ptr::eq(current, set) {
             break (set_members, members);
         }
-        current.references.fetch_add(1, Ordering::Relaxed);
+        current.reference();
         drop(members);
         drop(set_members);
         // Never the last: a set keeps its own reference until destroyed.
-        set.references.fetch_sub(1, Ordering::Relaxed);
+        set.deallocate();
         set = current;
     };
     let max_priority = members.max_priority.max(set.max_priority);
@@ -671,7 +671,7 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
     if !members.active {
         drop(members);
         drop(set_members);
-        set.references.fetch_sub(1, Ordering::Relaxed);
+        set.deallocate();
         return Err(Error::Failure);
     }
     // The thread takes its machine state for good.

@@ -15,7 +15,7 @@ use crate::ipc::port::Port;
 use crate::sched::{MIN_QUANTUM, Policies, RUN_QUEUES, RunQueue, SCHEDULER_SCALE, SYSTEM_PRIORITY};
 use crate::slab::{Cache, CacheBox};
 use crate::smp;
-use crate::sync::{CpuLock, CriticalSection, OnceLock, Token};
+use crate::sync::{CpuLock, CriticalSection, OnceLock, Token, TokenGuard};
 use crate::task::{SetTaskAdapter, Task};
 use crate::thread::{RunQueueAdapter, SetThreadAdapter, Thread};
 use crate::{ipc_host, machine};
@@ -275,7 +275,7 @@ pub struct ProcessorSet {
     /// Which of its processors the next quantum adjustment falls to.
     adjust_index: AtomicU32,
     /// How many references it has.
-    pub(super) references: AtomicU32,
+    references: AtomicU32,
     /// The highest priority its threads may take.
     pub(super) max_priority: u32,
     /// The policies its threads may use.
@@ -293,7 +293,7 @@ pub struct ProcessorSet {
     /// Its name port, for information about it.
     name_port: AtomicPtr<Port>,
     /// Its tasks and threads, and how many of each.
-    pub(super) members: Token<Members>,
+    members: Token<Members>,
     /// Its place in the list of all sets.
     all_link: LinkedListAtomicLink,
 }
@@ -361,6 +361,16 @@ impl ProcessorSet {
         }
     }
 
+    /// Takes a reference on it.
+    pub(super) fn reference(&self) {
+        self.references.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Drops a reference on it, which is not its last.
+    pub(super) fn deallocate(&self) {
+        self.references.fetch_sub(1, Ordering::Relaxed);
+    }
+
     /// Sets its port, once, before others reach it.
     pub(super) fn set_port(&self, port: NonNull<Port>) {
         self.port.store(port.as_ptr(), Ordering::Release);
@@ -369,6 +379,11 @@ impl ProcessorSet {
     /// Sets its name port, once, before others reach it.
     pub(super) fn set_name_port(&self, port: NonNull<Port>) {
         self.name_port.store(port.as_ptr(), Ordering::Release);
+    }
+
+    /// Takes its token.
+    pub(super) fn lock(&self) -> TokenGuard<'_, Members> {
+        self.members.lock()
     }
 
     /// A new set, in use, in the list of all sets, with its ports and
