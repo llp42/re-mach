@@ -3,6 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Threads.
 
+use core::fmt;
 use core::mem;
 use core::ops::Range;
 use core::ptr::{self, NonNull};
@@ -104,7 +105,7 @@ pub struct Thread {
     /// When it was created.
     creation_time: TimeValue,
     /// Its name; racing sets may mix two, as in GNU Mach.
-    pub(super) name: Name,
+    name: Name,
     /// Its machine state.
     pcb: UnsafeRef<arch::Pcb>,
     /// Its port, which controls it.
@@ -112,7 +113,7 @@ pub struct Thread {
     /// The send right for its port it hands out.
     self_send: AtomicPtr<Port>,
     /// What its function is given by whoever starts it; null for nothing.
-    pub(super) argument: AtomicPtr<()>,
+    argument: AtomicPtr<()>,
     /// Its kernel stack, which it keeps for life; set as it is created.
     kernel_stack: OnceLock<KernelStack>,
     /// The processor it last ran on; null before it first runs.
@@ -628,9 +629,24 @@ impl Thread {
             .store(ptr::from_ref(set).cast_mut(), Ordering::Release);
     }
 
+    /// Sets its name to `arguments`, cut to fit.
+    pub(super) fn set_name(&self, arguments: fmt::Arguments) {
+        self.name.set(arguments);
+    }
+
     /// Its machine state.
     pub(super) fn pcb(&self) -> &arch::Pcb {
         &self.pcb
+    }
+
+    /// What its function is given; null for nothing.
+    pub(super) fn argument(&self) -> *mut () {
+        self.argument.load(Ordering::Acquire)
+    }
+
+    /// Sets what its function is given, before it starts.
+    pub(super) fn set_argument(&self, argument: *mut ()) {
+        self.argument.store(argument, Ordering::Release);
     }
 
     /// Its ASTs, which the CPU running it takes.

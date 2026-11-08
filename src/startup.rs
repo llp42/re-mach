@@ -22,7 +22,7 @@ fn start_kernel_threads() -> ! {
     for cpu in (0..MAX_CPUS).filter(|&cpu| machine::has_processor(cpu)) {
         let thread = thread::create(kernel_task)
             .unwrap_or_else(|error| panic!("start_kernel_threads: thread_create: {error:?}"));
-        thread.name.set(format_args!("idle/{cpu}"));
+        thread.set_name(format_args!("idle/{cpu}"));
         thread.bind(smp::of(cpu).processor());
         thread.start(sched::idle_thread);
         thread
@@ -35,8 +35,7 @@ fn start_kernel_threads() -> ! {
     smp::current()
         .active_thread()
         .expect("start_kernel_threads: no current thread")
-        .name
-        .set(format_args!("pageout"));
+        .set_name(format_args!("pageout"));
     vm::pageout::run()
 }
 
@@ -59,7 +58,7 @@ pub fn start() -> ! {
     let kernel_task = task::KERNEL_TASK.get().expect("startup: no kernel task");
     let startup = thread::create(kernel_task)
         .unwrap_or_else(|error| panic!("startup: thread_create: {error:?}"));
-    startup.name.set(format_args!("startup"));
+    startup.set_name(format_args!("startup"));
     startup.start(start_kernel_threads);
     // It looks as if it runs already, so resuming it puts it on no run
     // queue.

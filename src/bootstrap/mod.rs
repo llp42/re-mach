@@ -179,9 +179,7 @@ fn run_command(module: &'static BootModule, task: &'static Task, line: &[u8], ar
         done: Spinlock::new(false),
     };
     let mut done = info.done.lock();
-    thread
-        .argument
-        .store(ptr::from_ref(&info).cast_mut().cast(), Ordering::Release);
+    thread.set_argument(ptr::from_ref(&info).cast_mut().cast());
     thread.start(load_program);
     thread
         .resume()
@@ -210,14 +208,8 @@ fn load_program() -> ! {
         .expect("user_bootstrap: no current thread");
     // SAFETY: `run_command` gave it a `LoaderInfo`, which it keeps until the
     // thread is done with it.
-    let info = unsafe {
-        thread
-            .argument
-            .load(Ordering::Acquire)
-            .cast::<LoaderInfo<'_>>()
-            .as_ref()
-    }
-    .expect("user_bootstrap: no info");
+    let info = unsafe { thread.argument().cast::<LoaderInfo<'_>>().as_ref() }
+        .expect("user_bootstrap: no info");
     let fail = |error: elf_load::Error| -> ! {
         let path = CStr::from_bytes_until_nul(&info.line[info.arguments[0]..])
             .expect("user_bootstrap: a path with no NUL")
