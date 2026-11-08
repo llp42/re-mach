@@ -33,13 +33,12 @@ mod syscall;
 mod trap;
 mod tss;
 
-use core::arch::asm;
 use core::ffi::CStr;
 use core::fmt::Write;
 use core::mem::MaybeUninit;
 use core::{ptr, slice};
 
-use x86_64::instructions::interrupts;
+use x86_64::instructions::{hlt, interrupts};
 use x86_64::registers::control::{Cr0, Cr0Flags};
 use x86_64::registers::rflags::{self, RFlags};
 
@@ -361,7 +360,7 @@ impl Machine for X86_64 {
 
 pub fn halt() -> ! {
     loop {
-        unsafe { asm!("hlt") };
+        hlt();
     }
 }
 
