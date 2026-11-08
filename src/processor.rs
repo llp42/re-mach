@@ -194,7 +194,7 @@ impl Processor {
     /// Puts `thread` last at its scheduled priority.
     pub(super) fn enqueue(&self, thread: &'static Thread) {
         let mut queues = self.run_queues();
-        let priority = usize::try_from(thread.sched_pri.load(Ordering::Relaxed)).unwrap();
+        let priority = usize::try_from(thread.scheduled_priority()).unwrap();
         // SAFETY: a thread lives while it waits on a run queue.
         queues.lists[priority].push_back(unsafe { UnsafeRef::from_raw(thread) });
         if thread.bound().is_some() {
@@ -446,9 +446,7 @@ impl ProcessorSet {
         members
             .threads
             .push_back(unsafe { UnsafeRef::from_raw(thread) });
-        thread
-            .set
-            .store(ptr::from_ref(self).cast_mut(), Ordering::Release);
+        thread.set_processor_set(self);
         members.thread_count += 1;
     }
 

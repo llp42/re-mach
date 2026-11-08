@@ -5,7 +5,6 @@
 //! mode.
 
 use core::ptr;
-use core::sync::atomic::Ordering;
 
 use crate::processor::State;
 use crate::sched::{self, Policies, Policy};
@@ -47,8 +46,7 @@ pub fn taken() {
         return;
     }
     assert!(
-        !Ast::from_bits_retain(thread.asts.load(Ordering::Relaxed))
-            .intersects(Ast::HALT | Ast::TERMINATE),
+        !thread.asts().intersects(Ast::HALT | Ast::TERMINATE),
         "thread_halt_self: not yet"
     );
     assert!(
@@ -67,20 +65,18 @@ pub fn check(thread: &Thread) {
     match processor.state() {
         State::Offline | State::Idle => {}
         State::Running => {
-            cpu.add_asts(Ast::from_bits_retain(thread.asts.load(Ordering::Relaxed)));
+            cpu.add_asts(thread.asts());
             if !cpu.asts().is_empty() {
                 return;
             }
-            if thread.state.load(Ordering::Relaxed) & ThreadState::SUSPENDED.bits() != 0
-                || processor.bound_queued() != 0
-            {
+            if thread.state().contains(ThreadState::SUSPENDED) || processor.bound_queued() != 0 {
                 cpu.add_asts(Ast::BLOCK);
                 return;
             }
             match processor.set() {
                 // A fixed-priority thread uses all of a new quantum.
                 Some(set) if set.policies().contains(Policies::FIXED_PRIORITY) => {
-                    if matches!(thread.policy, Policy::FixedPriority) {
+                    if matches!(thread.policy(), Policy::FixedPriority) {
                         processor.start_first_quantum();
                     }
                 }
