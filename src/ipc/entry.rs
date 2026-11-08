@@ -26,6 +26,19 @@ pub struct Entry {
 unsafe impl Sync for Entry {}
 
 impl Entry {
+    /// A new entry for `name` that holds no rights.
+    pub(super) const fn new(name: u32) -> Self {
+        Self {
+            name,
+            bits: EntryBits {
+                rights: Rights::empty(),
+                user_references: 0,
+            },
+            object: None,
+            request: 0,
+        }
+    }
+
     /// Whether it holds rights.
     pub(super) const fn in_use(&self) -> bool {
         !self.bits.rights.is_empty()
@@ -51,15 +64,7 @@ bitflags::bitflags! {
 }
 
 /// The entry of name 0, which every space reserves.
-pub static ZERO_ENTRY: Entry = Entry {
-    name: 0,
-    bits: EntryBits {
-        rights: Rights::empty(),
-        user_references: 0,
-    },
-    object: None,
-    request: 0,
-};
+pub static ZERO_ENTRY: Entry = Entry::new(0);
 
 /// The cache entries come from.
 pub(super) static CACHE: Cache<Entry> = Cache::new("ipc_entry");

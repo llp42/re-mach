@@ -6,7 +6,7 @@
 use core::ptr::NonNull;
 use core::sync::atomic::AtomicU32;
 
-use super::entry::{self, Entry, EntryBits, Rights, ZERO_ENTRY};
+use super::entry::{self, Entry, ZERO_ENTRY};
 use crate::collections::radix_tree::RadixTree;
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
@@ -92,15 +92,7 @@ impl SpaceState {
     pub(super) fn allocate(&mut self) -> Result<(u32, NonNull<Entry>), Error> {
         assert!(self.active, "ipc_entry_alloc: a dead space, not yet");
         // Entries are never freed yet, so there is no free list to take from.
-        let entry = CacheBox::into_raw(entry::CACHE.allocate(Entry {
-            name: 0,
-            bits: EntryBits {
-                rights: Rights::empty(),
-                user_references: 0,
-            },
-            object: None,
-            request: 0,
-        })?);
+        let entry = CacheBox::into_raw(entry::CACHE.allocate(Entry::new(0))?);
         let Ok(key) = self.map.insert_alloc(entry) else {
             // SAFETY: it came from `into_raw` of an entry box, and the map
             // didn't take it.
@@ -134,15 +126,7 @@ impl SpaceState {
             assert!(used, "ipc_entry_alloc_name: a free entry, not yet");
             return Ok(entry);
         }
-        let entry = CacheBox::into_raw(entry::CACHE.allocate(Entry {
-            name,
-            bits: EntryBits {
-                rights: Rights::empty(),
-                user_references: 0,
-            },
-            object: None,
-            request: 0,
-        })?);
+        let entry = CacheBox::into_raw(entry::CACHE.allocate(Entry::new(name))?);
         if self.map.insert(key, entry).is_err() {
             // SAFETY: it came from `into_raw` of an entry box, and the map
             // didn't take it.
