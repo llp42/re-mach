@@ -134,19 +134,16 @@ pub fn quantum_update(thread: &'static Thread, ticks: u32, state: CpuState) {
     if matches!(state, CpuState::Idle) {
         return;
     }
-    let left = processor.quantum.load(Ordering::Relaxed) - i32::try_from(ticks).unwrap();
-    processor.quantum.store(left, Ordering::Relaxed);
-    if quantum != processor.last_quantum.load(Ordering::Relaxed)
-        && set.processor_count.load(Ordering::Relaxed) > 1
-    {
-        processor.last_quantum.store(quantum, Ordering::Relaxed);
+    let left = processor.charge_quantum(ticks);
+    if quantum != processor.last_quantum() && set.processor_count.load(Ordering::Relaxed) > 1 {
+        processor.set_last_quantum(quantum);
         quantum = set.adjust_quantum(quantum);
     }
     if left <= 0 {
         thread.charge_tick(Quantum::Expired);
-        processor.first_quantum.store(false, Ordering::Relaxed);
+        processor.end_first_quantum();
         let next = i32::try_from(thread.next_quantum(quantum)).unwrap();
-        processor.quantum.store(left + next, Ordering::Relaxed);
+        processor.set_quantum(left + next);
     } else {
         thread.charge_tick(Quantum::Left);
     }
@@ -196,7 +193,7 @@ pub fn set_run(thread: &'static Thread, preemption: Preemption) {
             .active_thread()
             .expect("thread_setrun: no current thread");
         if current.sched_pri.load(Ordering::Relaxed) > thread.sched_pri.load(Ordering::Relaxed) {
-            processor.first_quantum.store(false, Ordering::Relaxed);
+            processor.end_first_quantum();
             cpu.add_asts(Ast::BLOCK);
         }
     }
@@ -299,13 +296,11 @@ pub fn block() {
 ///
 /// If the processor is in no set, or must idle with no idle thread.
 fn select(processor: &'static Processor, current: &'static Thread) -> &'static Thread {
-    processor.first_quantum.store(true, Ordering::Relaxed);
+    processor.start_first_quantum();
     let set = processor.set().expect("thread_select: no processor set");
     let thread = match processor.dequeue() {
         Some(thread) if thread.bound().is_some() => {
-            processor
-                .quantum
-                .store(i32::try_from(MIN_QUANTUM).unwrap(), Ordering::Relaxed);
+            processor.set_quantum(i32::try_from(MIN_QUANTUM).unwrap());
             return thread;
         }
         Some(thread) => thread,
@@ -322,16 +317,13 @@ fn select(processor: &'static Processor, current: &'static Thread) -> &'static T
             if matches!(processor.state(), State::Running) {
                 processor.set_state(State::Idle);
             }
-            *processor
-                .idle_thread
-                .get()
+            processor
+                .idle_thread()
                 .expect("choose_pset_thread: no idle thread")
         }
     };
     let quantum = thread.next_quantum(set.quantum.load(Ordering::Relaxed));
-    processor
-        .quantum
-        .store(i32::try_from(quantum).unwrap(), Ordering::Relaxed);
+    processor.set_quantum(i32::try_from(quantum).unwrap());
     thread
 }
 
@@ -411,7 +403,7 @@ pub fn idle_thread() -> ! {
         .state
         .fetch_or(ThreadState::IDLE.bits(), Ordering::Relaxed);
     assert!(
-        cpu.processor().idle_thread.set(thread).is_ok(),
+        cpu.processor().set_idle_thread(thread).is_ok(),
         "idle_thread: twice"
     );
     drop(section);
@@ -421,7 +413,7 @@ pub fn idle_thread() -> ! {
         // section ends, and wakes the CPU.
         let section = loop {
             let section = CriticalSection::enter();
-            if smp::current().processor().queued.load(Ordering::Relaxed) != 0 {
+            if smp::current().processor().queued() != 0 {
                 break section;
             }
             arch::Current::idle();

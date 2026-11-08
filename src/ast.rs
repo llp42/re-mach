@@ -41,9 +41,8 @@ pub fn taken() {
     drop(section);
     if cpu
         .processor()
-        .idle_thread
-        .get()
-        .is_some_and(|idle| ptr::eq(*idle, thread))
+        .idle_thread()
+        .is_some_and(|idle| ptr::eq(idle, thread))
     {
         return;
     }
@@ -82,12 +81,10 @@ pub fn check(thread: &Thread) {
                 // A fixed-priority thread uses all of a new quantum.
                 Some(set) if set.policies.contains(Policies::FIXED_PRIORITY) => {
                     if matches!(thread.policy, Policy::FixedPriority) {
-                        processor.first_quantum.store(true, Ordering::Relaxed);
+                        processor.start_first_quantum();
                     }
                 }
-                Some(set)
-                    if !processor.first_quantum.load(Ordering::Relaxed) && set.queued() > 0 =>
-                {
+                Some(set) if !processor.is_first_quantum() && set.queued() > 0 => {
                     panic!("ast_check: the set's run queue, not yet")
                 }
                 _ => {}

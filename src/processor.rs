@@ -26,19 +26,19 @@ pub struct Processor {
     /// What it is doing, a `State`.
     state: AtomicU8,
     /// How many threads wait on its run queues.
-    pub(super) queued: AtomicU32,
+    queued: AtomicU32,
     /// The ticks left of its thread's quantum.
-    pub(super) quantum: AtomicI32,
+    quantum: AtomicI32,
     /// Whether its thread runs its first quantum in succession.
-    pub(super) first_quantum: AtomicBool,
+    first_quantum: AtomicBool,
     /// The quantum it last gave out, before adjustment.
-    pub(super) last_quantum: AtomicU32,
+    last_quantum: AtomicU32,
     /// The processor set it is in, once it comes up.
     set: AtomicPtr<ProcessorSet>,
     /// Its runnable threads.
     run_queues: CpuLock<RunQueues>,
     /// Its idle thread, once that runs.
-    pub(super) idle_thread: OnceLock<&'static Thread>,
+    idle_thread: OnceLock<&'static Thread>,
     /// Its place in the action queue.
     action_link: LinkedListAtomicLink,
     /// Its port, for controlling it.
@@ -128,6 +128,48 @@ impl Processor {
         self.state.store(state.number(), Ordering::Release);
     }
 
+    /// How many threads wait on its run queues; changed under their lock.
+    pub(super) fn queued(&self) -> u32 {
+        self.queued.load(Ordering::Relaxed)
+    }
+
+    /// Takes `ticks` off its quantum, on its CPU; returns what is left.
+    pub(super) fn charge_quantum(&self, ticks: u32) -> i32 {
+        let left = self.quantum.load(Ordering::Relaxed) - i32::try_from(ticks).unwrap();
+        self.quantum.store(left, Ordering::Relaxed);
+        left
+    }
+
+    /// Sets the ticks left of its quantum, on its CPU.
+    pub(super) fn set_quantum(&self, ticks: i32) {
+        self.quantum.store(ticks, Ordering::Relaxed);
+    }
+
+    /// Whether its thread runs its first quantum in succession.
+    pub(super) fn is_first_quantum(&self) -> bool {
+        self.first_quantum.load(Ordering::Relaxed)
+    }
+
+    /// Starts its thread's first quantum in succession, on its CPU.
+    pub(super) fn start_first_quantum(&self) {
+        self.first_quantum.store(true, Ordering::Relaxed);
+    }
+
+    /// Ends its thread's first quantum in succession, on its CPU.
+    pub(super) fn end_first_quantum(&self) {
+        self.first_quantum.store(false, Ordering::Relaxed);
+    }
+
+    /// The quantum it last gave out, before adjustment.
+    pub(super) fn last_quantum(&self) -> u32 {
+        self.last_quantum.load(Ordering::Relaxed)
+    }
+
+    /// Sets the quantum it last gave out, on its CPU.
+    pub(super) fn set_last_quantum(&self, quantum: u32) {
+        self.last_quantum.store(quantum, Ordering::Relaxed);
+    }
+
     /// Its run queues, locked on its CPU, or on another before it starts.
     ///
     /// # Panics
@@ -196,6 +238,16 @@ impl Processor {
     pub(super) fn set(&self) -> Option<&'static ProcessorSet> {
         // SAFETY: a set lives while it has processors.
         unsafe { self.set.load(Ordering::Acquire).as_ref() }
+    }
+
+    /// Its idle thread, once that runs.
+    pub(super) fn idle_thread(&self) -> Option<&'static Thread> {
+        self.idle_thread.get().copied()
+    }
+
+    /// Sets its idle thread, once, on its CPU.
+    pub(super) fn set_idle_thread(&self, thread: &'static Thread) -> Result<(), &'static Thread> {
+        self.idle_thread.set(thread)
     }
 }
 
