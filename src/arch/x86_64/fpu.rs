@@ -7,6 +7,7 @@ use core::arch::asm;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 
+use raw_cpuid::CpuId;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
 use x86_64::registers::xcontrol::XCr0;
 
@@ -69,6 +70,7 @@ pub fn init() {
         });
     }
     let (save, size) = if cpuid::features().has_xsave() {
+        // Read raw: raw-cpuid drops the state bits it doesn't know, and EDX's.
         let supported = raw_cpuid::cpuid!(0xd, 0);
         let features = (u64::from(supported.edx) << 32 | u64::from(supported.eax)) & !LEFT_OUT;
         // SAFETY: the CPU has XSAVE, and these are states it supports, x87
@@ -78,9 +80,12 @@ pub fn init() {
             XCr0::write_raw(features);
         }
         assert!(FEATURES.set(features).is_ok(), "fpu: set up twice");
-        // The size of the states XCR0 now enables.
-        let size = usize::try_from(raw_cpuid::cpuid!(0xd, 0).ebx).unwrap();
-        let save = if raw_cpuid::cpuid!(0xd, 1).eax & 1 != 0 {
+        // Read again for the size of the states XCR0 now enables.
+        let state = CpuId::new()
+            .get_extended_state_info()
+            .expect("fpu: no CPUID leaf 0xd");
+        let size = usize::try_from(state.xsave_area_size_enabled_features()).unwrap();
+        let save = if state.has_xsaveopt() {
             Save::XsaveOptimized
         } else {
             Save::Xsave
