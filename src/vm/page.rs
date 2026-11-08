@@ -194,7 +194,7 @@ impl Page {
     ///
     /// If the page array is not set up.
     pub fn address(&'static self) -> PhysAddr {
-        let array = PAGES.get().expect("vm_page: not set up");
+        let array = pages();
         let index = (ptr::from_ref(self).addr() - array.pages.as_ptr().addr()) / size_of::<Self>();
         array.start + index * PAGE_SIZE
     }
@@ -270,6 +270,16 @@ impl Pool {
 
 /// The page array, once `setup` builds it.
 static PAGES: OnceLock<PageArray> = OnceLock::new();
+
+/// The page array.
+///
+/// # Panics
+///
+/// If it is not set up.
+#[track_caller]
+fn pages() -> &'static PageArray {
+    PAGES.get().expect("vm_page: not set up")
+}
 
 /// How many colours each page queue has; a page's colour is the exclusive
 /// or of its frame number's three lowest digits in base `COLORS`.
@@ -544,7 +554,7 @@ pub fn setup() {
 ///
 /// If the page array is not set up, or does not cover `range`.
 pub fn release(range: Range<PhysAddr>) {
-    let array = PAGES.get().expect("vm_page: not set up");
+    let array = pages();
     let first = array.start.0 / PAGE_SIZE;
     let reserved = reserve_end(array.pages.len() * PAGE_SIZE);
     for frame in range.start.0.div_ceil(PAGE_SIZE)..range.end.0 / PAGE_SIZE {
@@ -569,7 +579,7 @@ pub fn release(range: Range<PhysAddr>) {
 ///
 /// If the page array is not set up.
 pub fn print_pools() {
-    let array = PAGES.get().expect("vm_page: not set up");
+    let array = pages();
     let reserve_free = DMA_RESERVE.lock().free;
     let queue_free = QUEUES.free.pages.load(Ordering::Relaxed);
     for (name, pool, free) in [
@@ -597,7 +607,7 @@ pub fn print_pools() {
 ///
 /// If the page array is not set up.
 pub(super) fn usable() -> bool {
-    let array = PAGES.get().expect("vm_page: not set up");
+    let array = pages();
     QUEUES
         .active
         .queues
@@ -613,7 +623,7 @@ pub(super) fn usable() -> bool {
 ///
 /// If the page array is not set up.
 pub fn span_size() -> usize {
-    PAGES.get().expect("vm_page: not set up").pages.len() * PAGE_SIZE
+    pages().pages.len() * PAGE_SIZE
 }
 
 /// The page holding `address`; `None` if the page array does not cover it.
@@ -622,7 +632,7 @@ pub fn span_size() -> usize {
 ///
 /// If the page array is not set up.
 pub fn lookup(address: PhysAddr) -> Option<&'static Page> {
-    let array = PAGES.get().expect("vm_page: not set up");
+    let array = pages();
     array
         .pages
         .get(address.checked_sub(array.start)? / PAGE_SIZE)
