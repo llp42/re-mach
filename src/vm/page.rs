@@ -85,8 +85,9 @@ impl Page {
         self.busy.load(Ordering::Relaxed) & HARD_BUSY != 0
     }
 
-    /// Makes it no longer busy, behind its object's token.
-    pub(super) fn wake_done(&self) {
+    /// Makes it no longer busy and, once anything waits, wakes the waiters,
+    /// behind its object's token.
+    pub(super) fn clear_busy(&self) {
         // Nothing waits on a busy page yet, so none is woken.
         self.busy.fetch_and(!HARD_BUSY, Ordering::Relaxed);
     }
