@@ -13,7 +13,7 @@ use x86_64::instructions::tlb;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr3Flags, Cr4, Cr4Flags};
 use x86_64::registers::model_specific::{Pat, PatMemoryType};
 use x86_64::structures::paging::page_table::PageTableEntry;
-use x86_64::structures::paging::{PageTableFlags, PhysFrame};
+use x86_64::structures::paging::{self, PageTableFlags, PageTableIndex, PhysFrame, Size4KiB};
 
 use super::address::PhysAddr;
 use super::boot_memory;
@@ -395,12 +395,22 @@ const fn index(address: usize, size: usize) -> usize {
 /// Where the page table window shows the entry that maps `address` at
 /// `level`: 0 for its page table's entry, up to 3 for its PML4's.
 fn window_entry(address: usize, level: usize) -> &'static AtomicU64 {
-    let base = (0..level).fold(PAGE_TABLE_BASE, |base, step| {
-        base + (PAGE_TABLE_SLOT << (30 - 9 * step))
-    });
-    let index = (address >> (12 + 9 * level)) & ((1 << (36 - 9 * level)) - 1);
+    let address = VirtAddr::new_truncate(u64::try_from(address).unwrap());
+    let indices = [
+        address.p4_index(),
+        address.p3_index(),
+        address.p2_index(),
+        address.p1_index(),
+    ];
+    // The window's slot `level + 1` times, then the address's indices down
+    // to the table holding the entry.
+    let mut table = [PageTableIndex::new(u16::try_from(PAGE_TABLE_SLOT).unwrap()); 4];
+    table[level + 1..].copy_from_slice(&indices[..3 - level]);
+    let page =
+        paging::Page::<Size4KiB>::from_page_table_indices(table[0], table[1], table[2], table[3]);
+    let entry = page.start_address() + u64::from(indices[3 - level]) * 8;
     // SAFETY: the window shows every table of the loaded PML4, as entries.
-    unsafe { &*ptr::with_exposed_provenance::<AtomicU64>(base + index * 8) }
+    unsafe { &*ptr::with_exposed_provenance::<AtomicU64>(usize::try_from(entry.as_u64()).unwrap()) }
 }
 
 /// Maps kernel `address` to `physical` with `flags`, in the kernel pmap: as
