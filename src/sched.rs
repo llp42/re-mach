@@ -103,6 +103,7 @@ pub enum Policy {
 bitflags::bitflags! {
     /// The scheduling policies a processor set allows, as Mach's interface
     /// numbers them; only those used here.
+    #[derive(Clone, Copy)]
     pub struct Policies: u32 {
         /// Priorities decay with use.
         const TIMESHARE = 1;
@@ -135,7 +136,7 @@ pub fn quantum_update(thread: &'static Thread, ticks: u32, state: CpuState) {
         return;
     }
     let left = processor.charge_quantum(ticks);
-    if quantum != processor.last_quantum() && set.processor_count.load(Ordering::Relaxed) > 1 {
+    if quantum != processor.last_quantum() && set.processor_count() > 1 {
         processor.set_last_quantum(quantum);
         quantum = set.adjust_quantum(quantum);
     }
@@ -322,7 +323,7 @@ fn select(processor: &'static Processor, current: &'static Thread) -> &'static T
                 .expect("choose_pset_thread: no idle thread")
         }
     };
-    let quantum = thread.next_quantum(set.quantum.load(Ordering::Relaxed));
+    let quantum = thread.next_quantum(set.quantum());
     processor.set_quantum(i32::try_from(quantum).unwrap());
     thread
 }

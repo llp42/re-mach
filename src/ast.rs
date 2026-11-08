@@ -79,7 +79,7 @@ pub fn check(thread: &Thread) {
             }
             match processor.set() {
                 // A fixed-priority thread uses all of a new quantum.
-                Some(set) if set.policies.contains(Policies::FIXED_PRIORITY) => {
+                Some(set) if set.policies().contains(Policies::FIXED_PRIORITY) => {
                     if matches!(thread.policy, Policy::FixedPriority) {
                         processor.start_first_quantum();
                     }

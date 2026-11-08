@@ -265,29 +265,29 @@ impl Processor {
 #[expect(dead_code, reason = "processor_set_info and thread_create read them")]
 pub struct ProcessorSet {
     /// Whether it is in use; a destroyed set is not.
-    pub(super) active: bool,
+    active: bool,
     /// Whether it has no processor; threads created in it start suspended.
     /// Changed only under `members`' token.
-    pub(super) empty: AtomicBool,
+    empty: AtomicBool,
     /// How many processors it has; changed only under `members`' token, and
     /// read without it at each tick.
-    pub(super) processor_count: AtomicU32,
+    processor_count: AtomicU32,
     /// Which of its processors the next quantum adjustment falls to.
     adjust_index: AtomicU32,
     /// How many references it has.
     references: AtomicU32,
     /// The highest priority its threads may take.
-    pub(super) max_priority: u32,
+    max_priority: u32,
     /// The policies its threads may use.
-    pub(super) policies: Policies,
+    policies: Policies,
     /// Its processors' quantum, in ticks.
-    pub(super) quantum: AtomicU32,
+    quantum: AtomicU32,
     /// The quantum for each count of threads waiting, up to its processor
     /// count; at 0, twice the quantum of 1. Changed only under `members`'
     /// token, and read without it at each tick.
     machine_quantum: [AtomicU32; MAX_CPUS + 1],
     /// Its load, scaled by `SCHEDULER_SCALE`.
-    pub(super) load: u32,
+    load: u32,
     /// Its port, for controlling it.
     port: AtomicPtr<Port>,
     /// Its name port, for information about it.
@@ -361,6 +361,21 @@ impl ProcessorSet {
         }
     }
 
+    /// Whether it is in use; fixed before it is published.
+    pub(super) const fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// Whether it has no processor; changed only under `members`' token.
+    pub(super) fn is_empty(&self) -> bool {
+        self.empty.load(Ordering::Relaxed)
+    }
+
+    /// How many processors it has; changed only under `members`' token.
+    pub(super) fn processor_count(&self) -> u32 {
+        self.processor_count.load(Ordering::Relaxed)
+    }
+
     /// Takes a reference on it.
     pub(super) fn reference(&self) {
         self.references.fetch_add(1, Ordering::Relaxed);
@@ -369,6 +384,26 @@ impl ProcessorSet {
     /// Drops a reference on it, which is not its last.
     pub(super) fn deallocate(&self) {
         self.references.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// The highest priority its threads may take.
+    pub(super) const fn max_priority(&self) -> u32 {
+        self.max_priority
+    }
+
+    /// The policies its threads may use.
+    pub(super) const fn policies(&self) -> Policies {
+        self.policies
+    }
+
+    /// Its processors' quantum, in ticks, as last computed.
+    pub(super) fn quantum(&self) -> u32 {
+        self.quantum.load(Ordering::Relaxed)
+    }
+
+    /// Its load, scaled by `SCHEDULER_SCALE`.
+    pub(super) const fn load(&self) -> u32 {
+        self.load
     }
 
     /// Sets its port, once, before others reach it.

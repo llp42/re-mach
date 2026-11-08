@@ -53,12 +53,14 @@ pub fn init_processor(processor: &'static Processor) {
 pub fn init_set(set: &'static ProcessorSet) {
     let object = NonNull::from(set);
     set.set_port(allocate_port(
-        set.active.then_some(KernelObject::ProcessorSet(object)),
+        set.is_active()
+            .then_some(KernelObject::ProcessorSet(object)),
     ));
     set.set_name_port(allocate_port(
-        set.active.then_some(KernelObject::ProcessorSetName(object)),
+        set.is_active()
+            .then_some(KernelObject::ProcessorSetName(object)),
     ));
-    if set.active {
+    if set.is_active() {
         set.reference();
         set.reference();
     }

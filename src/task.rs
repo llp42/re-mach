@@ -303,8 +303,8 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
         members: Token::new(TaskMembers {
             active: true,
             // No higher than the set allows; a larger number is lower.
-            priority: USER_PRIORITY.max(DEFAULT_SET.max_priority),
-            max_priority: DEFAULT_SET.max_priority,
+            priority: USER_PRIORITY.max(DEFAULT_SET.max_priority()),
+            max_priority: DEFAULT_SET.max_priority(),
             suspend_count: 0,
             user_stop_count: 0,
             threads: LinkedList::new(TaskThreadAdapter::NEW),
