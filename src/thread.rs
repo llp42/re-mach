@@ -535,7 +535,7 @@ impl Thread {
         ) {
             panic!("thread_release: thread {self:p} in state {state:#x}, not yet");
         }
-        sched::set_run(self, Preemption::Allowed);
+        sched::make_runnable(self, Preemption::Allowed);
     }
 
     /// Lifts one stop users asked for, and the suspension it holds; a thread
@@ -557,7 +557,7 @@ impl Thread {
             if state & (ThreadState::WAIT | ThreadState::RUN).bits() == 0 {
                 self.state
                     .fetch_or(ThreadState::RUN.bits(), Ordering::Relaxed);
-                sched::set_run(self, Preemption::Allowed);
+                sched::make_runnable(self, Preemption::Allowed);
             }
         }
         Ok(())
