@@ -22,9 +22,7 @@ impl CriticalSection {
         crit_enter();
         Self { _cpu: PhantomData }
     }
-}
 
-impl CriticalSection {
     /// The critical section this CPU is in that no guard holds, such as
     /// the one a switch to a new thread was made in.
     ///
