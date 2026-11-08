@@ -89,7 +89,7 @@ pub fn fault(map: &Map, address: usize, access: Protection) -> Result<(), Error>
     }
     found.page.set_referenced();
     drop(verified);
-    found.page.wake_done();
+    found.page.clear_busy();
     state.end_paging();
     drop(state);
     lookup.object.deallocate();
