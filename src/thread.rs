@@ -442,7 +442,7 @@ impl Thread {
             .store(cpu_delta.wrapping_add(delta), Ordering::Relaxed);
         let sched_delta = self.sched_delta.load(Ordering::Relaxed);
         self.sched_delta.store(
-            sched_delta.wrapping_add(delta.wrapping_mul(set.load)),
+            sched_delta.wrapping_add(delta.wrapping_mul(set.load())),
             Ordering::Relaxed,
         );
     }
@@ -643,7 +643,7 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         // SAFETY: as above; a new set gets its reference before the tokens
         // drop.
         let current = unsafe { &*task.set.load(Ordering::Acquire) };
-        let current = if current.active {
+        let current = if current.is_active() {
             current
         } else {
             &DEFAULT_SET
@@ -658,13 +658,12 @@ pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
         set.deallocate();
         set = current;
     };
-    let max_priority = members.max_priority.max(set.max_priority);
+    let max_priority = members.max_priority.max(set.max_priority());
     *thread.max_priority.get_mut() = max_priority;
     let priority = members.priority.max(max_priority);
     *thread.priority.get_mut() = priority;
     *thread.sched_pri.get_mut() = computed_priority(priority, sched_usage);
-    *thread.suspend_count.get_mut() =
-        members.suspend_count + 1 + u32::from(set.empty.load(Ordering::Relaxed));
+    *thread.suspend_count.get_mut() = members.suspend_count + 1 + u32::from(set.is_empty());
     thread.name.copy_from(&members.name);
     // Nothing is published yet; only the set's reference is undone, and
     // the stack stays taken, as stacks are not freed yet.
