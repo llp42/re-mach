@@ -46,6 +46,23 @@ pub(super) struct PortState {
 }
 
 impl Port {
+    /// A new live port that `receiver` receives on, with one reference and
+    /// no rights out, as `ipc_port_init` sets it up.
+    const fn new(receiver: NonNull<Space>) -> Self {
+        Self {
+            references: AtomicU32::new(1),
+            state: Spinlock::new(PortState {
+                active: true,
+                receiver,
+                receiver_name: 0,
+                send_rights: 0,
+                send_once_rights: 0,
+                make_send_count: 0,
+                kernel_object: None,
+            }),
+        }
+    }
+
     /// Makes it stand for `object`.
     pub fn set_kernel_object(&self, object: KernelObject) {
         self.state.lock().kernel_object = Some(object);
@@ -117,18 +134,7 @@ pub(super) static CACHE: Cache<Port> = Cache::new("ipc_port");
 ///
 /// `ResourceShortage` if no port can be allocated.
 pub fn allocate_kernel() -> Result<CacheBox<Port>, Error> {
-    let mut port = CACHE.allocate(Port {
-        references: AtomicU32::new(1),
-        state: Spinlock::new(PortState {
-            active: true,
-            receiver: NonNull::from(&space::KERNEL_SPACE),
-            receiver_name: 0,
-            send_rights: 0,
-            send_once_rights: 0,
-            make_send_count: 0,
-            kernel_object: None,
-        }),
-    })?;
+    let mut port = CACHE.allocate(Port::new(NonNull::from(&space::KERNEL_SPACE)))?;
     // Its address's low 32 bits, as GNU Mach names kernel ports.
     let address = ptr::from_ref(&*port).addr() & 0xffff_ffff;
     port.state.get_mut().receiver_name = u32::try_from(address).unwrap();
@@ -146,17 +152,6 @@ pub fn allocate_kernel() -> Result<CacheBox<Port>, Error> {
 ///
 /// As `object::allocate`.
 pub fn allocate(space: &Space) -> Result<u32, Error> {
-    let port = CACHE.allocate(Port {
-        references: AtomicU32::new(1),
-        state: Spinlock::new(PortState {
-            active: true,
-            receiver: NonNull::from(space),
-            receiver_name: 0,
-            send_rights: 0,
-            send_once_rights: 0,
-            make_send_count: 0,
-            kernel_object: None,
-        }),
-    })?;
+    let port = CACHE.allocate(Port::new(NonNull::from(space)))?;
     object::allocate(space, port)
 }
