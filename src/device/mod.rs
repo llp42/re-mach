@@ -6,7 +6,7 @@
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use crate::ipc::port::{self, Port};
+use crate::ipc::port::Port;
 use crate::slab::CacheBox;
 
 /// The master device port, which devices are opened through; once
@@ -20,7 +20,7 @@ pub static MASTER_PORT: AtomicPtr<Port> = AtomicPtr::new(ptr::null_mut());
 ///
 /// If the port can't be allocated.
 pub fn create_service() {
-    let port = port::allocate_kernel()
+    let port = Port::allocate_kernel()
         .unwrap_or_else(|error| panic!("can't allocate master device port: {error:?}"));
     MASTER_PORT.store(CacheBox::into_raw(port).as_ptr(), Ordering::Release);
 }

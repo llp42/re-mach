@@ -63,6 +63,34 @@ impl Port {
         }
     }
 
+    /// A new port the kernel receives on, with one reference.
+    ///
+    /// # Errors
+    ///
+    /// `ResourceShortage` if no port can be allocated.
+    pub fn allocate_kernel() -> Result<CacheBox<Self>, Error> {
+        let mut port = CACHE.allocate(Self::new(NonNull::from(&space::KERNEL_SPACE)))?;
+        // Its address's low 32 bits, as GNU Mach names kernel ports.
+        let address = ptr::from_ref(&*port).addr() & 0xffff_ffff;
+        port.state.get_mut().receiver_name = u32::try_from(address).unwrap();
+        Ok(port)
+    }
+
+    /// A new port that `space` receives on, under the lowest free name there,
+    /// its one reference the receive right's; gives the name.
+    ///
+    /// # Errors
+    ///
+    /// As `object::allocate`.
+    ///
+    /// # Panics
+    ///
+    /// As `object::allocate`.
+    pub fn allocate(space: &Space) -> Result<u32, Error> {
+        let port = CACHE.allocate(Self::new(NonNull::from(space)))?;
+        object::allocate(space, port)
+    }
+
     /// Makes it stand for `object`.
     pub fn set_kernel_object(&self, object: KernelObject) {
         self.state.lock().kernel_object = Some(object);
@@ -127,31 +155,3 @@ pub enum KernelObject {
 
 /// The cache ports come from.
 pub(super) static CACHE: Cache<Port> = Cache::new("ipc_port");
-
-/// A new port the kernel receives on, with one reference.
-///
-/// # Errors
-///
-/// `ResourceShortage` if no port can be allocated.
-pub fn allocate_kernel() -> Result<CacheBox<Port>, Error> {
-    let mut port = CACHE.allocate(Port::new(NonNull::from(&space::KERNEL_SPACE)))?;
-    // Its address's low 32 bits, as GNU Mach names kernel ports.
-    let address = ptr::from_ref(&*port).addr() & 0xffff_ffff;
-    port.state.get_mut().receiver_name = u32::try_from(address).unwrap();
-    Ok(port)
-}
-
-/// A new port that `space` receives on, under the lowest free name there,
-/// its one reference the receive right's; gives the name.
-///
-/// # Errors
-///
-/// As `object::allocate`.
-///
-/// # Panics
-///
-/// As `object::allocate`.
-pub fn allocate(space: &Space) -> Result<u32, Error> {
-    let port = CACHE.allocate(Port::new(NonNull::from(space)))?;
-    object::allocate(space, port)
-}

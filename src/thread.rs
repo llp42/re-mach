@@ -16,7 +16,7 @@ use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 use crate::ast::Ast;
 use crate::clock::{self, TimeValue};
 use crate::error::Error;
-use crate::ipc::port::{self, KernelObject, Port};
+use crate::ipc::port::{KernelObject, Port};
 use crate::machine::Mode;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, Processor, ProcessorSet};
@@ -301,6 +301,132 @@ pub fn init() {
 }
 
 impl Thread {
+    /// A new thread of `task`, suspended, with the kernel stack it keeps for
+    /// life, in its task's set, or the default set if that one is not in use,
+    /// at its task's priority aged by a full share of a processor, with a port
+    /// and a send right for it; a thread made in a set with no processor is
+    /// suspended once more.
+    ///
+    /// # Errors
+    ///
+    /// `ResourceShortage` if the thread, its machine state or its port can't
+    /// be allocated, or as `vm::kernel::allocate_stack` for its stack;
+    /// `Failure` if the task is not alive.
+    pub fn create(task: &'static Task) -> Result<&'static Self, Error> {
+        let mut pcb = arch::Pcb::new()?;
+        let port = Port::allocate_kernel()?;
+        port.make_send();
+        // A full share of a processor; a set's load average is at least 1.
+        let sched_usage = TIMER_RATE * SCHEDULER_SCALE;
+        let mut thread = CACHE.allocate(Self {
+            sleep_link: LinkedListAtomicLink::new(),
+            run_link: LinkedListAtomicLink::new(),
+            task_link: LinkedListAtomicLink::new(),
+            set_link: LinkedListAtomicLink::new(),
+            references: AtomicU32::new(2),
+            // SAFETY: a task lives while it has threads.
+            task: unsafe { UnsafeRef::from_raw(task) },
+            state: AtomicU32::new(ThreadState::SUSPENDED.bits()),
+            wait_event: AtomicUsize::new(0),
+            // Set below with the priorities, under the set's and task's tokens.
+            suspend_count: AtomicU32::new(0),
+            user_stop_count: AtomicU32::new(1),
+            priority: AtomicU32::new(0),
+            max_priority: AtomicU32::new(0),
+            sched_pri: AtomicU32::new(0),
+            policy: Policy::Timeshare,
+            cpu_usage: AtomicU32::new(TIMER_RATE),
+            sched_usage: AtomicU32::new(sched_usage),
+            sched_stamp: AtomicU32::new(sched::scheduler_tick()),
+            active: AtomicBool::new(true),
+            set: AtomicPtr::new(ptr::null_mut()),
+            may_assign: true,
+            creation_time: clock::stamp(),
+            // Its task's, copied below under the task's token.
+            name: Name::new(),
+            // SAFETY: its box, unused until given up below, outlives the thread.
+            pcb: unsafe { UnsafeRef::from_raw(ptr::from_mut(&mut *pcb)) },
+            self_port: AtomicPtr::new(ptr::null_mut()),
+            self_send: AtomicPtr::new(ptr::null_mut()),
+            argument: AtomicPtr::new(ptr::null_mut()),
+            kernel_stack: OnceLock::new(),
+            last_processor: AtomicPtr::new(ptr::null_mut()),
+            bound: AtomicPtr::new(ptr::null_mut()),
+            critical_nesting: AtomicU32::new(1),
+            user_time: AtomicU64::new(0),
+            system_time: AtomicU64::new(0),
+            charged_user_time: AtomicU64::new(0),
+            charged_system_time: AtomicU64::new(0),
+            cpu_delta: AtomicU32::new(0),
+            sched_delta: AtomicU32::new(0),
+            depressed_from: AtomicI32::new(-1),
+            fixed_quantum: 0,
+            asts: AtomicU32::new(0),
+        })?;
+        let stack = vm::kernel::allocate_stack()?;
+        assert!(
+            thread.kernel_stack.set(stack).is_ok(),
+            "thread_create: a stack already"
+        );
+        let members = task.members.lock();
+        // SAFETY: under the task's token its reference keeps its set alive, and
+        // the one taken here does after.
+        let mut set = unsafe { &*task.set.load(Ordering::Acquire) };
+        set.reference();
+        drop(members);
+        // The set's token, then the task's, again if the task changed sets; a
+        // set out of use gives way to the default set.
+        let (mut set_members, mut members) = loop {
+            let set_members = set.lock();
+            let members = task.members.lock();
+            // SAFETY: as above; a new set gets its reference before the tokens
+            // drop.
+            let current = unsafe { &*task.set.load(Ordering::Acquire) };
+            let current = if current.is_active() {
+                current
+            } else {
+                &DEFAULT_SET
+            };
+            if ptr::eq(current, set) {
+                break (set_members, members);
+            }
+            current.reference();
+            drop(members);
+            drop(set_members);
+            // Never the last: a set keeps its own reference until destroyed.
+            set.deallocate();
+            set = current;
+        };
+        let max_priority = members.max_priority.max(set.max_priority());
+        *thread.max_priority.get_mut() = max_priority;
+        let priority = members.priority.max(max_priority);
+        *thread.priority.get_mut() = priority;
+        *thread.sched_pri.get_mut() = computed_priority(priority, sched_usage);
+        *thread.suspend_count.get_mut() = members.suspend_count + 1 + u32::from(set.is_empty());
+        thread.name.copy_from(&members.name);
+        // Nothing is published yet; only the set's reference is undone, and
+        // the stack stays taken, as stacks are not freed yet.
+        if !members.active {
+            drop(members);
+            drop(set_members);
+            set.deallocate();
+            return Err(Error::Failure);
+        }
+        // The thread takes its machine state for good.
+        CacheBox::into_raw(pcb);
+        // SAFETY: a thread lives until the reaper frees it, which comes later.
+        let thread = unsafe { CacheBox::into_raw(thread).as_ref() };
+        port.set_kernel_object(KernelObject::Thread(NonNull::from(thread)));
+        let port = CacheBox::into_raw(port).as_ptr();
+        thread.self_port.store(port, Ordering::Release);
+        thread.self_send.store(port, Ordering::Release);
+        set.add_thread(&mut set_members, thread);
+        task.add_thread(&mut members, thread);
+        drop(members);
+        drop(set_members);
+        Ok(thread)
+    }
+
     /// Makes it start in `function` once it first runs: its stack is set to
     /// enter it.
     ///
@@ -653,132 +779,6 @@ impl Thread {
     pub(super) fn asts(&self) -> Ast {
         Ast::from_bits_retain(self.asts.load(Ordering::Relaxed))
     }
-}
-
-/// A new thread of `task`, suspended, with the kernel stack it keeps for
-/// life, in its task's set, or the default set if that one is not in use,
-/// at its task's priority aged by a full share of a processor, with a port
-/// and a send right for it; a thread made in a set with no processor is
-/// suspended once more.
-///
-/// # Errors
-///
-/// `ResourceShortage` if the thread, its machine state or its port can't
-/// be allocated, or as `vm::kernel::allocate_stack` for its stack;
-/// `Failure` if the task is not alive.
-pub fn create(task: &'static Task) -> Result<&'static Thread, Error> {
-    let mut pcb = arch::Pcb::new()?;
-    let port = port::allocate_kernel()?;
-    port.make_send();
-    // A full share of a processor; a set's load average is at least 1.
-    let sched_usage = TIMER_RATE * SCHEDULER_SCALE;
-    let mut thread = CACHE.allocate(Thread {
-        sleep_link: LinkedListAtomicLink::new(),
-        run_link: LinkedListAtomicLink::new(),
-        task_link: LinkedListAtomicLink::new(),
-        set_link: LinkedListAtomicLink::new(),
-        references: AtomicU32::new(2),
-        // SAFETY: a task lives while it has threads.
-        task: unsafe { UnsafeRef::from_raw(task) },
-        state: AtomicU32::new(ThreadState::SUSPENDED.bits()),
-        wait_event: AtomicUsize::new(0),
-        // Set below with the priorities, under the set's and task's tokens.
-        suspend_count: AtomicU32::new(0),
-        user_stop_count: AtomicU32::new(1),
-        priority: AtomicU32::new(0),
-        max_priority: AtomicU32::new(0),
-        sched_pri: AtomicU32::new(0),
-        policy: Policy::Timeshare,
-        cpu_usage: AtomicU32::new(TIMER_RATE),
-        sched_usage: AtomicU32::new(sched_usage),
-        sched_stamp: AtomicU32::new(sched::scheduler_tick()),
-        active: AtomicBool::new(true),
-        set: AtomicPtr::new(ptr::null_mut()),
-        may_assign: true,
-        creation_time: clock::stamp(),
-        // Its task's, copied below under the task's token.
-        name: Name::new(),
-        // SAFETY: its box, unused until given up below, outlives the thread.
-        pcb: unsafe { UnsafeRef::from_raw(ptr::from_mut(&mut *pcb)) },
-        self_port: AtomicPtr::new(ptr::null_mut()),
-        self_send: AtomicPtr::new(ptr::null_mut()),
-        argument: AtomicPtr::new(ptr::null_mut()),
-        kernel_stack: OnceLock::new(),
-        last_processor: AtomicPtr::new(ptr::null_mut()),
-        bound: AtomicPtr::new(ptr::null_mut()),
-        critical_nesting: AtomicU32::new(1),
-        user_time: AtomicU64::new(0),
-        system_time: AtomicU64::new(0),
-        charged_user_time: AtomicU64::new(0),
-        charged_system_time: AtomicU64::new(0),
-        cpu_delta: AtomicU32::new(0),
-        sched_delta: AtomicU32::new(0),
-        depressed_from: AtomicI32::new(-1),
-        fixed_quantum: 0,
-        asts: AtomicU32::new(0),
-    })?;
-    let stack = vm::kernel::allocate_stack()?;
-    assert!(
-        thread.kernel_stack.set(stack).is_ok(),
-        "thread_create: a stack already"
-    );
-    let members = task.members.lock();
-    // SAFETY: under the task's token its reference keeps its set alive, and
-    // the one taken here does after.
-    let mut set = unsafe { &*task.set.load(Ordering::Acquire) };
-    set.reference();
-    drop(members);
-    // The set's token, then the task's, again if the task changed sets; a
-    // set out of use gives way to the default set.
-    let (mut set_members, mut members) = loop {
-        let set_members = set.lock();
-        let members = task.members.lock();
-        // SAFETY: as above; a new set gets its reference before the tokens
-        // drop.
-        let current = unsafe { &*task.set.load(Ordering::Acquire) };
-        let current = if current.is_active() {
-            current
-        } else {
-            &DEFAULT_SET
-        };
-        if ptr::eq(current, set) {
-            break (set_members, members);
-        }
-        current.reference();
-        drop(members);
-        drop(set_members);
-        // Never the last: a set keeps its own reference until destroyed.
-        set.deallocate();
-        set = current;
-    };
-    let max_priority = members.max_priority.max(set.max_priority());
-    *thread.max_priority.get_mut() = max_priority;
-    let priority = members.priority.max(max_priority);
-    *thread.priority.get_mut() = priority;
-    *thread.sched_pri.get_mut() = computed_priority(priority, sched_usage);
-    *thread.suspend_count.get_mut() = members.suspend_count + 1 + u32::from(set.is_empty());
-    thread.name.copy_from(&members.name);
-    // Nothing is published yet; only the set's reference is undone, and
-    // the stack stays taken, as stacks are not freed yet.
-    if !members.active {
-        drop(members);
-        drop(set_members);
-        set.deallocate();
-        return Err(Error::Failure);
-    }
-    // The thread takes its machine state for good.
-    CacheBox::into_raw(pcb);
-    // SAFETY: a thread lives until the reaper frees it, which comes later.
-    let thread = unsafe { CacheBox::into_raw(thread).as_ref() };
-    port.set_kernel_object(KernelObject::Thread(NonNull::from(thread)));
-    let port = CacheBox::into_raw(port).as_ptr();
-    thread.self_port.store(port, Ordering::Release);
-    thread.self_send.store(port, Ordering::Release);
-    set.add_thread(&mut set_members, thread);
-    task.add_thread(&mut members, thread);
-    drop(members);
-    drop(set_members);
-    Ok(thread)
 }
 
 /// Sets the current thread's base priority to `priority`, its highest

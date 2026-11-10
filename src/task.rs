@@ -12,7 +12,7 @@ use crate::arch::{self, MAX_USER_ADDRESS, MIN_USER_ADDRESS, Machine as _};
 use crate::ast::Ast;
 use crate::clock::{self, AtomicTimeValue};
 use crate::error::Error;
-use crate::ipc::port::{self, KernelObject, Port};
+use crate::ipc::port::{KernelObject, Port};
 use crate::ipc::space::Space;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, ProcessorSet};
@@ -85,6 +85,30 @@ pub struct TaskMembers {
 }
 
 impl Task {
+    /// A new task with no parent, over a new map of user space and its own
+    /// physical map, made as `create_with_map` makes it.
+    ///
+    /// # Errors
+    ///
+    /// `ResourceShortage` if the physical map can't be allocated.
+    ///
+    /// # Panics
+    ///
+    /// With a parent: not yet. If the map, the space, the port or the task
+    /// can't be allocated: freeing what was taken, not yet.
+    pub fn create(parent: Option<&Self>) -> Result<&'static Self, Error> {
+        assert!(parent.is_none(), "task_create_kernel: a parent, not yet");
+        let pmap = arch::Pmap::create()?;
+        let map = Map::create(pmap, MIN_USER_ADDRESS..MAX_USER_ADDRESS)
+            .unwrap_or_else(|error| panic!("task_create_kernel: {error:?}, pmap_destroy not yet"));
+        // SAFETY: a task's map lives until vm_map_deallocate frees it, which
+        // comes later.
+        let map = unsafe { CacheBox::into_raw(map).as_ref() };
+        Ok(create_with_map(map).unwrap_or_else(|error| {
+            panic!("task_create_kernel: {error:?}, vm_map_deallocate not yet")
+        }))
+    }
+
     /// Takes `thread`, new, into its `members`, with a reference for it.
     pub(super) fn add_thread(&self, members: &mut TaskMembers, thread: &'static Thread) {
         self.references.fetch_add(1, Ordering::Relaxed);
@@ -258,35 +282,12 @@ pub fn init() {
     assert!(KERNEL_TASK.set(task).is_ok(), "task_init: twice");
 }
 
-/// A new task with no parent, over a new map of user space and its own
-/// physical map, made as `create_with_map` makes it.
-///
-/// # Errors
-///
-/// `ResourceShortage` if the physical map can't be allocated.
-///
-/// # Panics
-///
-/// With a parent: not yet. If the map, the space, the port or the task
-/// can't be allocated: freeing what was taken, not yet.
-pub fn create(parent: Option<&Task>) -> Result<&'static Task, Error> {
-    assert!(parent.is_none(), "task_create_kernel: a parent, not yet");
-    let pmap = arch::Pmap::create()?;
-    let map = Map::create(pmap, MIN_USER_ADDRESS..MAX_USER_ADDRESS)
-        .unwrap_or_else(|error| panic!("task_create_kernel: {error:?}, pmap_destroy not yet"));
-    // SAFETY: a task's map lives until vm_map_deallocate frees it, which
-    // comes later.
-    let map = unsafe { CacheBox::into_raw(map).as_ref() };
-    Ok(create_with_map(map)
-        .unwrap_or_else(|error| panic!("task_create_kernel: {error:?}, vm_map_deallocate not yet")))
-}
-
 /// A new task with no parent over `map`, named by its address: a new
 /// space, and a port with a send right, at the default set's priorities,
 /// in the default set.
 fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
     let mut space = Space::create()?;
-    let port = port::allocate_kernel()?;
+    let port = Port::allocate_kernel()?;
     port.make_send();
     let mut task = CACHE.allocate(Task {
         references: AtomicU32::new(2),
