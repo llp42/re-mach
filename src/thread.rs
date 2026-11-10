@@ -689,6 +689,23 @@ impl Thread {
         Ok(())
     }
 
+    /// Drops a reference on it, which is not its last.
+    ///
+    /// # Panics
+    ///
+    /// On its last reference: not yet.
+    pub(super) fn deallocate(&self) {
+        // Only the last reference's drop takes the set's and task's tokens.
+        assert!(
+            self.references
+                .try_update(Ordering::Release, Ordering::Relaxed, |references| {
+                    (references > 1).then(|| references - 1)
+                })
+                .is_ok(),
+            "thread_deallocate: the last reference, not yet"
+        );
+    }
+
     /// Its task, which lives while it has threads.
     pub(super) fn task(&self) -> &Task {
         &self.task
