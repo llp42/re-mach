@@ -18,10 +18,10 @@ mod gdt;
 mod hpet;
 mod idt;
 mod interrupt;
+mod machine_state;
 mod machine_task;
 mod memory_layout;
 mod mmio;
-mod pcb;
 mod per_cpu;
 mod pic;
 mod pmap;
@@ -54,12 +54,12 @@ use crate::startup;
 use crate::sync::OnceLock;
 pub use address::PhysAddr;
 use boot_memory::Retention;
+pub use machine_state::MachineState;
 use memory_layout::KERNEL_BASE;
 pub use memory_layout::{
     KERNEL_STACK_SIZE, MAX_KERNEL_ADDRESS, MAX_USER_ADDRESS, MIN_KERNEL_ADDRESS, MIN_USER_ADDRESS,
     PAGE_SIZE,
 };
-pub use pcb::Pcb;
 pub use per_cpu::PerCpu;
 pub use pmap::Pmap;
 use serial::Serial;

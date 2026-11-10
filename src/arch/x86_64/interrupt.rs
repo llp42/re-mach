@@ -14,7 +14,7 @@ use x86_64::structures::idt::InterruptStackFrameValue;
 use super::per_cpu::{KERNEL_STACK, PerCpu};
 use super::serial::Serial;
 use super::trap::TrapFrame;
-use super::{Pcb, apic, idt};
+use super::{MachineState, apic, idt};
 use crate::clock;
 use crate::config::HZ;
 use crate::machine::Mode;
@@ -24,9 +24,9 @@ use crate::thread::MachineThread as _;
 
 // Each entry pushes a zero error code and its vector, and adds its address
 // to `entries`; the common path saves the registers as a `TrapFrame`. An
-// interrupt from user mode, saved in the thread's PCB, swaps the GS base and
-// calls `user_interrupt` on the kernel stack; one from kernel mode calls
-// `interrupt` and returns.
+// interrupt from user mode, saved in the thread's machine state, swaps the
+// GS base and calls `user_interrupt` on the kernel stack; one from kernel
+// mode calls `interrupt` and returns.
 global_asm!(
     ".pushsection .text, \"ax\"",
     ".pushsection .rodata, \"a\"",
@@ -108,7 +108,7 @@ unsafe extern "C" {
 /// taking its ASTs first.
 extern "sysv64" fn user_interrupt(frame: &TrapFrame) -> ! {
     interrupt(frame);
-    Pcb::return_to_user()
+    MachineState::return_to_user()
 }
 
 /// Holds the interrupt back inside a critical section, and handles it in

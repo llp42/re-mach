@@ -107,7 +107,7 @@ pub struct Thread {
     /// Its name; racing sets may mix two, as in GNU Mach.
     name: Name,
     /// Its machine state.
-    pcb: UnsafeRef<arch::Pcb>,
+    machine_state: UnsafeRef<arch::MachineState>,
     /// Its port, which controls it.
     self_port: AtomicPtr<Port>,
     /// The send right for its port it hands out.
@@ -297,7 +297,7 @@ static CACHE: Cache<Thread> = Cache::new("thread");
 /// Sets up threads, on the boot CPU.
 pub fn init() {
     CACHE.register();
-    arch::Pcb::module_init();
+    arch::MachineState::module_init();
 }
 
 impl Thread {
@@ -313,7 +313,7 @@ impl Thread {
     /// be allocated, or as `vm::kernel::allocate_stack` for its stack;
     /// `Failure` if the task is not alive.
     pub fn create(task: &'static Task) -> Result<&'static Self, Error> {
-        let mut pcb = arch::Pcb::new()?;
+        let mut machine_state = arch::MachineState::new()?;
         let port = Port::allocate_kernel()?;
         port.make_send();
         // A full share of a processor; a set's load average is at least 1.
@@ -345,7 +345,7 @@ impl Thread {
             // Its task's, copied below under the task's token.
             name: Name::new(),
             // SAFETY: its box, unused until given up below, outlives the thread.
-            pcb: unsafe { UnsafeRef::from_raw(ptr::from_mut(&mut *pcb)) },
+            machine_state: unsafe { UnsafeRef::from_raw(ptr::from_mut(&mut *machine_state)) },
             self_port: AtomicPtr::new(ptr::null_mut()),
             self_send: AtomicPtr::new(ptr::null_mut()),
             argument: AtomicPtr::new(ptr::null_mut()),
@@ -413,7 +413,7 @@ impl Thread {
             return Err(Error::Failure);
         }
         // The thread takes its machine state for good.
-        CacheBox::into_raw(pcb);
+        CacheBox::into_raw(machine_state);
         // SAFETY: a thread lives until the reaper frees it, which comes later.
         let thread = unsafe { CacheBox::into_raw(thread).as_ref() };
         port.set_kernel_object(KernelObject::Thread(NonNull::from(thread)));
@@ -435,7 +435,7 @@ impl Thread {
     /// If it has no stack, which `create` gives it.
     pub fn start(&self, function: fn() -> !) {
         let stack = self.kernel_stack.get().expect("thread_start: no stack");
-        self.pcb.attach_stack(stack, function);
+        self.machine_state.attach_stack(stack, function);
     }
 
     /// Records that it runs on the current CPU, as the CPU switches to it.
@@ -465,7 +465,7 @@ impl Thread {
         cpu.switch_nesting(&self.critical_nesting);
         // SAFETY: the thread has its stack set up to start, and the CPU is
         // in a critical section its count holds.
-        unsafe { self.pcb.load() }
+        unsafe { self.machine_state.load() }
     }
 
     /// Switches the current CPU from it to `next`, inside a critical
@@ -495,7 +495,7 @@ impl Thread {
         // SAFETY: as the caller promises, `next`'s stack holds a frame
         // `attach_stack` wrote, if it never ran, or a switch pushed; both
         // counts hold the critical section the CPU is in.
-        unsafe { self.pcb.switch(&next.pcb, self) }
+        unsafe { self.machine_state.switch(&next.machine_state, self) }
     }
 
     /// Binds it to `processor`, which alone runs it from then on.
@@ -761,8 +761,8 @@ impl Thread {
     }
 
     /// Its machine state.
-    pub(super) fn pcb(&self) -> &arch::Pcb {
-        &self.pcb
+    pub(super) fn machine_state(&self) -> &arch::MachineState {
+        &self.machine_state
     }
 
     /// What its function is given; null for nothing.

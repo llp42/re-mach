@@ -171,7 +171,7 @@ pub fn no_extension_fault() {
         .active_thread()
         .expect("fpnoextflt: no current thread");
     assert!(
-        thread.pcb().fpu.load(Ordering::Relaxed).is_null(),
+        thread.machine_state().fpu.load(Ordering::Relaxed).is_null(),
         "fp_load: a saved state, not yet"
     );
     let size = AREA_OFFSET + *STATE_SIZE.get().expect("fpu: not set up");
@@ -184,7 +184,10 @@ pub fn no_extension_fault() {
     // SAFETY: both buffers hold `size` bytes; the new one is the thread's
     // alone.
     unsafe { state.copy_from_nonoverlapping(default, size) };
-    thread.pcb().fpu.store(state.as_ptr(), Ordering::Relaxed);
+    thread
+        .machine_state()
+        .fpu
+        .store(state.as_ptr(), Ordering::Relaxed);
     let _section = CriticalSection::enter();
     let cpu = PerCpu::current();
     assert!(
