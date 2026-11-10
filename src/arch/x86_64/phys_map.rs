@@ -566,10 +566,11 @@ pub unsafe fn bootstrap() {
     // SAFETY: the new tables map the kernel window up to `boot_end`, which
     // holds all the kernel reaches, and all it runs from here on lies in
     // `text_start..text_end`; nothing uses the identity map any more. NXE
-    // where the CPU has NX, before the tables using it load.
+    // where the CPU has NX, before the tables using it load; global pages
+    // where it has them.
     unsafe {
         Efer::update(|flags| flags.set(EferFlags::NO_EXECUTE_ENABLE, has_execute_disable));
-        Cr4::update(|flags| flags.insert(Cr4Flags::PAGE_GLOBAL));
+        Cr4::update(|flags| flags.set(Cr4Flags::PAGE_GLOBAL, cpuid::features().has_pge()));
         Cr3::write(pml4_frame, Cr3Flags::empty());
     }
     // SAFETY: guaranteed by the caller; no mapping uses PAT entries 4 to 7.
