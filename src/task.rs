@@ -119,6 +119,23 @@ impl Task {
             .push_back(unsafe { UnsafeRef::from_raw(thread) });
     }
 
+    /// Drops a reference on it, which is not its last.
+    ///
+    /// # Panics
+    ///
+    /// On its last reference: not yet.
+    pub(super) fn deallocate(&self) {
+        // Only the last reference's drop takes the set's token.
+        assert!(
+            self.references
+                .try_update(Ordering::Release, Ordering::Relaxed, |references| {
+                    (references > 1).then(|| references - 1)
+                })
+                .is_ok(),
+            "task_deallocate: the last reference, not yet"
+        );
+    }
+
     /// Stops it once more for users: the first stop suspends it, holding its
     /// threads and waiting for them to stop; the current thread, if one of
     /// them, is held and blocks on its way out of the kernel.
