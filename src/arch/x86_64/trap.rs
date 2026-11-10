@@ -11,7 +11,7 @@ use core::sync::atomic::Ordering;
 
 use x86_64::VirtAddr;
 use x86_64::instructions::interrupts;
-use x86_64::registers::control::Cr2;
+use x86_64::registers::control::{Cr2, Cr4, Cr4Flags};
 use x86_64::registers::rflags::RFlags;
 use x86_64::structures::idt::{ExceptionVector, InterruptStackFrameValue, PageFaultErrorCode};
 
@@ -66,6 +66,12 @@ global_asm!(
     "entry_with_error_code vmm_communication_exception_entry, 29",
     "entry_with_error_code security_exception_entry, 30",
     ".Ltrap_common:",
+    // SMAP closes, from either mode.
+    "nopl (%rax)",
+    ".pushsection smap_close, \"a\"",
+    ".balign 8",
+    ".quad .Ltrap_common",
+    ".popsection",
     "pushq %rax",
     "pushq %rbx",
     "pushq %rcx",
@@ -293,8 +299,9 @@ extern "sysv64" fn user_trap(frame: &TrapFrame) -> ! {
 /// # Panics
 ///
 /// On any other trap; on a page fault in kernel space or at address 0, not
-/// yet; on one on a user address for an instruction fetch, in a kernel
-/// thread, or that neither resolves nor recovers.
+/// yet; on one on a user address for an instruction fetch, for a data
+/// access SMAP refused outside a copy, in a kernel thread, or that neither
+/// resolves nor recovers.
 extern "sysv64" fn kernel_trap(frame: &mut TrapFrame) {
     let cr2 = Cr2::read_raw();
     let address = usize::try_from(cr2).unwrap();
@@ -308,7 +315,21 @@ extern "sysv64" fn kernel_trap(frame: &mut TrapFrame) {
     let fetch = page_fault
         && PageFaultErrorCode::from_bits_truncate(frame.error_code)
             .contains(PageFaultErrorCode::INSTRUCTION_FETCH);
-    if page_fault && user && !fetch {
+    // SMAP refused a data access to a present user page outside a copy:
+    // fatal too.
+    let smap = page_fault
+        && Cr4::read().contains(Cr4Flags::SUPERVISOR_MODE_ACCESS_PREVENTION)
+        && PageFaultErrorCode::from_bits_truncate(frame.error_code).intersection(
+            PageFaultErrorCode::PROTECTION_VIOLATION
+                | PageFaultErrorCode::USER_MODE
+                | PageFaultErrorCode::INSTRUCTION_FETCH
+                | PageFaultErrorCode::MALFORMED_TABLE,
+        ) == PageFaultErrorCode::PROTECTION_VIOLATION
+        && !frame
+            .interrupted
+            .cpu_flags
+            .contains(RFlags::ALIGNMENT_CHECK);
+    if page_fault && user && !fetch && !smap {
         // The interrupt gate turned interrupts off; the fault had them as
         // its frame says.
         if frame.interrupted.cpu_flags.contains(RFlags::INTERRUPT_FLAG) {
@@ -357,6 +378,10 @@ extern "sysv64" fn kernel_trap(frame: &mut TrapFrame) {
     assert!(
         !fetch,
         "kernel_trap: an instruction fetch at a user address"
+    );
+    assert!(
+        !smap,
+        "kernel_trap: a data access at a user address outside a copy"
     );
     panic!("trap")
 }

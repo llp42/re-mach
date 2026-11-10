@@ -22,6 +22,9 @@ SECTIONS
   . = ALIGN(4096);
   text_end = .;
   .rodata : AT(ADDR(.rodata) - KERNEL_MAP_BASE) { *(.rodata .rodata.*) }
+  /* The SMAP sites' addresses, for smap::init. */
+  smap_open : { smap_open_start = .; KEEP(*(smap_open)) smap_open_end = .; }
+  smap_close : { smap_close_start = .; KEEP(*(smap_close)) smap_close_end = .; }
   /* Rodata and .got end on a page boundary, so their pages map read-only. */
   . = ALIGN(4096);
   rodata_end = .;
