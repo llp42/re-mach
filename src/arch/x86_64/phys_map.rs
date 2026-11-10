@@ -65,6 +65,12 @@ const LARGE_PAGE: PageTableFlags = TABLE
     .union(PageTableFlags::HUGE_PAGE)
     .union(PageTableFlags::GLOBAL);
 
+/// Global page of the kernel window, for mappings never removed.
+const WINDOW_PAGE: PageTableFlags = TABLE.union(PageTableFlags::GLOBAL);
+
+/// Kernel text's page: read-only.
+const TEXT_PAGE: PageTableFlags = WINDOW_PAGE.difference(PageTableFlags::WRITABLE);
+
 /// Direct map page, accessed and dirty preset so a split keeps them.
 const DIRECT_MAP_PAGE: PageTableFlags = LARGE_PAGE
     .union(PageTableFlags::ACCESSED)
@@ -500,6 +506,9 @@ const unsafe fn entries<'a>(start: PhysAddr, count: usize) -> &'a mut [PageTable
 ///
 /// Runs once, on the boot CPU, after boot memory's bootstrap.
 pub unsafe fn bootstrap() {
+    let image_start = PhysAddr((&raw const super::boot_start).addr());
+    let text_start = PhysAddr((&raw const super::text_start).addr() - KERNEL_BASE);
+    let text_end = PhysAddr((&raw const super::text_end).addr() - KERNEL_BASE);
     let image_end = PhysAddr((&raw const super::_end).addr() - KERNEL_BASE);
     let (heap_end, memory_end) = (boot_memory::heap_end(), boot_memory::memory_end());
     let boot_end = image_end.max(heap_end).0.next_multiple_of(LARGE_PAGE_SIZE);
@@ -514,7 +523,12 @@ pub unsafe fn bootstrap() {
     let pml4 = alloc_tables(1);
     // SAFETY: guaranteed by the caller; the PML4 was just allocated.
     unsafe {
-        map_kernel_space(pml4, PhysAddr(boot_end));
+        map_kernel_space(
+            pml4,
+            image_start..image_end,
+            text_start..text_end,
+            PhysAddr(boot_end),
+        );
         map_direct(pml4, direct_map_size);
         entries(pml4, 1)[PAGE_TABLE_SLOT].set_addr(frame(pml4), TABLE);
     }
@@ -577,13 +591,19 @@ fn flush_caches() {
 
 /// Maps kernel space into `pml4`: all its PDP tables, so its PML4 entries
 /// never change, page tables at its start, and the kernel window, with
-/// physical memory below `boot_end` in large pages.
+/// physical memory below `boot_end` in large pages, but where the `image`
+/// lies in pages, read-only over `text`.
 ///
 /// # Safety
 ///
 /// Runs on the boot CPU only, after boot memory's bootstrap; `pml4` comes
 /// from `alloc_tables`.
-unsafe fn map_kernel_space(pml4: PhysAddr, boot_end: PhysAddr) {
+unsafe fn map_kernel_space(
+    pml4: PhysAddr,
+    image: Range<PhysAddr>,
+    text: Range<PhysAddr>,
+    boot_end: PhysAddr,
+) {
     let slots = ENTRIES - KERNEL_SLOT;
     let pdps = alloc_tables(slots);
     // SAFETY: guaranteed by the caller.
@@ -612,7 +632,10 @@ unsafe fn map_kernel_space(pml4: PhysAddr, boot_end: PhysAddr) {
     let count = window_size / DIRECTORY_SIZE;
     let large = boot_end.0 / LARGE_PAGE_SIZE;
     let small = window_size / LARGE_PAGE_SIZE - large;
+    // The large pages the image lies in.
+    let image_pages = image.start.0 / LARGE_PAGE_SIZE..image.end.0.div_ceil(LARGE_PAGE_SIZE);
     let (directories, tables) = (alloc_tables(count), alloc_tables(small));
+    let image_tables = alloc_tables(image_pages.len());
     // SAFETY: guaranteed by the caller; fresh tables.
     unsafe {
         for (directory, entry) in entries(pdp(KERNEL_BASE), 1)
@@ -624,10 +647,28 @@ unsafe fn map_kernel_space(pml4: PhysAddr, boot_end: PhysAddr) {
         }
         let window = entries(directories, count);
         for (page, entry) in window[..large].iter_mut().enumerate() {
-            entry.set_addr(frame(PhysAddr(page * LARGE_PAGE_SIZE)), LARGE_PAGE);
+            if image_pages.contains(&page) {
+                let table = image_tables + (page - image_pages.start) * PAGE_SIZE;
+                entry.set_addr(frame(table), TABLE);
+            } else {
+                entry.set_addr(frame(PhysAddr(page * LARGE_PAGE_SIZE)), LARGE_PAGE);
+            }
         }
         for (table, entry) in window[large..].iter_mut().enumerate() {
             entry.set_addr(frame(tables + table * PAGE_SIZE), TABLE);
+        }
+        let start = PhysAddr(image_pages.start * LARGE_PAGE_SIZE);
+        for (page, entry) in entries(image_tables, image_pages.len())
+            .iter_mut()
+            .enumerate()
+        {
+            let address = start + page * PAGE_SIZE;
+            let flags = if text.contains(&address) {
+                TEXT_PAGE
+            } else {
+                WINDOW_PAGE
+            };
+            entry.set_addr(frame(address), flags);
         }
     }
 }

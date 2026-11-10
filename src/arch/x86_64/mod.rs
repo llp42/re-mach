@@ -73,6 +73,10 @@ static BOOT_MODULES: OnceLock<&'static [BootModule]> = OnceLock::new();
 unsafe extern "C" {
     /// The image's first byte, in `.boot`, which runs where it is loaded.
     safe static boot_start: u8;
+    /// The text's first byte, at the kernel map base.
+    safe static text_start: u8;
+    /// Past the text's last page, at the kernel map base.
+    safe static text_end: u8;
     /// Past the image's last byte, at the kernel map base.
     safe static _end: u8;
 }
