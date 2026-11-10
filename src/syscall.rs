@@ -5,7 +5,8 @@
 
 use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::error::Error;
-use crate::ipc::{mach_msg, port};
+use crate::ipc::mach_msg;
+use crate::ipc::port::Port;
 use crate::{print, smp};
 
 /// A Mach trap, as the table holds it.
@@ -121,12 +122,12 @@ fn message(arguments: &[usize; 7]) -> u32 {
 /// # Panics
 ///
 /// If no thread runs on the CPU. If the port can't be allocated: not yet;
-/// as `port::allocate`.
+/// as `Port::allocate`.
 fn reply_port(_: &[usize; 7]) -> u32 {
     let thread = smp::current()
         .active_thread()
         .expect("mach_reply_port: no current thread");
-    port::allocate(&thread.task().space).expect("mach_reply_port: a failed allocation, not yet")
+    Port::allocate(&thread.task().space).expect("mach_reply_port: a failed allocation, not yet")
 }
 
 /// How many bytes `print` copies in at a time, at most.

@@ -20,11 +20,11 @@ use crate::ipc::{MessageType, mach_port};
 use crate::sched::{self, Event, USER_PRIORITY};
 use crate::sync::Spinlock;
 use crate::task::{self, Task};
-use crate::thread::MachineThread as _;
+use crate::thread::{MachineThread as _, Thread};
 use crate::vm::map::{Change, Map};
 use crate::vm::user::Placement;
 use crate::vm::{Inheritance, Protection};
-use crate::{device, print, println, smp, thread, vm};
+use crate::{device, print, println, smp, vm};
 use elf_load::{Image, SectionType, Segment};
 use script::{Script, Value};
 
@@ -121,7 +121,7 @@ pub fn create() {
 ///
 /// If the task can't be created: the script's cleanup, not yet.
 fn create_task(path: &str) -> &'static Task {
-    let task = task::create(None).unwrap_or_else(|error| {
+    let task = Task::create(None).unwrap_or_else(|error| {
         panic!("boot_script_task_create failed with {error:?}, cleanup not yet")
     });
     task.members.lock().name.set(format_args!("{path}"));
@@ -170,7 +170,7 @@ struct LoaderInfo<'a> {
 ///
 /// If the thread can't be created or resumed.
 fn run_command(module: &'static BootModule, task: &'static Task, line: &[u8], arguments: &[usize]) {
-    let thread = thread::create(task)
+    let thread = Thread::create(task)
         .unwrap_or_else(|error| panic!("boot_script_exec_cmd: thread_create: {error:?}"));
     let info = LoaderInfo {
         module,

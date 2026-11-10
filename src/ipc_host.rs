@@ -7,7 +7,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 
 use crate::host::{HOST, Host};
-use crate::ipc::port::{self, KernelObject, Port};
+use crate::ipc::port::{KernelObject, Port};
 use crate::processor::{BOOT_PROCESSOR, DEFAULT_SET, Processor, ProcessorSet};
 use crate::slab::CacheBox;
 
@@ -81,7 +81,7 @@ pub fn privileged_host(port: &Port) -> Option<&'static Host> {
 ///
 /// If the port can't be allocated.
 fn allocate_port(object: Option<KernelObject>) -> NonNull<Port> {
-    let port = port::allocate_kernel()
+    let port = Port::allocate_kernel()
         .unwrap_or_else(|error| panic!("ipc_host_init: ipc_port_alloc_kernel failed: {error:?}"));
     if let Some(object) = object {
         port.set_kernel_object(object);
