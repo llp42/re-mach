@@ -27,7 +27,7 @@ use crate::smp;
 use crate::sync::{OnceLock, Spinlock};
 use crate::vm::Protection;
 use crate::vm::page::{self, Page};
-use crate::vm::pmap::{MachinePmap, Wiring};
+use crate::vm::phys_map::{MachinePhysMap, Wiring};
 
 /// Entries per table.
 const ENTRIES: usize = 512;
@@ -73,7 +73,7 @@ const DIRECT_MAP_PAGE: PageTableFlags = LARGE_PAGE
 /// Kernel memory's page: writable.
 const KERNEL_PAGE: PageTableFlags = TABLE;
 
-/// Entry of a lower table in a user pmap.
+/// Entry of a lower table in a user physical map.
 const USER_TABLE: PageTableFlags = TABLE.union(PageTableFlags::USER_ACCESSIBLE);
 
 /// User memory's page, accessed preset: read-only unless `enter` adds
@@ -102,7 +102,7 @@ const PAGE_ATTRIBUTES: [PatMemoryType; 8] = [
 ];
 
 /// One address space's page tables.
-pub struct Pmap {
+pub struct PhysMap {
     /// Its PML4 table.
     pml4: PhysAddr,
     /// References held on it.
@@ -115,17 +115,17 @@ pub struct Pmap {
     lock: Spinlock<()>,
 }
 
-impl MachinePmap for Pmap {
+impl MachinePhysMap for PhysMap {
     fn steal_memory(size: usize) -> *mut u8 {
         boot_memory::steal_pages(size.div_ceil(PAGE_SIZE)).direct_map_ptr()
     }
 
     fn kernel() -> &'static Self {
-        KERNEL_PMAP.get().expect("pmap: not bootstrapped")
+        KERNEL_PHYS_MAP.get().expect("pmap: not bootstrapped")
     }
 
     fn create() -> Result<&'static Self, Error> {
-        let mut pmap = CACHE.allocate(Self {
+        let mut phys_map = CACHE.allocate(Self {
             pml4: PhysAddr(0),
             references: AtomicUsize::new(1),
             active_cpus: AtomicUsize::new(0),
@@ -134,9 +134,9 @@ impl MachinePmap for Pmap {
         })?;
         // In no object, so at index 0.
         let pml4 = page::allocate_zeroed(0).expect("pmap_create").address();
-        // SAFETY: the new table is zeroed and the pmap's alone; the kernel's
-        // is read atomically, as the CPU sets its accessed bits. Tables are
-        // arrays of entries, reached through the direct map.
+        // SAFETY: the new table is zeroed and the physical map's alone; the
+        // kernel's is read atomically, as the CPU sets its accessed bits.
+        // Tables are arrays of entries, reached through the direct map.
         let (entries, kernel_entries) = unsafe {
             (
                 slice::from_raw_parts_mut(pml4.direct_map_ptr::<u64>(), ENTRIES),
@@ -151,9 +151,10 @@ impl MachinePmap for Pmap {
             *entry = kernel_entry.load(Ordering::Relaxed);
         }
         entries[PAGE_TABLE_SLOT] = frame(pml4).as_u64() | TABLE.bits();
-        pmap.pml4 = pml4;
-        // SAFETY: a pmap lives until pmap_destroy frees it, which comes later.
-        Ok(unsafe { CacheBox::into_raw(pmap).as_ref() })
+        phys_map.pml4 = pml4;
+        // SAFETY: a physical map lives until pmap_destroy frees it, which
+        // comes later.
+        Ok(unsafe { CacheBox::into_raw(phys_map).as_ref() })
     }
 
     fn reference(&self) {
@@ -161,8 +162,8 @@ impl MachinePmap for Pmap {
     }
 
     fn activate(&self) {
-        // The kernel pmap stays active on every CPU; a user pmap's bit goes
-        // before CR3, so a TLB shootdown finds this CPU.
+        // The kernel physical map stays active on every CPU; a user physical
+        // map's bit goes before CR3, so a TLB shootdown finds this CPU.
         if !ptr::eq(self, Self::kernel()) {
             self.active_cpus
                 .fetch_or(1 << smp::current().id(), Ordering::SeqCst);
@@ -177,7 +178,7 @@ impl MachinePmap for Pmap {
     }
 
     fn deactivate(&self) {
-        // The kernel pmap stays active on every CPU.
+        // The kernel physical map stays active on every CPU.
         if ptr::eq(self, Self::kernel()) {
             return;
         }
@@ -218,7 +219,7 @@ impl MachinePmap for Pmap {
             page::lookup(physical).is_some(),
             "pmap_enter: memory outside the page array, uncached, not yet"
         );
-        // The page table's lock, before the pmap's drops.
+        // The page table's lock, before the physical map's drops.
         let entries = page::lookup(table)
             .expect("pmap_enter: a page table outside the page array")
             .table_lock
@@ -346,7 +347,7 @@ impl MachinePmap for Pmap {
     }
 }
 
-impl Pmap {
+impl PhysMap {
     /// The page table that maps user `address`, found from the PML4 through
     /// the direct map, a table from `spares` linked in where one is missing;
     /// only the lock's holder passes any. `Err` with how many are missing
@@ -375,11 +376,11 @@ impl Pmap {
     }
 }
 
-/// The cache pmaps come from.
-static CACHE: Cache<Pmap> = Cache::new("pmap");
+/// The cache physical maps come from.
+static CACHE: Cache<PhysMap> = Cache::new("pmap");
 
 /// The kernel's physical map, once `bootstrap` builds it.
-static KERNEL_PMAP: OnceLock<Pmap> = OnceLock::new();
+static KERNEL_PHYS_MAP: OnceLock<PhysMap> = OnceLock::new();
 
 /// The kernel addresses the boot mappings use, once `bootstrap` maps them.
 static BOOT_SPACE: OnceLock<Range<usize>> = OnceLock::new();
@@ -413,9 +414,9 @@ fn window_entry(address: usize, level: usize) -> &'static AtomicU64 {
     unsafe { &*ptr::with_exposed_provenance::<AtomicU64>(usize::try_from(entry.as_u64()).unwrap()) }
 }
 
-/// Maps kernel `address` to `physical` with `flags`, in the kernel pmap: as
-/// every pmap shares kernel space's tables, the entry is written with one
-/// atomic operation and no lock.
+/// Maps kernel `address` to `physical` with `flags`, in the kernel physical
+/// map: as every physical map shares kernel space's tables, the entry is
+/// written with one atomic operation and no lock.
 ///
 /// # Panics
 ///
@@ -517,7 +518,7 @@ pub unsafe fn bootstrap() {
         map_direct(pml4, direct_map_size);
         entries(pml4, 1)[PAGE_TABLE_SLOT].set_addr(frame(pml4), TABLE);
     }
-    let kernel_pmap = Pmap {
+    let kernel_phys_map = PhysMap {
         pml4,
         references: AtomicUsize::new(1),
         active_cpus: AtomicUsize::new(usize::MAX),
@@ -525,7 +526,7 @@ pub unsafe fn bootstrap() {
         lock: Spinlock::new(()),
     };
     assert!(
-        KERNEL_PMAP.set(kernel_pmap).is_ok()
+        KERNEL_PHYS_MAP.set(kernel_phys_map).is_ok()
             && BOOT_SPACE.set(KERNEL_BASE..KERNEL_BASE + boot_end).is_ok()
             && DIRECT_MAP_END
                 .set(DIRECT_MAP_BASE + direct_map_size)

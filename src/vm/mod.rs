@@ -9,13 +9,13 @@ pub mod map;
 pub mod object;
 pub mod page;
 pub mod pageout;
-pub mod pmap;
+pub mod phys_map;
 pub mod proxy;
 pub mod user;
 
 use core::sync::atomic::AtomicU32;
 
-use pmap::MachinePmap as _;
+use phys_map::MachinePhysMap as _;
 
 use crate::arch;
 
@@ -60,7 +60,7 @@ pub fn bootstrap() {
     object::bootstrap();
     map::init();
     kernel::init();
-    arch::Pmap::init();
+    arch::PhysMap::init();
     crate::kalloc::init();
     page::init();
 }

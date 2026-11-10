@@ -9,7 +9,7 @@ use core::sync::atomic::Ordering;
 use super::map::Map;
 use super::object::{Flags, Object, ObjectState};
 use super::page::{self, Page};
-use super::pmap::{MachinePmap as _, Wiring};
+use super::phys_map::{MachinePhysMap as _, Wiring};
 use super::{Protection, STATISTICS};
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
@@ -26,7 +26,7 @@ use crate::sync::TokenGuard;
 ///
 /// # Panics
 ///
-/// As `Map::lookup`, `fault_page`, `MachinePmap::enter`, `Page::activate`
+/// As `Map::lookup`, `fault_page`, `MachinePhysMap::enter`, `Page::activate`
 /// and `Object::deallocate`. If a lookup after a change to the map fails or
 /// finds another page, the object's copy changed, or a wired page lost the
 /// access it asked for: not yet.
@@ -80,7 +80,7 @@ pub fn fault(map: &Map, address: usize, access: Protection) -> Result<(), Error>
     } else {
         Wiring::Pageable
     };
-    map.pmap()
+    map.phys_map()
         .enter(address, found.page.address(), protection, wiring);
     let mut state = lookup.object.lock();
     // Reference bits are kept in software: a page on a paging queue stays.
