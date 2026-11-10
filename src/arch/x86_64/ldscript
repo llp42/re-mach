@@ -14,12 +14,17 @@ SECTIONS
   .boot : { *(.boot.text) *(.boot.data) }
 
   . += KERNEL_MAP_BASE;
+  /* Text starts on a page boundary, so no page holds both .boot and text. */
+  . = ALIGN(4096);
   text_start = .;
   .text : AT(ADDR(.text) - KERNEL_MAP_BASE) { *(.text .text.*) }
   /* Text ends on a page boundary, so its pages map read-only. */
   . = ALIGN(4096);
   text_end = .;
   .rodata : AT(ADDR(.rodata) - KERNEL_MAP_BASE) { *(.rodata .rodata.*) }
+  /* Rodata and .got end on a page boundary, so their pages map read-only. */
+  . = ALIGN(4096);
+  rodata_end = .;
   .data : AT(ADDR(.data) - KERNEL_MAP_BASE) { *(.data .data.*) }
   .bss : AT(ADDR(.bss) - KERNEL_MAP_BASE) { *(.bss .bss.*) *(COMMON) }
   _end = .;
