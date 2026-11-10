@@ -46,6 +46,12 @@ global_asm!(
     ".set .Lvector, .Lvector + 1",
     ".endr",
     ".Linterrupt_common:",
+    // SMAP closes, from either mode.
+    "nopl (%rax)",
+    ".pushsection smap_close, \"a\"",
+    ".balign 8",
+    ".quad .Linterrupt_common",
+    ".popsection",
     "pushq %rax",
     "pushq %rbx",
     "pushq %rcx",

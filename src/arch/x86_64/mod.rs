@@ -28,6 +28,7 @@ mod pic;
 mod reset;
 mod rtc;
 mod serial;
+mod smap;
 mod stack;
 mod syscall;
 mod trap;
@@ -175,6 +176,9 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe {
         Cr4::update(|flags| flags.set(Cr4Flags::SUPERVISOR_MODE_EXECUTION_PROTECTION, has_smep));
     }
+    // SAFETY: the boot CPU, once, after the physical map's bootstrap; no
+    // copy or trap runs yet.
+    unsafe { smap::init() };
     // SAFETY: the boot CPU, once.
     unsafe { gdt::init() };
     // SAFETY: the boot CPU, once, after the GDT.
