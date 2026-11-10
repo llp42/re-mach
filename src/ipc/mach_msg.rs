@@ -6,7 +6,7 @@
 use core::ptr::{self, NonNull};
 
 use super::entry::Rights;
-use super::kmsg;
+use super::kernel_message;
 use super::space::KERNEL_SPACE;
 use crate::{ipc_kobject, smp};
 
@@ -36,7 +36,7 @@ const COPIED_REQUEST_BITS: u32 = 0x1211;
 /// # Panics
 ///
 /// If no thread runs on the CPU. On every other path: not yet; as
-/// `kmsg::get` and `ipc_kobject::server`.
+/// `kernel_message::get` and `ipc_kobject::server`.
 pub fn trap(
     message: usize,
     option: u32,
@@ -55,9 +55,9 @@ pub fn trap(
         .expect("mach_msg_trap: no current thread");
     let space = &thread.task().space;
     // With no cached buffer, fast_get goes to slow_get.
-    let mut kmsg = kmsg::get(message, send_size);
+    let mut message = kernel_message::get(message, send_size);
     // fast_copyin.
-    let header = kmsg.header_mut();
+    let header = message.header_mut();
     assert!(
         header.bits == REQUEST_BITS,
         "mach_msg_trap: header bits {:#x}, not yet",
@@ -108,5 +108,5 @@ pub fn trap(
     drop(destination_state);
     assert!(kernel, "mach_msg_trap: fast_send_receive, not yet");
     // kernel_send.
-    ipc_kobject::server(kmsg)
+    ipc_kobject::server(message)
 }

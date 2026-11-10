@@ -5,7 +5,7 @@
 //! them.
 
 pub mod entry;
-pub mod kmsg;
+pub mod kernel_message;
 pub mod mach_msg;
 pub mod mach_port;
 mod object;

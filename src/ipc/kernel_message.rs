@@ -34,7 +34,7 @@ pub struct Header {
 pub const COMPLEX: u32 = 1 << 31;
 
 /// A kernel message: its buffer, from kalloc.
-pub struct Kmsg(NonNull<Buffer>);
+pub struct KernelMessage(NonNull<Buffer>);
 
 /// A kernel message's buffer: its size, then the message, header first.
 #[repr(C)]
@@ -52,7 +52,7 @@ const OVERHEAD: usize = offset_of!(Buffer, header);
 /// a port's 8.
 const EXPAND_FACTOR: usize = 2;
 
-impl Kmsg {
+impl KernelMessage {
     /// A new one, in a zeroed kalloc buffer of `size` bytes.
     ///
     /// # Errors
@@ -128,7 +128,7 @@ impl Kmsg {
 /// If `size` is below a header or not a multiple of 8, if the message
 /// might outgrow a page, if no buffer can be allocated, or if the message
 /// can't be copied in: not yet.
-pub fn get(address: usize, size: u32) -> Kmsg {
+pub fn get(address: usize, size: u32) -> KernelMessage {
     let length = usize::try_from(size).unwrap();
     assert!(
         length >= size_of::<Header>() && length.is_multiple_of(8),
@@ -138,15 +138,15 @@ pub fn get(address: usize, size: u32) -> Kmsg {
         length * EXPAND_FACTOR <= PAGE_SIZE - OVERHEAD,
         "ipc_kmsg_get: a buffer beyond a page, not yet"
     );
-    let mut kmsg = Kmsg::allocate(PAGE_SIZE)
+    let mut message = KernelMessage::allocate(PAGE_SIZE)
         .unwrap_or_else(|_| panic!("ipc_kmsg_get: MACH_SEND_NO_BUFFER, not yet"));
     assert!(
-        arch::Current::copy_in(address, &mut kmsg.message_mut()[..length]).is_ok(),
+        arch::Current::copy_in(address, &mut message.message_mut()[..length]).is_ok(),
         "ipc_kmsg_get: MACH_SEND_INVALID_DATA, not yet"
     );
-    let header = kmsg.header_mut();
+    let header = message.header_mut();
     header.size = size;
     header.remote_port &= 0xffff_ffff;
     header.local_port &= 0xffff_ffff;
-    kmsg
+    message
 }
