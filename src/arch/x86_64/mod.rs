@@ -77,6 +77,8 @@ unsafe extern "C" {
     safe static text_start: u8;
     /// Past the text's last page, at the kernel map base.
     safe static text_end: u8;
+    /// Past rodata's last page, at the kernel map base.
+    safe static rodata_end: u8;
     /// Past the image's last byte, at the kernel map base.
     safe static _end: u8;
 }

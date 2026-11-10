@@ -11,7 +11,7 @@ use core::{ptr, slice};
 use x86_64::VirtAddr;
 use x86_64::instructions::tlb;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr3, Cr3Flags, Cr4, Cr4Flags};
-use x86_64::registers::model_specific::{Pat, PatMemoryType};
+use x86_64::registers::model_specific::{Efer, EferFlags, Pat, PatMemoryType};
 use x86_64::structures::paging::page_table::PageTableEntry;
 use x86_64::structures::paging::{self, PageTableFlags, PageTableIndex, PhysFrame, Size4KiB};
 
@@ -68,7 +68,7 @@ const LARGE_PAGE: PageTableFlags = TABLE
 /// Global page of the kernel window, for mappings never removed.
 const WINDOW_PAGE: PageTableFlags = TABLE.union(PageTableFlags::GLOBAL);
 
-/// Kernel text's page: read-only.
+/// Read-only kernel page: text, or rodata with `NO_EXECUTE`.
 const TEXT_PAGE: PageTableFlags = WINDOW_PAGE.difference(PageTableFlags::WRITABLE);
 
 /// Direct map page, accessed and dirty preset so a split keeps them.
@@ -156,7 +156,8 @@ impl MachinePhysMap for PhysMap {
         {
             *entry = kernel_entry.load(Ordering::Relaxed);
         }
-        entries[PAGE_TABLE_SLOT] = frame(pml4).as_u64() | TABLE.bits();
+        let no_execute = *NO_EXECUTE.get().expect("pmap: not bootstrapped");
+        entries[PAGE_TABLE_SLOT] = frame(pml4).as_u64() | (TABLE | no_execute).bits();
         phys_map.pml4 = pml4;
         // SAFETY: a physical map lives until pmap_destroy frees it, which
         // comes later.
@@ -394,6 +395,10 @@ static BOOT_SPACE: OnceLock<Range<usize>> = OnceLock::new();
 /// End of the direct map, once `bootstrap` sets it.
 static DIRECT_MAP_END: OnceLock<usize> = OnceLock::new();
 
+/// The no-execute bit, empty where the CPU has none, once `bootstrap`
+/// probes it.
+static NO_EXECUTE: OnceLock<PageTableFlags> = OnceLock::new();
+
 /// Index of `address`'s entry in a table whose entries map `size` bytes.
 const fn index(address: usize, size: usize) -> usize {
     address / size % ENTRIES
@@ -420,9 +425,9 @@ fn window_entry(address: usize, level: usize) -> &'static AtomicU64 {
     unsafe { &*ptr::with_exposed_provenance::<AtomicU64>(usize::try_from(entry.as_u64()).unwrap()) }
 }
 
-/// Maps kernel `address` to `physical` with `flags`, in the kernel physical
-/// map: as every physical map shares kernel space's tables, the entry is
-/// written with one atomic operation and no lock.
+/// Maps kernel `address` to `physical` with `flags`, no-execute, in the
+/// kernel physical map: as every physical map shares kernel space's tables,
+/// the entry is written with one atomic operation and no lock.
 ///
 /// # Panics
 ///
@@ -439,6 +444,7 @@ fn enter_kernel_page(address: usize, physical: PhysAddr, flags: PageTableFlags) 
             "pmap: no page table at {address:#x}"
         );
     }
+    let flags = flags | *NO_EXECUTE.get().expect("pmap: not bootstrapped");
     // A page that was not present is in no TLB, so nothing to invalidate.
     assert!(
         window_entry(address, 0)
@@ -494,8 +500,8 @@ const unsafe fn entries<'a>(start: PhysAddr, count: usize) -> &'a mut [PageTable
     unsafe { slice::from_raw_parts_mut(start.kernel_window_ptr(), count * ENTRIES) }
 }
 
-/// Builds the kernel's page tables and physical map, switches to them, and
-/// sets the page attribute table.
+/// Builds the kernel's page tables and physical map, switches to them with
+/// EFER.NXE set where the CPU has NX, and sets the page attribute table.
 ///
 /// # Panics
 ///
@@ -509,6 +515,7 @@ pub unsafe fn bootstrap() {
     let image_start = PhysAddr((&raw const super::boot_start).addr());
     let text_start = PhysAddr((&raw const super::text_start).addr() - KERNEL_BASE);
     let text_end = PhysAddr((&raw const super::text_end).addr() - KERNEL_BASE);
+    let rodata_end = PhysAddr((&raw const super::rodata_end).addr() - KERNEL_BASE);
     let image_end = PhysAddr((&raw const super::_end).addr() - KERNEL_BASE);
     let (heap_end, memory_end) = (boot_memory::heap_end(), boot_memory::memory_end());
     let boot_end = image_end.max(heap_end).0.next_multiple_of(LARGE_PAGE_SIZE);
@@ -520,6 +527,11 @@ pub unsafe fn bootstrap() {
         direct_map_size <= (KERNEL_SLOT - DIRECT_MAP_SLOT) * SLOT_SIZE,
         "pmap: physical memory past the direct map"
     );
+    let has_execute_disable = cpuid::cpu_id()
+        .get_extended_processor_and_feature_identifiers()
+        .is_some_and(|info| info.has_execute_disable());
+    let mut no_execute = PageTableFlags::empty();
+    no_execute.set(PageTableFlags::NO_EXECUTE, has_execute_disable);
     let pml4 = alloc_tables(1);
     // SAFETY: guaranteed by the caller; the PML4 was just allocated.
     unsafe {
@@ -527,10 +539,12 @@ pub unsafe fn bootstrap() {
             pml4,
             image_start..image_end,
             text_start..text_end,
+            text_end..rodata_end,
             PhysAddr(boot_end),
+            no_execute,
         );
-        map_direct(pml4, direct_map_size);
-        entries(pml4, 1)[PAGE_TABLE_SLOT].set_addr(frame(pml4), TABLE);
+        map_direct(pml4, direct_map_size, no_execute);
+        entries(pml4, 1)[PAGE_TABLE_SLOT].set_addr(frame(pml4), TABLE | no_execute);
     }
     let kernel_phys_map = PhysMap {
         pml4,
@@ -544,13 +558,17 @@ pub unsafe fn bootstrap() {
             && BOOT_SPACE.set(KERNEL_BASE..KERNEL_BASE + boot_end).is_ok()
             && DIRECT_MAP_END
                 .set(DIRECT_MAP_BASE + direct_map_size)
-                .is_ok(),
+                .is_ok()
+            && NO_EXECUTE.set(no_execute).is_ok(),
         "pmap: bootstrapped twice"
     );
     let pml4_frame = PhysFrame::containing_address(frame(pml4));
     // SAFETY: the new tables map the kernel window up to `boot_end`, which
-    // holds all the kernel reaches; nothing uses the identity map any more.
+    // holds all the kernel reaches, and all it runs from here on lies in
+    // `text_start..text_end`; nothing uses the identity map any more. NXE
+    // where the CPU has NX, before the tables using it load.
     unsafe {
+        Efer::update(|flags| flags.set(EferFlags::NO_EXECUTE_ENABLE, has_execute_disable));
         Cr4::update(|flags| flags.insert(Cr4Flags::PAGE_GLOBAL));
         Cr3::write(pml4_frame, Cr3Flags::empty());
     }
@@ -592,7 +610,8 @@ fn flush_caches() {
 /// Maps kernel space into `pml4`: all its PDP tables, so its PML4 entries
 /// never change, page tables at its start, and the kernel window, with
 /// physical memory below `boot_end` in large pages, but where the `image`
-/// lies in pages, read-only over `text`.
+/// lies in pages, read-only over `text` and `rodata`; all but the text's
+/// pages get `no_execute`.
 ///
 /// # Safety
 ///
@@ -602,7 +621,9 @@ unsafe fn map_kernel_space(
     pml4: PhysAddr,
     image: Range<PhysAddr>,
     text: Range<PhysAddr>,
+    rodata: Range<PhysAddr>,
     boot_end: PhysAddr,
+    no_execute: PageTableFlags,
 ) {
     let slots = ENTRIES - KERNEL_SLOT;
     let pdps = alloc_tables(slots);
@@ -651,7 +672,10 @@ unsafe fn map_kernel_space(
                 let table = image_tables + (page - image_pages.start) * PAGE_SIZE;
                 entry.set_addr(frame(table), TABLE);
             } else {
-                entry.set_addr(frame(PhysAddr(page * LARGE_PAGE_SIZE)), LARGE_PAGE);
+                entry.set_addr(
+                    frame(PhysAddr(page * LARGE_PAGE_SIZE)),
+                    LARGE_PAGE | no_execute,
+                );
             }
         }
         for (table, entry) in window[large..].iter_mut().enumerate() {
@@ -665,8 +689,10 @@ unsafe fn map_kernel_space(
             let address = start + page * PAGE_SIZE;
             let flags = if text.contains(&address) {
                 TEXT_PAGE
+            } else if rodata.contains(&address) {
+                TEXT_PAGE | no_execute
             } else {
-                WINDOW_PAGE
+                WINDOW_PAGE | no_execute
             };
             entry.set_addr(frame(address), flags);
         }
@@ -674,20 +700,23 @@ unsafe fn map_kernel_space(
 }
 
 /// Maps the first `size` bytes of physical memory into `pml4`, at the
-/// direct map, in large pages.
+/// direct map, in large pages with `no_execute`.
 ///
 /// # Safety
 ///
 /// Runs on the boot CPU only, after boot memory's bootstrap; `pml4` comes
 /// from `alloc_tables`.
-unsafe fn map_direct(pml4: PhysAddr, size: usize) {
+unsafe fn map_direct(pml4: PhysAddr, size: usize, no_execute: PageTableFlags) {
     let count = size / DIRECTORY_SIZE;
     let slots = count.div_ceil(ENTRIES);
     let (pdps, directories) = (alloc_tables(slots), alloc_tables(count));
     // SAFETY: guaranteed by the caller; fresh tables.
     unsafe {
         for (page, entry) in entries(directories, count).iter_mut().enumerate() {
-            entry.set_addr(frame(PhysAddr(page * LARGE_PAGE_SIZE)), DIRECT_MAP_PAGE);
+            entry.set_addr(
+                frame(PhysAddr(page * LARGE_PAGE_SIZE)),
+                DIRECT_MAP_PAGE | no_execute,
+            );
         }
         for (directory, entry) in entries(pdps, slots).iter_mut().take(count).enumerate() {
             entry.set_addr(frame(directories + directory * PAGE_SIZE), TABLE);
