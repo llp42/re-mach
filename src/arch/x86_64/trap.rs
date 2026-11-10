@@ -267,10 +267,12 @@ extern "sysv64" fn user_trap(frame: &TrapFrame) -> ! {
             let thread = smp::current()
                 .active_thread()
                 .expect("user_trap: no current thread");
-            let access = if PageFaultErrorCode::from_bits_truncate(frame.error_code)
-                .contains(PageFaultErrorCode::CAUSED_BY_WRITE)
-            {
+            let code = PageFaultErrorCode::from_bits_truncate(frame.error_code);
+            // An instruction fetch asks for running alone.
+            let access = if code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
                 Protection::READ | Protection::WRITE
+            } else if code.contains(PageFaultErrorCode::INSTRUCTION_FETCH) {
+                Protection::EXECUTE
             } else {
                 Protection::READ
             };

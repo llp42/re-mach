@@ -106,13 +106,13 @@ struct Found {
 }
 
 /// Finds the page at `offset` in `object`, whose `state` is locked and
-/// holds a paging operation for the call; so far only a page `object` lacks,
-/// which it fills with zeros there.
+/// holds a paging operation for the call; so far one resident there, or
+/// one `object` lacks, which it fills with zeros there.
 ///
 /// # Panics
 ///
-/// If no thread runs on the CPU. If `object` has the page, a pager, a
-/// shadow or a copy, or if no page is free: not yet.
+/// If no thread runs on the CPU. If the page is busy, `object` has a pager,
+/// a shadow or a copy, or if no page is free: not yet.
 fn fault_page(
     object: &'static Object,
     mut state: TokenGuard<'static, ObjectState>,
@@ -126,7 +126,14 @@ fn fault_page(
     task.faults.fetch_add(1, Ordering::Relaxed);
     if let Some(page) = state.lookup(offset) {
         assert!(!page.is_busy(), "vm_fault_page: a busy page, not yet");
-        panic!("vm_fault_page: a resident page, not yet");
+        // With no pager, never absent, in error or locked; reference bits
+        // are kept in software, so it stays on its paging queue.
+        page.set_busy();
+        assert!(
+            state.copy.is_none(),
+            "vm_fault_page: a copy object, not yet"
+        );
+        return Found { page, state };
     }
     // The placeholder: a real page, busy, where GNU Mach's is fictitious.
     // Objects have no colour of their own yet.

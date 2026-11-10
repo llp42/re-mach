@@ -82,8 +82,8 @@ const KERNEL_PAGE: PageTableFlags = TABLE;
 /// Entry of a lower table in a user physical map.
 const USER_TABLE: PageTableFlags = TABLE.union(PageTableFlags::USER_ACCESSIBLE);
 
-/// User memory's page, accessed preset: read-only unless `enter` adds
-/// writing.
+/// User memory's page, accessed preset: read-only and executable unless
+/// `enter` adds writing or `NO_EXECUTE`.
 const USER_PAGE: PageTableFlags = PageTableFlags::PRESENT
     .union(PageTableFlags::USER_ACCESSIBLE)
     .union(PageTableFlags::ACCESSED);
@@ -234,25 +234,43 @@ impl MachinePhysMap for PhysMap {
         drop(tables);
         let entry = table_entry(table, index(address, PAGE_SIZE));
         let old = entry.load(Ordering::Relaxed);
-        assert!(
-            old == 0 || entry_address(old) != physical,
-            "pmap_enter: the page mapped there already, not yet"
-        );
-        assert!(
-            old == 0,
-            "pmap_enter: pmap_remove_range on the page mapped there, not yet"
-        );
-        self.resident.fetch_add(1, Ordering::Relaxed);
-        assert!(
-            matches!(wiring, Wiring::Pageable),
-            "pmap_enter: wired, not yet"
-        );
         let mut flags = USER_PAGE;
         if protection.contains(Protection::WRITE) {
             flags |= PageTableFlags::WRITABLE;
         }
-        // A page that was not present is in no TLB, so nothing to invalidate.
-        entry.store(frame(physical).as_u64() | flags.bits(), Ordering::Release);
+        if !protection.contains(Protection::EXECUTE) {
+            flags |= *NO_EXECUTE.get().expect("pmap: not bootstrapped");
+        }
+        assert!(
+            matches!(wiring, Wiring::Pageable),
+            "pmap_enter: wired, not yet"
+        );
+        if old != 0 && entry_address(old) == physical {
+            // The protection changes in place, D kept; atomic, as the CPU
+            // sets it.
+            entry.update(Ordering::SeqCst, Ordering::Relaxed, |value| {
+                frame(physical).as_u64() | flags.bits() | (value & PageTableFlags::DIRTY.bits())
+            });
+            // After the entry changes, as in `protect`.
+            let current = 1 << smp::current().id();
+            let active = self.active_cpus.load(Ordering::SeqCst);
+            assert!(
+                active & !current == 0,
+                "PMAP_UPDATE_TLBS: signal_cpus, not yet"
+            );
+            if active & current != 0 {
+                tlb::flush(VirtAddr::new(u64::try_from(address).unwrap()));
+            }
+        } else {
+            assert!(
+                old == 0,
+                "pmap_enter: pmap_remove_range on the page mapped there, not yet"
+            );
+            self.resident.fetch_add(1, Ordering::Relaxed);
+            // A page that was not present is in no TLB, so nothing to
+            // invalidate.
+            entry.store(frame(physical).as_u64() | flags.bits(), Ordering::Release);
+        }
         drop(entries);
         for spare in spares.into_iter().flatten() {
             page::free(spare);
@@ -260,8 +278,12 @@ impl MachinePhysMap for PhysMap {
     }
 
     fn protect(&self, range: Range<usize>, protection: Protection) {
-        // Writing stays: nothing to do.
-        if protection.contains(Protection::READ | Protection::WRITE) {
+        let no_execute = *NO_EXECUTE.get().expect("pmap: not bootstrapped");
+        // Nothing to lower: writing stays, and running too or the CPU can't
+        // refuse it.
+        if protection.contains(Protection::READ | Protection::WRITE)
+            && (protection.contains(Protection::EXECUTE) || no_execute.is_empty())
+        {
             return;
         }
         assert!(
@@ -272,6 +294,17 @@ impl MachinePhysMap for PhysMap {
             protection.contains(Protection::READ),
             "pmap_protect: pmap_remove, not yet"
         );
+        // Rights only go: writing, and running as no-execute.
+        let clear = if protection.contains(Protection::WRITE) {
+            PageTableFlags::empty()
+        } else {
+            PageTableFlags::WRITABLE
+        };
+        let set = if protection.contains(Protection::EXECUTE) {
+            PageTableFlags::empty()
+        } else {
+            no_execute
+        };
         let tables = self.lock.lock();
         let current = 1 << smp::current().id();
         let active = self.active_cpus.load(Ordering::Relaxed) & current != 0;
@@ -290,14 +323,17 @@ impl MachinePhysMap for PhysMap {
                     .lock();
                 for page in (address..next).step_by(PAGE_SIZE) {
                     let entry = table_entry(table, index(page, PAGE_SIZE));
-                    // Only the table's lock holder clears writing.
-                    if !PageTableFlags::from_bits_truncate(entry.load(Ordering::Relaxed))
-                        .contains(PageTableFlags::PRESENT | PageTableFlags::WRITABLE)
+                    // Only the table's lock holder changes rights.
+                    let flags = PageTableFlags::from_bits_truncate(entry.load(Ordering::Relaxed));
+                    if !flags.contains(PageTableFlags::PRESENT)
+                        || (!flags.intersects(clear) && flags.contains(set))
                     {
                         continue;
                     }
                     // Atomic, as the CPU sets accessed and dirty bits.
-                    entry.fetch_and(!PageTableFlags::WRITABLE.bits(), Ordering::SeqCst);
+                    entry.update(Ordering::SeqCst, Ordering::Relaxed, |value| {
+                        (value & !clear.bits()) | set.bits()
+                    });
                     if active {
                         tlb::flush(VirtAddr::new(u64::try_from(page).unwrap()));
                     }

@@ -50,8 +50,9 @@ pub trait MachinePhysMap {
     /// # Panics
     ///
     /// If `address` is not a user address. If it is the kernel's, no page
-    /// is free for a table, `address` maps a page already, `physical` is
-    /// outside the page array, or for `Wiring::Wired`: not yet.
+    /// is free for a table, `address` maps another page already, `physical`
+    /// is outside the page array, for `Wiring::Wired`, or if `address` maps
+    /// `physical` already and it is active on another CPU: not yet.
     fn enter(&self, address: usize, physical: PhysAddr, protection: Protection, wiring: Wiring);
 
     /// Cuts the mappings of user `range` down to `protection`, skipping the
