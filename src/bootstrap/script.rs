@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The boot script, which starts the boot modules' tasks; so far its
-//! variables, the parse of its lines and their run, with no cleanup.
+//! variables, the parse of its lines, their run and its cleanup.
 
 use core::fmt;
 use core::mem::MaybeUninit;
@@ -114,16 +114,17 @@ impl<T> Drop for Table<T> {
     }
 }
 
-/// The boot script: its variables, and the commands its lines give.
+/// The boot script: its variables, and the commands its lines give. Its
+/// tables drop in cleanup's order.
 pub struct Script {
-    /// The variables set, in order.
-    symbols: Table<Symbol>,
-    /// The commands, a line's each, in order.
-    commands: Table<Command>,
     /// The commands' arguments, each command's in a row.
     arguments: Table<Value>,
     /// The commands' functions, each command's in a row.
     functions: Table<Function>,
+    /// The commands, a line's each, in order.
+    commands: Table<Command>,
+    /// The variables set, in order.
+    symbols: Table<Symbol>,
 }
 
 /// What can go wrong in the boot script; only the kinds met here.
@@ -272,7 +273,7 @@ impl Script {
     /// kalloc, runs it in its task, then frees them; the line holds the
     /// path, then each port argument's name in the task, in decimal, each
     /// ending with a NUL, and the arguments are their offsets in it. Then
-    /// runs each command's functions.
+    /// runs each command's functions, and drops the script.
     ///
     /// # Errors
     ///
@@ -284,7 +285,7 @@ impl Script {
     /// past its room: not yet. As `bootstrap::run_command`, if a command's
     /// thread can't be created or resumed, and `bootstrap::resume_task`, if
     /// its task can't be resumed.
-    pub fn run(&self) -> Result<(), Error> {
+    pub fn run(self) -> Result<(), Error> {
         for command in self.commands.items() {
             let task = command
                 .task
@@ -350,5 +351,17 @@ impl Script {
             }
         }
         Ok(())
+    }
+}
+
+impl Drop for Script {
+    /// Drops each command's reference on its task; the tables follow, as
+    /// GNU Mach's cleanup frees them.
+    fn drop(&mut self) {
+        for command in self.commands.items() {
+            if let Some(task) = command.task {
+                task.deallocate();
+            }
+        }
     }
 }

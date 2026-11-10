@@ -7,7 +7,6 @@ mod elf_load;
 mod script;
 
 use core::ffi::CStr;
-use core::mem;
 use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::{AtomicPtr, Ordering};
@@ -113,8 +112,6 @@ pub fn create() {
     script
         .run()
         .unwrap_or_else(|error| panic!("ERROR in executing boot script: {error}"));
-    // cleanup(0): not yet, so its tables stay.
-    mem::forget(script);
 }
 
 /// The boot script's task-create: a new task for the program at `path`,
