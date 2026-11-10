@@ -241,8 +241,8 @@ impl fmt::Display for TrapFrame {
 }
 
 /// Takes a trap from user mode, then returns the thread to user mode: a page
-/// fault is resolved in its task's map, and a first use of the FPU gives the
-/// thread the FPU.
+/// fault is resolved in its task's map, and a use of the FPU that traps
+/// gives the thread the FPU, loaded with its state.
 ///
 /// # Panics
 ///

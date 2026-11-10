@@ -4,7 +4,7 @@
 //! The floating-point unit: x87, SSE and the states XSAVE adds.
 
 use core::arch::asm;
-use core::ptr::NonNull;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
 
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
@@ -16,6 +16,7 @@ use super::per_cpu::PerCpu;
 use crate::slab::RawCache;
 use crate::smp::{self, MachinePerCpu as _};
 use crate::sync::{CriticalSection, OnceLock};
+use crate::thread::Thread;
 
 /// How a thread's floating-point state is saved; always in the standard
 /// layout, so the state a thread reads back is laid out alike on every CPU.
@@ -159,54 +160,89 @@ pub fn module_init() {
     );
 }
 
-/// Gives the current thread the FPU at its first use, which trapped: a
-/// buffer for its state, holding the default one, and the FPU loaded with it.
+/// Gives the current thread the FPU at a use that trapped, loaded with its
+/// saved state; at its first use, a buffer holding the default state, and
+/// the FPU loaded with that.
 ///
 /// # Panics
 ///
-/// If the FPU holds a thread's state, or the thread has a buffer: not yet;
-/// if no buffer can be allocated.
+/// If the FPU holds a thread's state, or no buffer can be allocated.
 pub fn no_extension_fault() {
     let thread = smp::current()
         .active_thread()
         .expect("fpnoextflt: no current thread");
-    assert!(
-        thread.machine_state().fpu.load(Ordering::Relaxed).is_null(),
-        "fp_load: a saved state, not yet"
-    );
-    let size = AREA_OFFSET + *STATE_SIZE.get().expect("fpu: not set up");
-    let state = STATE_CACHE
-        .get()
-        .expect("fpu: module not set up")
-        .allocate()
-        .unwrap_or_else(|error| panic!("fp_load: {error:?}"));
-    let default = DEFAULT_STATE.get().expect("fpu: module not set up").0;
-    // SAFETY: both buffers hold `size` bytes; the new one is the thread's
-    // alone.
-    unsafe { state.copy_from_nonoverlapping(default, size) };
-    thread
-        .machine_state()
-        .fpu
-        .store(state.as_ptr(), Ordering::Relaxed);
+    let saved = thread.machine_state().fpu.load(Ordering::Relaxed);
+    let source = if saved.is_null() {
+        let size = AREA_OFFSET + *STATE_SIZE.get().expect("fpu: not set up");
+        let state = STATE_CACHE
+            .get()
+            .expect("fpu: module not set up")
+            .allocate()
+            .unwrap_or_else(|error| panic!("fp_load: {error:?}"));
+        let default = DEFAULT_STATE.get().expect("fpu: module not set up").0;
+        // SAFETY: both buffers hold `size` bytes; the new one is the
+        // thread's alone.
+        unsafe { state.copy_from_nonoverlapping(default, size) };
+        thread
+            .machine_state()
+            .fpu
+            .store(state.as_ptr(), Ordering::Relaxed);
+        default.as_ptr()
+    } else {
+        saved
+    };
     let _section = CriticalSection::enter();
     let cpu = PerCpu::current();
     assert!(
         cpu.fpu_owner().is_null(),
-        "fpnoextflt: the FPU holds a thread's state, not yet"
+        "fpnoextflt: the FPU holds a thread's state"
     );
-    // SAFETY: the FPU is this thread's from here; the default area holds a
-    // state `module_init` saved, 64-byte aligned.
+    let features = FEATURES.get().copied().unwrap_or(0);
+    // SAFETY: the FPU is this thread's from here; the source holds a state
+    // a save left, past its header, 64-byte aligned.
     unsafe {
-        let area = default.add(AREA_OFFSET).as_ptr();
+        let area = source.add(AREA_OFFSET);
         asm!("clts", options(att_syntax, nostack));
+        // The mask in EDX:EAX: the states XCR0 enables.
         match SAVE.get().copied() {
             Some(Save::Fxsave) | None => {
                 asm!("fxrstor64 ({0})", in(reg) area, options(att_syntax, nostack));
             }
             Some(Save::Xsave | Save::XsaveOptimized) => {
-                asm!("xrstor64 ({0})", in(reg) area, in("eax") u32::MAX, in("edx") u32::MAX, options(att_syntax, nostack));
+                asm!("xrstor64 ({0})", in(reg) area, in("rax") features, in("rdx") features >> 32, options(att_syntax, nostack));
             }
         }
     }
     cpu.set_fpu_owner(thread);
+}
+
+/// Saves `thread`'s state to its buffer if the current CPU's FPU holds it,
+/// then sets TS so the next use traps and leaves the CPU with no FPU owner;
+/// inside a critical section.
+pub fn save_context(thread: &Thread) {
+    let cpu = PerCpu::current();
+    if !ptr::eq(cpu.fpu_owner(), thread) {
+        return;
+    }
+    let state = thread.machine_state().fpu.load(Ordering::Relaxed);
+    let features = FEATURES.get().copied().unwrap_or(0);
+    // SAFETY: the FPU's owner has a buffer, 64-byte aligned, and TS is
+    // clear while it owns the FPU.
+    unsafe {
+        let area = state.add(AREA_OFFSET);
+        // The mask in EDX:EAX: the states XCR0 enables.
+        match SAVE.get().copied() {
+            Some(Save::Fxsave) | None => {
+                asm!("fxsave64 ({0})", in(reg) area, options(att_syntax, nostack));
+            }
+            Some(Save::Xsave) => {
+                asm!("xsave64 ({0})", in(reg) area, in("rax") features, in("rdx") features >> 32, options(att_syntax, nostack));
+            }
+            Some(Save::XsaveOptimized) => {
+                asm!("xsaveopt64 ({0})", in(reg) area, in("rax") features, in("rdx") features >> 32, options(att_syntax, nostack));
+            }
+        }
+        Cr0::update(|flags| flags.insert(Cr0Flags::TASK_SWITCHED));
+    }
+    cpu.clear_fpu_owner();
 }

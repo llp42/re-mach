@@ -161,6 +161,11 @@ impl PerCpu {
             .store(ptr::from_ref(thread).cast_mut(), Ordering::Relaxed);
     }
 
+    /// Takes its FPU from its thread, on its CPU.
+    pub fn clear_fpu_owner(&self) {
+        self.fpu_owner.store(ptr::null_mut(), Ordering::Relaxed);
+    }
+
     /// Holds `vector` back if this CPU is in a critical section, returning
     /// whether it did; with interrupts off.
     pub fn hold(&self, vector: usize) -> bool {
