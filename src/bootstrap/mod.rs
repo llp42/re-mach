@@ -190,6 +190,7 @@ fn run_command(module: &'static BootModule, task: &'static Task, line: &[u8], ar
         done = info.done.lock();
     }
     drop(done);
+    thread.deallocate();
     print!("\n");
 }
 
