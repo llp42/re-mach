@@ -7,7 +7,7 @@
 use core::ptr;
 
 use super::INTEGER_32_TYPE;
-use crate::ipc::kmsg::{COMPLEX, Kmsg};
+use crate::ipc::kernel_message::{COMPLEX, KernelMessage};
 use crate::ipc::port::Port;
 use crate::{ipc_host, machine};
 
@@ -15,7 +15,7 @@ use crate::{ipc_host, machine};
 const BASE: i32 = 2600;
 
 /// The routine serving a request of `id`, if one is written.
-pub(super) fn routine(id: i32) -> Option<fn(&Kmsg, &mut Kmsg) -> !> {
+pub(super) fn routine(id: i32) -> Option<fn(&KernelMessage, &mut KernelMessage) -> !> {
     match id.wrapping_sub(BASE) {
         35 => Some(host_reboot),
         _ => None,
@@ -29,7 +29,7 @@ pub(super) fn routine(id: i32) -> Option<fn(&Kmsg, &mut Kmsg) -> !> {
 /// # Panics
 ///
 /// On any other request: not yet; as `machine::host_reboot`.
-fn host_reboot(request: &Kmsg, _reply: &mut Kmsg) -> ! {
+fn host_reboot(request: &KernelMessage, _reply: &mut KernelMessage) -> ! {
     let header = request.header();
     let body = request.body();
     // The header, the options' type word, the options and 4 bytes of padding.

@@ -5,7 +5,7 @@
 
 mod mach_host;
 
-use crate::ipc::kmsg::{Header, Kmsg};
+use crate::ipc::kernel_message::{Header, KernelMessage};
 
 /// The size of a reply's buffer.
 const REPLY_SIZE: usize = 8192;
@@ -29,8 +29,8 @@ const REPLY_HEADER_SIZE: u32 = 48;
     clippy::needless_pass_by_value,
     reason = "ipc_kobject_server frees or destroys the request"
 )]
-pub fn server(request: Kmsg) -> ! {
-    let mut reply = Kmsg::allocate(REPLY_SIZE)
+pub fn server(request: KernelMessage) -> ! {
+    let mut reply = KernelMessage::allocate(REPLY_SIZE)
         .unwrap_or_else(|_| panic!("ipc_kobject_server: dropping request, not yet"));
     let header = request.header();
     // To the request's reply port, with the right it carries.
