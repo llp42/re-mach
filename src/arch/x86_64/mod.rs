@@ -39,7 +39,7 @@ use core::mem::MaybeUninit;
 use core::{ptr, slice};
 
 use x86_64::instructions::{hlt, interrupts};
-use x86_64::registers::control::{Cr0, Cr0Flags};
+use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
 use x86_64::registers::rflags::{self, RFlags};
 
 use crate::arch::Machine;
@@ -167,6 +167,13 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
         Cr0::update(|flags| {
             flags.remove(Cr0Flags::CACHE_DISABLE | Cr0Flags::NOT_WRITE_THROUGH);
         });
+    }
+    let has_smep = cpuid::cpu_id()
+        .get_extended_feature_info()
+        .is_some_and(|info| info.has_smep());
+    // SAFETY: the kernel runs no code at user addresses.
+    unsafe {
+        Cr4::update(|flags| flags.set(Cr4Flags::SUPERVISOR_MODE_EXECUTION_PROTECTION, has_smep));
     }
     // SAFETY: the boot CPU, once.
     unsafe { gdt::init() };

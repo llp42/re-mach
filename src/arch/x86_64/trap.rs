@@ -293,8 +293,8 @@ extern "sysv64" fn user_trap(frame: &TrapFrame) -> ! {
 /// # Panics
 ///
 /// On any other trap; on a page fault in kernel space or at address 0, not
-/// yet; on one on a user address in a kernel thread, or that neither
-/// resolves nor recovers.
+/// yet; on one on a user address for an instruction fetch, in a kernel
+/// thread, or that neither resolves nor recovers.
 extern "sysv64" fn kernel_trap(frame: &mut TrapFrame) {
     let cr2 = Cr2::read_raw();
     let address = usize::try_from(cr2).unwrap();
@@ -304,7 +304,11 @@ extern "sysv64" fn kernel_trap(frame: &mut TrapFrame) {
         == Some(ExceptionVector::Page);
     // GNU Mach takes address 0 in the kernel map.
     let user = address != 0 && address < MAX_USER_ADDRESS;
-    if page_fault && user {
+    // The kernel runs no code at user addresses: such a fetch is fatal.
+    let fetch = page_fault
+        && PageFaultErrorCode::from_bits_truncate(frame.error_code)
+            .contains(PageFaultErrorCode::INSTRUCTION_FETCH);
+    if page_fault && user && !fetch {
         // The interrupt gate turned interrupts off; the fault had them as
         // its frame says.
         if frame.interrupted.cpu_flags.contains(RFlags::INTERRUPT_FLAG) {
@@ -349,6 +353,10 @@ extern "sysv64" fn kernel_trap(frame: &mut TrapFrame) {
     assert!(
         !page_fault || user,
         "kernel_trap: a page fault in the kernel map, not yet"
+    );
+    assert!(
+        !fetch,
+        "kernel_trap: an instruction fetch at a user address"
     );
     panic!("trap")
 }
