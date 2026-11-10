@@ -287,6 +287,18 @@ fn init_time_of_day() {
     }
 }
 
+/// Tells the BIOS not to clear and test memory at the next reset, with
+/// its warm-boot flag, on the boot CPU.
+fn set_warm_boot() {
+    // SAFETY: the BIOS data area's reset flag, below the memory the kernel
+    // manages, reached through the direct map.
+    unsafe {
+        PhysAddr(0x472)
+            .direct_map_ptr::<u16>()
+            .write_volatile(0x1234);
+    }
+}
+
 /// Gives each CPU the ACPI tables list but the boot CPU its slot, the
 /// boot CPU's kind, on the boot CPU.
 fn init_slots() {
@@ -338,6 +350,7 @@ impl Machine for X86_64 {
         init_slots();
         apic::configure_io_apics();
         init_time_of_day();
+        set_warm_boot();
         hpet::init();
         counter::init();
     }
