@@ -68,8 +68,7 @@ impl RawCache {
             cpus: CpuLocal::new(CpuSlabs {
                 active: None,
                 carved: 0,
-                taken: 0,
-                taken_count: 0,
+                taken: Chain { head: 0, count: 0 },
                 slabs: 0,
                 objects: 0,
             }),
@@ -102,10 +101,9 @@ impl RawCache {
     pub fn allocate(&self) -> Result<NonNull<u8>, Error> {
         loop {
             let mut cpu = self.cpus.lock();
-            if cpu.taken == 0
+            if cpu.taken.count == 0
                 && cpu.active.is_none_or(|page| {
-                    cpu.carved == self.buffers_per_slab
-                        && page.slab.free.load(Ordering::Relaxed) == 0
+                    cpu.carved == self.buffers_per_slab && page.slab.free.count() == 0
                 })
             {
                 // The lists' lock is taken inside the CPU's slot.
@@ -120,8 +118,7 @@ impl RawCache {
                         let Some(page) = lists.exhausted.pop_front() else {
                             break;
                         };
-                        let freed =
-                            usize::try_from(page.slab.free.load(Ordering::Relaxed) >> 32).unwrap();
+                        let freed = page.slab.free.count();
                         match freed {
                             0 => left.push_back(page),
                             _ if freed == self.buffers_per_slab => lists.free.push_back(page),
@@ -138,22 +135,19 @@ impl RawCache {
                 }
                 drop(lists);
             }
-            if cpu.taken == 0
+            if cpu.taken.count == 0
                 && let Some(page) = cpu.active
-                && page.slab.free.load(Ordering::Relaxed) != 0
+                && page.slab.free.count() != 0
             {
-                // Acquire, to see the links the frees wrote.
-                let free = page.slab.free.swap(0, Ordering::Acquire);
-                cpu.taken = free & 0xffff_ffff;
-                cpu.taken_count = free >> 32;
+                cpu.taken = page.slab.free.take();
             }
             let (page, offset) = match cpu.active {
-                Some(page) if cpu.taken != 0 => {
-                    let offset = usize::try_from(cpu.taken - 1).unwrap();
+                Some(page) if cpu.taken.count != 0 => {
+                    let offset = usize::try_from(cpu.taken.head - 1).unwrap();
                     // SAFETY: a taken buffer is free and this CPU's alone, and
                     // starts with the link to the next.
-                    cpu.taken = unsafe { self.buffer::<u64>(page, offset).read() };
-                    cpu.taken_count -= 1;
+                    cpu.taken.head = unsafe { self.buffer::<u64>(page, offset).read() };
+                    cpu.taken.count -= 1;
                     (page, offset)
                 }
                 Some(page) if cpu.carved < self.buffers_per_slab => {
@@ -176,7 +170,7 @@ impl RawCache {
                     // A CPU's slabs index their pages, at colour 0.
                     let page = page::allocate(cpu.slabs).ok_or(Error::ResourceShortage)?;
                     // A new slab has nothing freed to it.
-                    page.slab.free.store(0, Ordering::Relaxed);
+                    page.slab.free.take();
                     cpu.slabs += 1;
                     cpu.active = Some(page);
                     cpu.carved = 1;
@@ -201,19 +195,14 @@ impl RawCache {
         let page =
             vm::kernel::page_of(start.addr().get()).expect("slab: zone outside the page array");
         let end = self.buffers_per_slab * self.buffer_size;
-        for offset in (0..end).step_by(self.buffer_size) {
-            let next = offset + self.buffer_size;
-            let link = if next < end {
-                u64::try_from(next + 1).unwrap()
-            } else {
-                0
-            };
-            // SAFETY: the zone is this slab's alone, and its buffers at least 8
-            // bytes, 8-aligned.
-            unsafe { start.add(offset).cast::<u64>().write(link) };
+        // A new slab has nothing freed to it.
+        page.slab.free.take();
+        // Pushed from the last, so the list starts at the first.
+        for offset in (0..end).step_by(self.buffer_size).rev() {
+            // SAFETY: the zone is this slab's alone, its buffer at `offset`
+            // inside it.
+            unsafe { page.slab.free.push(start.add(offset), offset) };
         }
-        let count = u64::try_from(self.buffers_per_slab).unwrap();
-        page.slab.free.store((count << 32) | 1, Ordering::Relaxed);
         Ok(page)
     }
 
@@ -224,6 +213,27 @@ impl RawCache {
             (page.address() + offset).direct_map_ptr()
         } else {
             ptr::with_exposed_provenance_mut(vm::kernel::address_of(page) + offset)
+        }
+    }
+
+    /// The slab `buffer` is in, by its page, and its offset there: the
+    /// inverse of `buffer`. A slab of a page is found through the direct
+    /// map, a zone by masking with its size.
+    ///
+    /// # Panics
+    ///
+    /// If the page array does not cover `buffer`.
+    fn slab_of(&self, buffer: NonNull<u8>) -> (&'static Page, usize) {
+        if self.slab_size == PAGE_SIZE {
+            let address = PhysAddr::from_direct_map(buffer.as_ptr());
+            let page = page::lookup(address).expect("slab: buffer outside the page array");
+            (page, address - page.address())
+        } else {
+            // A zone is aligned to its size, and its first page holds its
+            // state.
+            let start = buffer.addr().get() & !(self.slab_size - 1);
+            let page = vm::kernel::page_of(start).expect("slab: zone outside the page array");
+            (page, buffer.addr().get() - start)
         }
     }
 
@@ -238,46 +248,91 @@ impl RawCache {
     ///
     /// If the page array does not cover `buffer`.
     pub unsafe fn free(&self, buffer: NonNull<u8>) {
-        let address = PhysAddr::from_direct_map(buffer.as_ptr());
-        let page = page::lookup(address).expect("slab: buffer outside the page array");
-        let head = u64::try_from(address - page.address() + 1).unwrap();
-        let mut free = page.slab.free.load(Ordering::Relaxed);
-        loop {
-            // SAFETY: the buffer is the caller's to give up, and at least 8
-            // bytes, 8-aligned.
-            unsafe { buffer.cast::<u64>().write(free & 0xffff_ffff) };
-            // Release, so the swap that takes the list sees the link. Frees
-            // only push and the owner takes the whole list, so a word that
-            // compares equal is the list as it stands: no ABA.
-            match page.slab.free.compare_exchange_weak(
-                free,
-                (((free >> 32) + 1) << 32) | head,
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(current) => free = current,
-            }
-        }
+        let (page, offset) = self.slab_of(buffer);
+        // SAFETY: the buffer is the caller's to give up, its slab's at
+        // `offset`.
+        unsafe { page.slab.free.push(buffer, offset) };
         self.cpus.lock().objects -= 1;
     }
 }
 
 /// A slab's state, in its page.
 pub struct Slab {
-    /// The buffers freed to it: in the low 32 bits the first one's offset
-    /// in the slab plus one, 0 for none, and in the high 32 bits how many.
-    /// Each starts with the next one's offset plus one, as a `u64`.
-    free: AtomicU64,
+    /// The buffers freed to it.
+    free: FreeList,
 }
 
 impl Slab {
     /// One with no buffers freed to it.
     pub const fn new() -> Self {
         Self {
-            free: AtomicU64::new(0),
+            free: FreeList::new(),
         }
     }
+}
+
+/// A slab's free buffers, pushed from any CPU and taken whole: in one word,
+/// the first one's offset in the slab plus one, 0 for none, in the low 32
+/// bits, and how many in the high 32. Each starts with the next one's
+/// offset plus one, as a `u64`.
+struct FreeList(AtomicU64);
+
+impl FreeList {
+    /// An empty one.
+    const fn new() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    /// Adds `buffer`, at `offset` in the slab, with a lock-free push.
+    ///
+    /// # Safety
+    ///
+    /// `buffer` is the slab's at `offset`, free, and no one else's.
+    unsafe fn push(&self, buffer: NonNull<u8>, offset: usize) {
+        let head = u64::try_from(offset + 1).unwrap();
+        let mut word = self.0.load(Ordering::Relaxed);
+        loop {
+            // SAFETY: the buffer is the caller's, and at least 8 bytes,
+            // 8-aligned.
+            unsafe { buffer.cast::<u64>().write(word & 0xffff_ffff) };
+            // Release, so the take sees the link. Pushes only add and a take
+            // empties the list, so a word that compares equal is the list as
+            // it stands: no ABA.
+            match self.0.compare_exchange_weak(
+                word,
+                (((word >> 32) + 1) << 32) | head,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(current) => word = current,
+            }
+        }
+    }
+
+    /// Takes every buffer, leaving it empty.
+    fn take(&self) -> Chain {
+        // Acquire, to see the links the pushes wrote.
+        let word = self.0.swap(0, Ordering::Acquire);
+        Chain {
+            head: word & 0xffff_ffff,
+            count: usize::try_from(word >> 32).unwrap(),
+        }
+    }
+
+    /// How many buffers it holds.
+    fn count(&self) -> usize {
+        usize::try_from(self.0.load(Ordering::Relaxed) >> 32).unwrap()
+    }
+}
+
+/// Buffers taken from a free list, linked as there.
+#[derive(Clone, Copy)]
+struct Chain {
+    /// The first one's offset in the slab plus one, 0 for none.
+    head: u64,
+    /// How many.
+    count: usize,
 }
 
 /// A cache's slabs no CPU hands objects out from, each carved whole.
@@ -298,12 +353,9 @@ struct CpuSlabs {
     active: Option<&'static Page>,
     /// How many of the active slab's objects were handed out, from its start.
     carved: usize,
-    /// The first of the buffers it took from the active slab's free list
-    /// and has not handed out, linked as there: its offset plus one, 0 for
-    /// none.
-    taken: u64,
-    /// How many of those buffers there are.
-    taken_count: u64,
+    /// The buffers it took from the active slab's free list and has not
+    /// handed out.
+    taken: Chain,
     /// How many of the cache's slabs it made.
     slabs: usize,
     /// How many of the cache's objects it handed out, less those freed on

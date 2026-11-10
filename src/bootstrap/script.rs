@@ -104,6 +104,16 @@ impl<T> Table<T> {
     }
 }
 
+impl<T> Drop for Table<T> {
+    /// Frees the room `reserve` allocated, if any.
+    fn drop(&mut self) {
+        let size = size_of_val(self.room);
+        // SAFETY: the room is `reserve`'s kalloc buffer of `size` bytes, or
+        // of 0, and unused after.
+        unsafe { kalloc::free(NonNull::from(&mut *self.room).cast(), size) };
+    }
+}
+
 /// The boot script: its variables, and the commands its lines give.
 pub struct Script {
     /// The variables set, in order.
@@ -259,10 +269,10 @@ impl Script {
     }
 
     /// Runs the commands: builds each one's command line and arguments from
-    /// kalloc, then runs it in its task; the line holds the path, then each
-    /// port argument's name in the task, in decimal, each ending with a NUL,
-    /// and the arguments are their offsets in it. Then runs each command's
-    /// functions.
+    /// kalloc, runs it in its task, then frees them; the line holds the
+    /// path, then each port argument's name in the task, in decimal, each
+    /// ending with a NUL, and the arguments are their offsets in it. Then
+    /// runs each command's functions.
     ///
     /// # Errors
     ///
@@ -322,6 +332,9 @@ impl Script {
                 line.push(0);
             }
             bootstrap::run_command(command.module, task, line.items(), arguments.items());
+            // The line, then the arguments, as GNU Mach frees them.
+            drop(line);
+            drop(arguments);
         }
         for command in self.commands.items() {
             for function in &self.functions.items()[command.functions.clone()] {

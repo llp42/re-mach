@@ -51,3 +51,28 @@ pub fn allocate(size: usize) -> Result<NonNull<u8>, Error> {
         .unwrap_or_else(|| panic!("kalloc: {size} bytes, above the caches, not yet"));
     CACHES[index].allocate()
 }
+
+/// Gives back `buffer`, of `size` bytes, to the cache `allocate` took it
+/// from; nothing for 0 bytes.
+///
+/// # Safety
+///
+/// Unless `size` is 0, `buffer` came from `allocate(size)`, and is not used
+/// again.
+///
+/// # Panics
+///
+/// If `size` is above 16 KiB, which the kernel map serves: not yet. As
+/// `RawCache::free`.
+pub unsafe fn free(buffer: NonNull<u8>, size: usize) {
+    if size == 0 {
+        return;
+    }
+    // Each cache's objects are 32 << its index bytes.
+    let index = (0..CACHES.len())
+        .find(|index| 32 << index >= size)
+        .unwrap_or_else(|| panic!("kfree: {size} bytes, above the caches, not yet"));
+    // SAFETY: the buffer came from this cache, the one `allocate` picks for
+    // `size`.
+    unsafe { CACHES[index].free(buffer) };
+}
