@@ -26,7 +26,7 @@ use crate::vm::kernel::{KERNEL_MAP, KernelStack};
 /// A thread's machine state: its user registers, and where its kernel
 /// registers are saved while it does not run.
 #[repr(C, align(16))]
-pub struct Pcb {
+pub struct MachineState {
     /// Its user registers, laid out as a trap from user mode saves them.
     user: UnsafeCell<TrapFrame>,
     /// Its kernel stack pointer while it does not run: the callee-saved
@@ -45,7 +45,7 @@ pub struct Pcb {
 
 // SAFETY: only its thread, or the CPU as that thread traps, writes its user
 // registers.
-unsafe impl Sync for Pcb {}
+unsafe impl Sync for MachineState {}
 
 /// What a user stack pointer is aligned to, as the System V ABI asks.
 const USER_STACK_ALIGNMENT: usize = 16;
@@ -116,9 +116,9 @@ unsafe extern "sysv64" fn switch_stacks(
 }
 
 /// The cache process control blocks come from.
-static CACHE: Cache<Pcb> = Cache::new("pcb");
+static CACHE: Cache<MachineState> = Cache::new("pcb");
 
-impl MachineThread for Pcb {
+impl MachineThread for MachineState {
     fn module_init() {
         CACHE.register();
         fpu::module_init();
@@ -155,7 +155,8 @@ impl MachineThread for Pcb {
     }
 
     unsafe fn load(&self) -> ! {
-        // A trap from user mode saves the thread's registers in its PCB.
+        // A trap from user mode saves the thread's registers in its machine
+        // state.
         let user_end = self.user.get().addr() + size_of::<TrapFrame>();
         let cpu = PerCpu::current();
         let tss = cpu.tss();
@@ -198,7 +199,8 @@ impl MachineThread for Pcb {
             owner.is_null() || ptr::eq(owner, next_thread) || kernel,
             "fpu_save_context: not yet"
         );
-        // A trap from user mode saves the thread's registers in its PCB.
+        // A trap from user mode saves the thread's registers in its machine
+        // state.
         let user_end = next.user.get().addr() + size_of::<TrapFrame>();
         let tss = cpu.tss();
         let mut updated = tss.get();
@@ -231,7 +233,7 @@ impl MachineThread for Pcb {
             .expect("set_user_regs: no current thread");
         // SAFETY: the current thread's own registers, written by nothing else
         // while it runs in the kernel.
-        let user = unsafe { &mut *thread.pcb().user.get() };
+        let user = unsafe { &mut *thread.machine_state().user.get() };
         user.interrupted.stack_pointer = VirtAddr::new(u64::try_from(arguments).unwrap());
         user.interrupted.instruction_pointer = VirtAddr::new(u64::try_from(entry).unwrap());
         arguments
@@ -275,7 +277,7 @@ impl MachineThread for Pcb {
                 "addq $16, %rsp",
                 "swapgs",
                 "iretq",
-                user = in(reg) thread.pcb().user.get(),
+                user = in(reg) thread.machine_state().user.get(),
                 options(att_syntax, noreturn),
             );
         }

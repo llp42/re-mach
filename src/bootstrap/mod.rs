@@ -252,7 +252,7 @@ fn load_program() -> ! {
     *done = true;
     drop(done);
     sched::wakeup(event);
-    arch::Pcb::return_to_user()
+    arch::MachineState::return_to_user()
 }
 
 /// Maps the current task's stack into `map`, as `image` asks, and copies
@@ -274,7 +274,7 @@ fn build_arguments_and_stack<'a>(
     // The count, the pointers and their end, then the environment's end.
     let slots = SLOT_SIZE + (count + 1 + 1) * SLOT_SIZE;
     let stack_size = STACK_SIZE.next_multiple_of(PAGE_SIZE);
-    let stack_base = arch::Pcb::user_stack_low(stack_size);
+    let stack_base = arch::MachineState::user_stack_low(stack_size);
     // Here and below, results go unchecked, as GNU Mach's do.
     let _ = vm::user::map(
         map,
@@ -287,7 +287,7 @@ fn build_arguments_and_stack<'a>(
         Protection::all(),
         Inheritance::Copy,
     );
-    let mut slot = arch::Pcb::set_user_registers(
+    let mut slot = arch::MachineState::set_user_registers(
         stack_base..stack_base + stack_size,
         image.entry,
         strings + slots,

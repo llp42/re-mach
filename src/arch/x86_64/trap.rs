@@ -18,7 +18,7 @@ use x86_64::structures::idt::{ExceptionVector, InterruptStackFrameValue, PageFau
 use super::memory_layout::{MAX_USER_ADDRESS, PAGE_SIZE};
 use super::per_cpu::KERNEL_STACK;
 use super::serial::Serial;
-use super::{Pcb, fpu, gdt};
+use super::{MachineState, fpu, gdt};
 use crate::smp;
 use crate::thread::MachineThread as _;
 use crate::vm::kernel::KERNEL_MAP;
@@ -26,9 +26,9 @@ use crate::vm::{self, Protection};
 
 // Each entry pushes a zero error code, unless the CPU pushed one, and its
 // vector; the common path saves the registers as a `TrapFrame`. A trap from
-// user mode, saved in the thread's PCB, swaps the GS base and calls
-// `user_trap` on the kernel stack; one from kernel mode calls `kernel_trap`
-// and returns.
+// user mode, saved in the thread's machine state, swaps the GS base and
+// calls `user_trap` on the kernel stack; one from kernel mode calls
+// `kernel_trap` and returns.
 global_asm!(
     ".pushsection .text, \"ax\"",
     ".macro entry name, vector",
@@ -283,7 +283,7 @@ extern "sysv64" fn user_trap(frame: &TrapFrame) -> ! {
             panic!("i386_exception: not yet")
         }
     }
-    Pcb::return_to_user()
+    MachineState::return_to_user()
 }
 
 /// Takes a trap from kernel mode: a page fault on a user address is
@@ -330,8 +330,8 @@ extern "sysv64" fn kernel_trap(frame: &mut TrapFrame) {
             return;
         }
         // A copy's recovery point, for a fault at its stack pointer.
-        let recovery = thread.pcb().onfault.load(Ordering::Relaxed);
-        let stack = thread.pcb().onfault_stack.load(Ordering::Relaxed);
+        let recovery = thread.machine_state().onfault.load(Ordering::Relaxed);
+        let stack = thread.machine_state().onfault_stack.load(Ordering::Relaxed);
         if recovery != 0
             && u64::try_from(stack).unwrap() == frame.interrupted.stack_pointer.as_u64()
         {

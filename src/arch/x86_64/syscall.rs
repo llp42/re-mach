@@ -10,14 +10,14 @@ use x86_64::registers::rflags::RFlags;
 
 use super::per_cpu::{KERNEL_STACK, PRIVILEGE_STACK, USER_STACK};
 use super::trap::TrapFrame;
-use super::{Pcb, copy, gdt};
+use super::{MachineState, copy, gdt};
 use crate::syscall::MACH_TRAPS;
 use crate::thread::MachineThread as _;
 
 // SYSCALL enters with interrupts off, rip in rcx and rflags in r11: the
-// user registers go into the thread's PCB as a trap from user mode saves
-// them, then the kernel stack is taken, interrupts turned on, and
-// `system_call` runs the call.
+// user registers go into the thread's machine state as a trap from user
+// mode saves them, then the kernel stack is taken, interrupts turned on,
+// and `system_call` runs the call.
 global_asm!(
     ".pushsection .text, \"ax\"",
     ".globl syscall_entry",
@@ -73,7 +73,7 @@ unsafe extern "C" {
 ///
 /// # Safety
 ///
-/// `frame` is the current thread's user registers in its PCB.
+/// `frame` is the current thread's user registers in its machine state.
 ///
 /// # Panics
 ///
@@ -108,7 +108,7 @@ unsafe extern "sysv64" fn system_call(frame: *mut TrapFrame) -> ! {
         }
         frame.rax = u64::from(trap.call(&arguments));
     }
-    Pcb::return_to_user()
+    MachineState::return_to_user()
 }
 
 /// Turns SYSCALL on, entering at `syscall_entry`, and points SYSRET at the
