@@ -21,7 +21,7 @@ use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
 use crate::smp::{self, MachinePerCpu as _};
 use crate::thread::{self, MachineThread, Thread};
-use crate::vm::kernel::{KERNEL_MAP, KernelStack};
+use crate::vm::kernel::KernelStack;
 
 /// A thread's machine state: its user registers, and where its kernel
 /// registers are saved while it does not run.
@@ -185,20 +185,8 @@ impl MachineThread for MachineState {
     }
 
     unsafe fn switch(&self, next: &Self, current: &'static Thread) -> &'static Thread {
+        fpu::save_context(current);
         let cpu = PerCpu::current();
-        // With no FPU save here yet, another user thread must not find the
-        // owner's state live; the CPU already names `next` its thread.
-        let next_thread = smp::current()
-            .active_thread()
-            .expect("switch_context: no next thread");
-        let owner = cpu.fpu_owner();
-        let kernel = KERNEL_MAP
-            .get()
-            .is_some_and(|map| ptr::eq(map, &raw const *next_thread.task().map));
-        assert!(
-            owner.is_null() || ptr::eq(owner, next_thread) || kernel,
-            "fpu_save_context: not yet"
-        );
         // A trap from user mode saves the thread's registers in its machine
         // state.
         let user_end = next.user.get().addr() + size_of::<TrapFrame>();
