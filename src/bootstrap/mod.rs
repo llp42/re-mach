@@ -29,8 +29,8 @@ use elf_load::{Image, SectionType, Segment};
 use script::{Script, Value};
 
 /// Starts the boot modules' tasks: finds the modules, sets the boot
-/// script's variables, parses the modules' command lines and runs the
-/// script; so far the modules' pages are not freed.
+/// script's variables, parses the modules' command lines, runs the script,
+/// then frees the modules' pages.
 ///
 /// # Panics
 ///
@@ -112,6 +112,11 @@ pub fn create() {
     script
         .run()
         .unwrap_or_else(|error| panic!("ERROR in executing boot script: {error}"));
+    // Every page of each copy, which took whole pages.
+    for module in modules {
+        let (start, end) = (module.range.start, module.range.end);
+        vm::page::release(start..start + (end - start).next_multiple_of(PAGE_SIZE));
+    }
 }
 
 /// The boot script's task-create: a new task for the program at `path`,
