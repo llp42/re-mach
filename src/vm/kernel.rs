@@ -8,7 +8,7 @@ use core::ptr::{self, NonNull};
 use super::map::Map;
 use super::object::KERNEL_OBJECT;
 use super::page::{self, Page};
-use super::pmap::MachinePmap as _;
+use super::phys_map::MachinePhysMap as _;
 use super::{Inheritance, Protection};
 use core::ops::Range;
 
@@ -39,9 +39,9 @@ fn kernel_map() -> &'static Map {
 pub fn init() {
     // A range can't end past the last page, so the map stops before it.
     let bounds = MIN_KERNEL_ADDRESS..MAX_KERNEL_ADDRESS - PAGE_SIZE + 1;
-    let map = Map::new(arch::Pmap::kernel(), bounds);
+    let map = Map::new(arch::PhysMap::kernel(), bounds);
     if let Err(error) = map.enter(
-        arch::Pmap::boot_space(),
+        arch::PhysMap::boot_space(),
         Protection::READ | Protection::WRITE,
         Protection::all(),
         Inheritance::Copy,
@@ -86,7 +86,7 @@ pub fn map_device(physical: PhysAddr, size: usize) -> Result<NonNull<u8>, Error>
         Protection::all(),
         None,
     )?;
-    arch::Pmap::enter_device(range.clone(), PhysAddr(physical.0 - offset));
+    arch::PhysMap::enter_device(range.clone(), PhysAddr(physical.0 - offset));
     Ok(NonNull::new(ptr::with_exposed_provenance_mut(range.start + offset)).unwrap())
 }
 
@@ -148,7 +148,7 @@ pub fn address_of(page: &Page) -> usize {
 /// The page kernel `address` is mapped to; `None` if none, or one outside
 /// the page array.
 pub fn page_of(address: usize) -> Option<&'static Page> {
-    arch::Pmap::extract_kernel(address).and_then(page::lookup)
+    arch::PhysMap::extract_kernel(address).and_then(page::lookup)
 }
 
 /// Maps a zeroed, wired page of the kernel object at each page of `range`,
@@ -162,7 +162,7 @@ fn fill(range: Range<usize>) -> Result<(), Error> {
         state.insert(&KERNEL_OBJECT, page, offset);
         page.wire();
         drop(state);
-        arch::Pmap::enter_kernel(address, page.address());
+        arch::PhysMap::enter_kernel(address, page.address());
     }
     Ok(())
 }

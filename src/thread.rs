@@ -26,7 +26,7 @@ use crate::sync::{CriticalSection, OnceLock};
 use crate::task::Task;
 use crate::vm;
 use crate::vm::kernel::KernelStack;
-use crate::vm::pmap::MachinePmap as _;
+use crate::vm::phys_map::MachinePhysMap as _;
 use crate::{arch, smp};
 
 bitflags::bitflags! {
@@ -486,10 +486,10 @@ impl Thread {
             next.critical_nesting.load(Ordering::Relaxed) != 0,
             "switch_context: thread outside a critical section"
         );
-        // The old pmap is given up once the CPU has left its tables.
+        // The old physical map is given up once the CPU has left its tables.
         if !ptr::eq(&raw const *self.task, &raw const *next.task) {
-            next.task.map.pmap().activate();
-            self.task.map.pmap().deactivate();
+            next.task.map.phys_map().activate();
+            self.task.map.phys_map().deactivate();
         }
         smp::current().switch_nesting(&next.critical_nesting);
         // SAFETY: as the caller promises, `next`'s stack holds a frame

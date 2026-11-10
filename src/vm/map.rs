@@ -14,9 +14,9 @@ use intrusive_collections::{
 
 use super::object::{self, Object, ObjectState};
 use super::page;
-use super::pmap::MachinePmap as _;
+use super::phys_map::MachinePhysMap as _;
 use super::{Inheritance, Protection};
-use crate::arch::{PAGE_SIZE, Pmap};
+use crate::arch::{PAGE_SIZE, PhysMap};
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{OnceLock, SleepLock, TokenGuard};
@@ -28,7 +28,8 @@ pub struct Map {
     /// The addresses it may map.
     bounds: Range<usize>,
     /// The physical map its mappings go into.
-    pmap: &'static Pmap,
+    #[expect(clippy::struct_field_names, reason = "named for its type, PhysMap")]
+    phys_map: &'static PhysMap,
     /// How many references it has.
     references: u32,
     /// The most it may map, in bytes.
@@ -55,13 +56,13 @@ struct Contents {
 }
 
 impl Map {
-    /// An empty map of `bounds` over `pmap`, with one reference and no
+    /// An empty map of `bounds` over `phys_map`, with one reference and no
     /// size limit.
-    pub const fn new(pmap: &'static Pmap, bounds: Range<usize>) -> Self {
+    pub const fn new(phys_map: &'static PhysMap, bounds: Range<usize>) -> Self {
         let leading_gap = bounds.end - bounds.start;
         Self {
             bounds,
-            pmap,
+            phys_map,
             references: 1,
             size_limit: usize::MAX,
             max_size_limit: usize::MAX,
@@ -76,22 +77,25 @@ impl Map {
     }
 
     /// The physical map its mappings go into.
-    pub const fn pmap(&self) -> &'static Pmap {
-        self.pmap
+    pub const fn phys_map(&self) -> &'static PhysMap {
+        self.phys_map
     }
 
-    /// A new empty map of `bounds` over `pmap`, a user task's, with one
+    /// A new empty map of `bounds` over `phys_map`, a user task's, with one
     /// reference, its size limited to the memory's.
     ///
     /// # Errors
     ///
     /// `ResourceShortage` if it can't be allocated.
-    pub fn create(pmap: &'static Pmap, bounds: Range<usize>) -> Result<CacheBox<Self>, Error> {
+    pub fn create(
+        phys_map: &'static PhysMap,
+        bounds: Range<usize>,
+    ) -> Result<CacheBox<Self>, Error> {
         let size = page::memory_size();
         MAP_CACHE.allocate(Self {
             size_limit: size,
             max_size_limit: size,
-            ..Self::new(pmap, bounds)
+            ..Self::new(phys_map, bounds)
         })
     }
 
@@ -211,9 +215,9 @@ impl Map {
                 entry.range.end + entry.gap.load(Ordering::Relaxed)
             });
         let range = start..start + size;
-        self.pmap.reference();
+        self.phys_map.reference();
         assert!(
-            submap.set(Self::new(self.pmap, range.clone())).is_ok(),
+            submap.set(Self::new(self.phys_map, range.clone())).is_ok(),
             "vm_map: submap set twice"
         );
         let entry = ENTRY_CACHE.allocate(Entry {
@@ -292,7 +296,7 @@ impl Map {
     ///
     /// If `range` splits an entry, an entry would merge with the one before
     /// it, one has wired access or is wired, or for `Change::Maximum`: not
-    /// yet. As `MachinePmap::protect`.
+    /// yet. As `MachinePhysMap::protect`.
     pub fn protect(
         &self,
         range: Range<usize>,
@@ -339,7 +343,7 @@ impl Map {
                 "vm_map_protect: an entry with wired access, not yet"
             );
             if new != old {
-                self.pmap.protect(entry.range.clone(), new);
+                self.phys_map.protect(entry.range.clone(), new);
             }
             coalesce(&current);
             current.move_next();

@@ -23,7 +23,7 @@ use crate::sync::{CriticalSection, OnceLock, Token};
 use crate::thread::{TaskThreadAdapter, Thread};
 use crate::vm::kernel::KERNEL_MAP;
 use crate::vm::map::Map;
-use crate::vm::pmap::MachinePmap as _;
+use crate::vm::phys_map::MachinePhysMap as _;
 
 /// A task; so far only what a new task sets.
 #[expect(dead_code, reason = "the task calls read them")]
@@ -98,8 +98,8 @@ impl Task {
     /// can't be allocated: freeing what was taken, not yet.
     pub fn create(parent: Option<&Self>) -> Result<&'static Self, Error> {
         assert!(parent.is_none(), "task_create_kernel: a parent, not yet");
-        let pmap = arch::Pmap::create()?;
-        let map = Map::create(pmap, MIN_USER_ADDRESS..MAX_USER_ADDRESS)
+        let phys_map = arch::PhysMap::create()?;
+        let map = Map::create(phys_map, MIN_USER_ADDRESS..MAX_USER_ADDRESS)
             .unwrap_or_else(|error| panic!("task_create_kernel: {error:?}, pmap_destroy not yet"));
         // SAFETY: a task's map lives until vm_map_deallocate frees it, which
         // comes later.

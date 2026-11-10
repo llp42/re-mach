@@ -17,7 +17,7 @@ pub enum Wiring {
 }
 
 /// The machine's physical maps.
-pub trait MachinePmap {
+pub trait MachinePhysMap {
     /// Takes `size` bytes of physical memory for good, before the page
     /// allocator runs; returns where the kernel reaches them.
     fn steal_memory(size: usize) -> *mut u8;
@@ -41,7 +41,7 @@ pub trait MachinePmap {
     fn activate(&self);
     /// Gives it up on the current CPU, as the CPU switches from a thread of
     /// its task to one of another, inside a critical section, once the
-    /// CPU's tables are another pmap's.
+    /// CPU's tables are another physical map's.
     fn deactivate(&self);
 
     /// Maps user `address` to the page at `physical`, allowing `protection`

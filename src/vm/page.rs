@@ -13,7 +13,7 @@ use intrusive_collections::{
 };
 
 use super::object::Object;
-use super::pmap::MachinePmap as _;
+use super::phys_map::MachinePhysMap as _;
 use crate::arch::{self, PAGE_SIZE, PhysAddr};
 use crate::machine;
 use crate::slab::{Cache, Slab};
@@ -517,7 +517,7 @@ pub fn setup() {
         size >> 10
     );
     #[expect(clippy::cast_ptr_alignment, reason = "stolen memory is page-aligned")]
-    let slots = arch::Pmap::steal_memory(size).cast::<MaybeUninit<Page>>();
+    let slots = arch::PhysMap::steal_memory(size).cast::<MaybeUninit<Page>>();
     // SAFETY: the stolen memory is the kernel's for good, page-aligned,
     // mapped, and large enough for `count` pages.
     let slots = unsafe { slice::from_raw_parts_mut(slots, count) };
