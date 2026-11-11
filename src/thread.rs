@@ -8,7 +8,7 @@ use core::mem;
 use core::ops::Range;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{
-    AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+    AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
 };
 
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
@@ -20,7 +20,7 @@ use crate::ipc::port::{KernelObject, Port};
 use crate::machine::Mode;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, Processor, ProcessorSet};
-use crate::sched::{self, Event, Policy, Preemption, Priority, SCHEDULER_SCALE};
+use crate::sched::{self, Event, Policy, Preemption, Priority, SCHEDULER_SCALE, WaitResult};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{CriticalSection, OnceLock};
 use crate::task::Task;
@@ -78,6 +78,8 @@ pub struct Thread {
     state: AtomicU32,
     /// The address of the event it waits for; 0 for none.
     wait_event: AtomicUsize,
+    /// How its last wait ended, a `WaitResult`.
+    wait_result: AtomicU8,
     /// How many times it is suspended.
     suspend_count: AtomicU32,
     /// How many of those suspensions user tasks asked for.
@@ -321,6 +323,7 @@ impl Thread {
             task: unsafe { UnsafeRef::from_raw(task) },
             state: AtomicU32::new(ThreadState::SUSPENDED.bits()),
             wait_event: AtomicUsize::new(0),
+            wait_result: AtomicU8::new(WaitResult::Awakened.number()),
             // Set below with the priorities, under the set's and task's tokens.
             suspend_count: AtomicU32::new(0),
             user_stop_count: AtomicU32::new(1),
@@ -732,6 +735,11 @@ impl Thread {
     pub(super) fn set_wait_event(&self, event: Option<Event>) {
         self.wait_event
             .store(event.map_or(0, usize::from), Ordering::Relaxed);
+    }
+
+    /// Sets how its wait ended.
+    pub(super) fn set_wait_result(&self, result: WaitResult) {
+        self.wait_result.store(result.number(), Ordering::Relaxed);
     }
 
     /// Sets its base priority, while it runs.
