@@ -11,7 +11,7 @@ use intrusive_collections::LinkedList;
 
 use crate::arch;
 use crate::ast::Ast;
-use crate::clock::Wheel;
+use crate::clock::timeout::Wheel;
 use crate::processor::Processor;
 use crate::sched::{SLEEP_QUEUES, SleepQueue};
 use crate::sync::{CpuLock, CriticalSection, Spinlock};

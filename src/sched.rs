@@ -11,7 +11,8 @@ use intrusive_collections::{LinkedList, UnsafeRef};
 
 use crate::arch::{self, Machine as _};
 use crate::ast::{self, Ast};
-use crate::clock::{self, Timeout};
+use crate::clock;
+use crate::clock::timeout::Timeout;
 use crate::config::HZ;
 use crate::error::Error;
 use crate::machine::CpuState;
@@ -158,7 +159,7 @@ pub static RECOMPUTE_PRIORITIES: Timeout = Timeout::new(recompute_priorities);
 /// once that has started.
 pub fn recompute_priorities(_: &'static Timeout) {
     SCHEDULER_TICK.fetch_add(1, Ordering::Relaxed);
-    clock::set_timeout(&RECOMPUTE_PRIORITIES, u64::from(HZ));
+    clock::timeout::set_timeout(&RECOMPUTE_PRIORITIES, u64::from(HZ));
     if let Some(&thread) = SCHED_THREAD.get() {
         // Its home CPU is this one while only the boot CPU runs threads.
         clear_wait(thread, WaitResult::Awakened);

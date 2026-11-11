@@ -46,7 +46,8 @@ use x86_64::registers::rflags::{self, RFlags};
 use crate::arch::Machine;
 use crate::boot::multiboot2::{self, ElfSectionType, Tag};
 use crate::boot::{self, BootModule};
-use crate::clock::{self, TimeValue};
+use crate::clock;
+use crate::clock::time::TimeValue;
 use crate::error::Error;
 use crate::machine::{self, CpuSubtype, CpuType, Slot};
 use crate::println;
@@ -280,7 +281,7 @@ fn init_time_of_day() {
             "RTC time is {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
             date.year, date.month, date.day, date.hour, date.minute, date.second
         );
-        clock::set_time(TimeValue {
+        clock::time::set_time(TimeValue {
             seconds: date.seconds(),
             nanoseconds: 0,
         });

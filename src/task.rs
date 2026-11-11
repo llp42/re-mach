@@ -10,7 +10,8 @@ use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusi
 
 use crate::arch::{self, MAX_USER_ADDRESS, MIN_USER_ADDRESS, Machine as _};
 use crate::ast::Ast;
-use crate::clock::{self, AtomicTimeValue};
+use crate::clock;
+use crate::clock::time::AtomicTimeValue;
 use crate::error::Error;
 use crate::ipc::port::{KernelObject, Port};
 use crate::ipc::space::Space;
@@ -314,7 +315,7 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
         self_port: AtomicPtr::new(ptr::null_mut()),
         self_send: AtomicPtr::new(ptr::null_mut()),
         may_assign: true,
-        creation_time: clock::stamp().into(),
+        creation_time: clock::time::stamp().into(),
         faults: AtomicUsize::new(0),
         zero_fills: AtomicUsize::new(0),
         members: Token::new(TaskMembers {
