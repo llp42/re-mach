@@ -39,7 +39,6 @@ pub struct PerCpu {
     active_thread: AtomicPtr<Thread>,
     /// The threads that ended on it, waiting for the reaper, linked as on
     /// a run queue.
-    #[expect(dead_code, reason = "thread_terminate and the reaper use them")]
     dead_threads: Spinlock<LinkedList<RunQueueAdapter>>,
     /// Its timeouts; only it runs them.
     timeouts: Wheel,
@@ -86,6 +85,11 @@ impl PerCpu {
     /// Its timeouts.
     pub const fn timeouts(&self) -> &Wheel {
         &self.timeouts
+    }
+
+    /// The threads that ended on it, waiting for the reaper.
+    pub const fn dead_threads(&self) -> &Spinlock<LinkedList<RunQueueAdapter>> {
+        &self.dead_threads
     }
 
     /// Its sleep queues, locked.
