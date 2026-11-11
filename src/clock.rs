@@ -34,7 +34,6 @@ pub struct Timeout {
     /// Its place in the wheel slot of its deadline.
     link: LinkedListAtomicLink,
     /// What it calls, with itself, at its deadline.
-    #[expect(dead_code, reason = "the softclock thread calls it")]
     function: fn(&'static Self),
     /// The tick it is due at, counted from boot on its wheel's CPU.
     deadline: AtomicU64,
@@ -73,8 +72,9 @@ pub struct Wheel {
     slots: [Spinlock<LinkedList<TimeoutAdapter>>; WHEEL_SLOTS],
     /// How many ticks its CPU has taken since boot.
     ticks: AtomicU64,
-    /// The last tick whose timeouts have been checked for: those of a tick
-    /// with none are at once, the rest by the softclock thread.
+    /// The last tick whose timeouts have run, moved under that tick's slot
+    /// lock: by the tick while the softclock thread is not running, else by
+    /// the thread.
     checked_ticks: AtomicU64,
     /// Its softclock thread, set as it is created.
     thread: OnceLock<&'static Thread>,
@@ -106,17 +106,17 @@ impl Wheel {
 }
 
 /// Sets `timeout` to be due `ticks` ticks after the next one, on this CPU's
-/// wheel.
+/// wheel, cancelling it first if it is set.
 ///
 /// # Panics
 ///
-/// If it is waiting already: cancelling it comes with `reset_timeout`.
+/// If it is waiting in a wheel already: not yet.
 pub fn set_timeout(timeout: &'static Timeout, ticks: u64) {
-    assert!(
-        !TimeoutFlags::from_bits_truncate(timeout.flags.load(Ordering::Relaxed))
-            .contains(TimeoutFlags::PENDING),
-        "set_timeout: pending already"
-    );
+    if TimeoutFlags::from_bits_truncate(timeout.flags.load(Ordering::Relaxed))
+        .intersects(TimeoutFlags::ACTIVE | TimeoutFlags::PENDING)
+    {
+        reset_timeout(timeout);
+    }
     // A tick waits, and the thread stays on this CPU, until the timeout is
     // in its slot.
     let _section = CriticalSection::enter();
@@ -134,19 +134,66 @@ pub fn set_timeout(timeout: &'static Timeout, ticks: u64) {
     drop(slot);
 }
 
+/// Cancels `timeout`, which is then not set.
+///
+/// # Panics
+///
+/// If it is waiting in a wheel: not yet.
+fn reset_timeout(timeout: &Timeout) {
+    let _section = CriticalSection::enter();
+    assert!(
+        !TimeoutFlags::from_bits_truncate(timeout.flags.load(Ordering::Relaxed))
+            .contains(TimeoutFlags::PENDING),
+        "reset_timeout: a pending timeout, not yet"
+    );
+    timeout
+        .flags
+        .fetch_and(!TimeoutFlags::ACTIVE.bits(), Ordering::Relaxed);
+}
+
 /// A softclock thread's work, on the CPU of the processor it is bound to:
-/// at the highest priority, each time it runs it marks itself not running
+/// at the highest priority, each time it runs it calls the timeouts due on
+/// its wheel up to the current tick; caught up, it marks itself not running
 /// and waits with no event, in one critical section.
 pub fn softclock() -> ! {
     thread::set_own_priority(Priority::HIGHEST);
     loop {
+        // Bound, it stays on its wheel's CPU.
+        let wheel = smp::current().timeouts();
+        // While it runs, the tick leaves `checked_ticks` to it.
+        while wheel.checked_ticks.load(Ordering::Relaxed) < wheel.ticks.load(Ordering::Relaxed) {
+            let tick = wheel.checked_ticks.load(Ordering::Relaxed) + 1;
+            // Each due timeout leaves the slot, then is called with the slot
+            // unlocked, so it can set itself again.
+            loop {
+                let mut slot = wheel.slot(tick).lock();
+                let mut cursor = slot.front_mut();
+                while cursor
+                    .get()
+                    .is_some_and(|timeout| timeout.deadline.load(Ordering::Relaxed) != tick)
+                {
+                    cursor.move_next();
+                }
+                let Some(timeout) = cursor.remove() else {
+                    wheel.checked_ticks.store(tick, Ordering::Relaxed);
+                    break;
+                };
+                timeout
+                    .flags
+                    .fetch_and(!TimeoutFlags::PENDING.bits(), Ordering::Relaxed);
+                drop(slot);
+                // SAFETY: it was set as a `&'static Timeout`.
+                let timeout = unsafe { &*UnsafeRef::into_raw(timeout) };
+                (timeout.function)(timeout);
+            }
+        }
+        // Checked again inside the section, so no tick taken since is missed.
         let section = CriticalSection::enter();
-        smp::current()
-            .timeouts()
-            .running
-            .store(false, Ordering::Relaxed);
-        sched::assert_wait(None);
-        sched::block();
+        if wheel.checked_ticks.load(Ordering::Relaxed) == wheel.ticks.load(Ordering::Relaxed) {
+            wheel.running.store(false, Ordering::Relaxed);
+            sched::assert_wait(None);
+            sched::block();
+        }
         drop(section);
     }
 }
@@ -366,7 +413,8 @@ pub fn map_time() {
 /// before, with the thread it interrupted running in `mode`: the tick is
 /// the thread's, and the CPU's in that mode, or idle; it advances the
 /// CPU's timeouts, and on the boot CPU the time of day and the uptime, then
-/// wakes the softclock thread if a timeout is due or the wheel is behind.
+/// wakes the softclock thread if it is not running and a timeout is due or
+/// the wheel is behind.
 pub fn interrupt(microseconds: u32, mode: Mode) {
     let cpu = smp::current();
     let thread = cpu.active_thread();
@@ -385,17 +433,22 @@ pub fn interrupt(microseconds: u32, mode: Mode) {
     let wheel = cpu.timeouts();
     let ticks = wheel.ticks.load(Ordering::Relaxed) + 1;
     wheel.ticks.store(ticks, Ordering::Relaxed);
-    // The softclock thread runs the timeouts due; with none due, and none
-    // behind, the tick is checked already, else the thread is woken unless
-    // it was already.
-    let slot = wheel.slot(ticks).lock();
-    let wake = if slot.is_empty() && wheel.checked_ticks.load(Ordering::Relaxed) + 1 == ticks {
-        wheel.checked_ticks.store(ticks, Ordering::Relaxed);
+    // The softclock thread runs the timeouts due, and checks the ticks
+    // itself while it runs; else a tick with none due, and none behind, is
+    // checked at once, or the thread is woken.
+    let wake = if wheel.running.load(Ordering::Relaxed) {
         false
     } else {
-        !wheel.running.swap(true, Ordering::Relaxed)
+        let slot = wheel.slot(ticks).lock();
+        let checked = slot.is_empty() && wheel.checked_ticks.load(Ordering::Relaxed) + 1 == ticks;
+        if checked {
+            wheel.checked_ticks.store(ticks, Ordering::Relaxed);
+        } else {
+            wheel.running.store(true, Ordering::Relaxed);
+        }
+        drop(slot);
+        !checked
     };
-    drop(slot);
     if cpu.id() == 0 {
         let nanoseconds = i64::from(microseconds) * 1000;
         let last = snapshot();
