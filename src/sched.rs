@@ -13,6 +13,7 @@ use crate::arch::{self, Machine as _};
 use crate::ast::{self, Ast};
 use crate::clock;
 use crate::clock::timeout::Timeout;
+use crate::collections::ArrayVec;
 use crate::config::{HZ, MAX_CPUS};
 use crate::error::Error;
 use crate::machine::CpuState;
@@ -630,8 +631,9 @@ pub fn idle_thread() -> ! {
 
 /// The scheduler thread's work: it records itself as the scheduler
 /// thread, then waits with no event, uninterruptibly, for
-/// `recompute_priorities` to wake it; woken, it computes the Mach factor,
-/// then waits again.
+/// `recompute_priorities` to wake it; woken, it computes the Mach factor
+/// and, at an odd scheduler tick, scans for stuck threads, then waits
+/// again.
 ///
 /// # Panics
 ///
@@ -645,6 +647,35 @@ pub fn sched_thread() -> ! {
         assert_wait(None);
         block();
         compute_mach_factor();
+        if scheduler_tick() % 2 == 1 {
+            do_thread_scan();
+        }
+    }
+}
+
+/// How many stuck threads a scan takes off the run queues at a time.
+pub const MAX_STUCK_THREADS: usize = 16;
+
+/// Catches up the stuck threads on the current CPU's run queues, each CPU
+/// scanning its own: a pass takes up to `MAX_STUCK_THREADS` off the queues,
+/// then makes runnable again each whose scheduling state is still only
+/// `RUN`; passes go on while one finds no room.
+fn do_thread_scan() {
+    loop {
+        let mut stuck = ArrayVec::new();
+        let section = CriticalSection::enter();
+        let full = smp::current().processor().take_stuck(&mut stuck);
+        drop(section);
+        // The last taken goes back first, as in GNU Mach.
+        for &thread in stuck.iter().rev() {
+            let _section = CriticalSection::enter();
+            if thread.state() & ThreadState::SCHEDULING == ThreadState::RUN {
+                make_runnable(thread, Preemption::Allowed);
+            }
+        }
+        if !full {
+            return;
+        }
     }
 }
 

@@ -11,11 +11,13 @@ use core::sync::atomic::{
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
+use crate::collections::ArrayVec;
 use crate::config::MAX_CPUS;
 use crate::error::Error;
 use crate::ipc::port::Port;
 use crate::sched::{
-    MIN_QUANTUM, Policies, Priority, RUN_QUEUES, RunQueue, SCHEDULER_SCALE, SYSTEM_PRIORITY,
+    MAX_STUCK_THREADS, MIN_QUANTUM, Policies, Priority, RUN_QUEUES, RunQueue, SCHEDULER_SCALE,
+    SYSTEM_PRIORITY,
 };
 use crate::slab::{Cache, CacheBox};
 use crate::smp;
@@ -248,6 +250,36 @@ impl Processor {
         }
         self.queued.fetch_sub(1, Ordering::Relaxed);
         Some(thread)
+    }
+
+    /// Takes its stuck threads off its run queues into `stuck`, best first,
+    /// on its CPU; returns whether one found `stuck` full.
+    pub(super) fn take_stuck(
+        &self,
+        stuck: &mut ArrayVec<&'static Thread, MAX_STUCK_THREADS>,
+    ) -> bool {
+        let mut queues = self.run_queues();
+        let RunQueues { lists, bound } = &mut *queues;
+        for list in lists {
+            let mut cursor = list.front_mut();
+            while let Some(thread) = cursor.get() {
+                if !thread.is_stuck() {
+                    cursor.move_next();
+                    continue;
+                }
+                if stuck.is_full() {
+                    return true;
+                }
+                // SAFETY: a runnable thread lives on, off its run queue too.
+                let thread = unsafe { &*UnsafeRef::into_raw(cursor.remove().unwrap()) };
+                if thread.bound().is_some() {
+                    *bound -= 1;
+                }
+                self.queued.fetch_sub(1, Ordering::Relaxed);
+                stuck.push(thread);
+            }
+        }
+        false
     }
 
     /// The set it is in, once it comes up.
