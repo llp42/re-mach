@@ -78,7 +78,8 @@ pub struct Wheel {
     checked_ticks: AtomicU64,
     /// Its softclock thread, set as it is created.
     thread: OnceLock<&'static Thread>,
-    /// Whether its softclock thread was woken and has not waited since.
+    /// Whether its softclock thread was asked to run and has not waited
+    /// since.
     running: AtomicBool,
 }
 
@@ -460,11 +461,8 @@ pub fn interrupt(microseconds: u32, mode: Mode) {
             mapped.set_uptime(uptime);
         }
     }
-    if wake {
-        let thread = wheel
-            .thread
-            .get()
-            .expect("clock_interrupt: no softclock thread");
+    // One made later finds the wheel behind as it first runs.
+    if wake && let Some(&thread) = wheel.thread.get() {
         sched::clear_wait(thread, WaitResult::Awakened);
     }
 }
