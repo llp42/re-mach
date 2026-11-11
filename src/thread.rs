@@ -15,6 +15,7 @@ use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use crate::ast::Ast;
 use crate::clock::{self, TimeValue};
+use crate::config::MAX_CPUS;
 use crate::error::Error;
 use crate::ipc::port::{KernelObject, Port};
 use crate::machine::Mode;
@@ -825,4 +826,54 @@ pub fn set_own_priority(priority: Priority) {
     );
     // It runs, so it waits on no run queue.
     thread.compute_my_priority();
+}
+
+/// Makes a thread of `task` that starts in `start`, at the system priority,
+/// its highest too, and resumes it; the reference its creation gave the
+/// caller is dropped.
+///
+/// # Errors
+///
+/// As `Thread::create`.
+///
+/// # Panics
+///
+/// If it cannot be resumed: a new thread always can.
+pub fn kernel_thread(task: &'static Task, start: fn() -> !) -> Result<(), Error> {
+    let thread = Thread::create(task)?;
+    thread.deallocate();
+    thread.start(start);
+    // Never run, it waits on no run queue.
+    let priority = u32::from(sched::SYSTEM_PRIORITY);
+    thread.max_priority.store(priority, Ordering::Relaxed);
+    thread.priority.store(priority, Ordering::Relaxed);
+    thread.sched_pri.store(priority, Ordering::Relaxed);
+    thread
+        .resume()
+        .unwrap_or_else(|error| panic!("kernel_thread: thread_resume: {error:?}"));
+    Ok(())
+}
+
+/// What the reaper waits on; only its address counts.
+static REAPER: u8 = 0;
+
+/// The reaper's work: each time it runs it finds no thread ended on any
+/// CPU, then waits for one, uninterruptibly; the checks and the wait are in
+/// one critical section.
+///
+/// # Panics
+///
+/// If a thread ended: not yet.
+pub fn reaper_thread() -> ! {
+    loop {
+        // No thread that ends between the checks and the wait is missed.
+        let section = CriticalSection::enter();
+        assert!(
+            (0..MAX_CPUS).all(|cpu| smp::of(cpu).dead_threads().lock().is_empty()),
+            "reaper_thread: a halted thread, not yet"
+        );
+        sched::assert_wait(Some(Event::of(&REAPER)));
+        sched::block();
+        drop(section);
+    }
 }
