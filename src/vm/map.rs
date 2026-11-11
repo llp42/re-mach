@@ -5,7 +5,7 @@
 
 use core::ops::{DerefMut, Range};
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 use intrusive_collections::rbtree::Cursor;
 use intrusive_collections::{
@@ -36,6 +36,8 @@ pub struct Map {
     size_limit: usize,
     /// The most `size_limit` may be raised to.
     max_size_limit: usize,
+    /// Whether a search that finds no free space waits for some.
+    wait_for_space: AtomicBool,
     /// What changes as it maps and unmaps, behind its lock.
     contents: SleepLock<Contents>,
 }
@@ -66,6 +68,7 @@ impl Map {
             references: 1,
             size_limit: usize::MAX,
             max_size_limit: usize::MAX,
+            wait_for_space: AtomicBool::new(false),
             contents: SleepLock::new(Contents {
                 entries: RBTree::new(EntryAdapter::NEW),
                 gaps: RBTree::new(GapAdapter::NEW),
@@ -195,6 +198,11 @@ impl Map {
         Ok(())
     }
 
+    /// Makes its searches that find no free space wait for some.
+    pub fn set_wait_for_space(&self) {
+        self.wait_for_space.store(true, Ordering::Relaxed);
+    }
+
     /// Maps a new submap of `size` bytes wherever it fits, over this map's
     /// physical map, and sets `submap` to it.
     ///
@@ -205,10 +213,19 @@ impl Map {
     ///
     /// # Panics
     ///
-    /// If `submap` is set already.
+    /// If `submap` is set already. If no free space fits it, the map has
+    /// entries and waits for space: not yet.
     pub fn enter_submap(&self, size: usize, submap: &'static OnceLock<Self>) -> Result<(), Error> {
         let mut contents = self.lock();
-        let (previous, start) = contents.find_space(self.bounds.start, size, PAGE_SIZE)?;
+        let (previous, start) = contents
+            .find_space(self.bounds.start, size, PAGE_SIZE)
+            .inspect_err(|_| {
+                // An empty map fails at once.
+                assert!(
+                    contents.entries.is_empty() || !self.wait_for_space.load(Ordering::Relaxed),
+                    "vm_map_find_entry_anywhere: waiting for space, not yet"
+                );
+            })?;
         let next = previous
             .as_ref()
             .map_or(self.bounds.start + contents.leading_gap, |entry| {
