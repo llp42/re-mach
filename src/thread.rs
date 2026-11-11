@@ -16,6 +16,7 @@ use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 use crate::ast::Ast;
 use crate::clock;
 use crate::clock::time::TimeValue;
+use crate::clock::timeout::Timeout;
 use crate::config::MAX_CPUS;
 use crate::error::Error;
 use crate::ipc::port::{KernelObject, Port};
@@ -90,6 +91,8 @@ pub struct Thread {
     wait_event: AtomicUsize,
     /// How its last wait ended, a `WaitResult`.
     wait_result: AtomicU8,
+    /// What ends its wait once some ticks have passed.
+    timer: Timeout,
     /// How many times it is suspended.
     suspend_count: AtomicU32,
     /// How many of those suspensions user tasks asked for.
@@ -317,6 +320,10 @@ impl Thread {
     /// `ResourceShortage` if the thread, its machine state or its port can't
     /// be allocated, or as `vm::kernel::allocate_stack` for its stack;
     /// `Failure` if the task is not alive.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "thread_create's steps, in GNU Mach's order"
+    )]
     pub fn create(task: &'static Task) -> Result<&'static Self, Error> {
         let mut machine_state = arch::MachineState::new()?;
         let port = Port::allocate_kernel()?;
@@ -334,6 +341,7 @@ impl Thread {
             state: AtomicU32::new(ThreadState::SUSPENDED.bits()),
             wait_event: AtomicUsize::new(0),
             wait_result: AtomicU8::new(WaitResult::Awakened.number()),
+            timer: Timeout::new(thread_timeout),
             // Set below with the priorities, under the set's and task's tokens.
             suspend_count: AtomicU32::new(0),
             user_stop_count: AtomicU32::new(1),
@@ -426,6 +434,7 @@ impl Thread {
         CacheBox::into_raw(machine_state);
         // SAFETY: a thread lives until the reaper frees it, which comes later.
         let thread = unsafe { CacheBox::into_raw(thread).as_ref() };
+        thread.timer.set_argument(ptr::from_ref(thread).cast());
         port.set_kernel_object(KernelObject::Thread(NonNull::from(thread)));
         let port = CacheBox::into_raw(port).as_ptr();
         thread.self_port.store(port, Ordering::Release);
@@ -763,6 +772,11 @@ impl Thread {
         self.wait_result.store(result.number(), Ordering::Relaxed);
     }
 
+    /// Its timer.
+    pub(super) const fn timer(&self) -> &Timeout {
+        &self.timer
+    }
+
     /// Sets its base priority, while it runs.
     pub(super) fn set_priority(&self, priority: Priority) {
         self.priority.store(u32::from(priority), Ordering::Relaxed);
@@ -846,6 +860,31 @@ pub fn set_own_priority(priority: Priority) {
     );
     // It runs, so it waits on no run queue.
     thread.compute_my_priority();
+}
+
+/// Ends the wait of the thread whose timer `timer` is, as timed out.
+fn thread_timeout(timer: &'static Timeout) {
+    // SAFETY: only threads' timers are made with this function, each with
+    // its thread as its argument, and a thread lives while its timer is set.
+    let thread = unsafe { &*timer.argument().cast::<Thread>() };
+    // Its home CPU is this one while only the boot CPU runs threads.
+    sched::clear_wait(thread, WaitResult::TimedOut);
+}
+
+/// Sets the current thread's timer to end its wait `ticks` ticks after the
+/// next one, if it waits.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU.
+pub fn set_own_timeout(ticks: u64) {
+    let _section = CriticalSection::enter();
+    let thread = smp::current()
+        .active_thread()
+        .expect("thread_set_timeout: no current thread");
+    if thread.state().contains(ThreadState::WAIT) {
+        clock::timeout::set_timeout(&thread.timer, ticks);
+    }
 }
 
 /// Makes a thread of `task` that starts in `start`, at the system priority,

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
-//! Devices; so far only the master device port.
+//! Devices; so far only the master device port and the interrupt thread.
+
+pub mod interrupt;
 
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};

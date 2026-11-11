@@ -4,7 +4,7 @@
 //! Timeouts, in a wheel for each CPU.
 
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
@@ -28,6 +28,8 @@ pub struct Timeout {
     link: LinkedListAtomicLink,
     /// What it calls, with itself, at its deadline.
     pub(super) function: fn(&'static Self),
+    /// What its function works on; null for nothing.
+    argument: AtomicPtr<()>,
     /// The tick it is due at, counted from boot on its wheel's CPU.
     pub(super) deadline: AtomicU64,
     /// Where it stands.
@@ -35,14 +37,25 @@ pub struct Timeout {
 }
 
 impl Timeout {
-    /// One that calls `function`, not set.
+    /// One that calls `function`, with no argument, not set.
     pub const fn new(function: fn(&'static Self)) -> Self {
         Self {
             link: LinkedListAtomicLink::new(),
             function,
+            argument: AtomicPtr::new(ptr::null_mut()),
             deadline: AtomicU64::new(0),
             flags: AtomicU8::new(0),
         }
+    }
+
+    /// What its function works on; null for nothing.
+    pub fn argument(&self) -> *const () {
+        self.argument.load(Ordering::Acquire)
+    }
+
+    /// Sets what its function works on, before it is set.
+    pub fn set_argument(&self, argument: *const ()) {
+        self.argument.store(argument.cast_mut(), Ordering::Release);
     }
 }
 
@@ -143,4 +156,17 @@ fn reset_timeout(timeout: &Timeout) {
     timeout
         .flags
         .fetch_and(!TimeoutFlags::ACTIVE.bits(), Ordering::Relaxed);
+}
+
+/// Cancels `timeout` if it is set.
+///
+/// # Panics
+///
+/// If it is waiting in a wheel: not yet.
+pub fn reset_timeout_check(timeout: &Timeout) {
+    if TimeoutFlags::from_bits_truncate(timeout.flags.load(Ordering::Relaxed))
+        .contains(TimeoutFlags::ACTIVE)
+    {
+        reset_timeout(timeout);
+    }
 }

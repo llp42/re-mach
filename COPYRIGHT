@@ -352,6 +352,11 @@ SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Syste
 SPDX-FileContributor: Avadis Tevanian, Jr.
 SPDX-License-Identifier: LicenseRef-CMU-CSL
 
+SPDX-FileName: kern/mach_clock.h
+SPDX-FileCopyrightText: 2006, 2007 Free Software Foundation, Inc.
+SPDX-FileContributor: Barry deFreese and others
+SPDX-License-Identifier: GPL-2.0-or-later
+
 SPDX-FileName: kern/mach_factor.c
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
 SPDX-FileContributor: Avadis Tevanian, Jr.

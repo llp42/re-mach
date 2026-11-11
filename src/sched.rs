@@ -67,6 +67,8 @@ impl TryFrom<usize> for Event {
 pub enum WaitResult {
     /// It was woken.
     Awakened,
+    /// Its timer ran out.
+    TimedOut,
 }
 
 impl WaitResult {
@@ -74,6 +76,7 @@ impl WaitResult {
     pub(super) const fn number(self) -> u8 {
         match self {
             Self::Awakened => 0,
+            Self::TimedOut => 1,
         }
     }
 }
@@ -419,6 +422,7 @@ pub fn wakeup(event: Event) {
         // SAFETY: it waited on the queue, and goes on a run queue.
         let thread = unsafe { &*UnsafeRef::into_raw(cursor.remove().unwrap()) };
         thread.set_wait_event(None);
+        clock::timeout::reset_timeout_check(thread.timer());
         let state = thread.state();
         assert!(
             [
@@ -436,21 +440,24 @@ pub fn wakeup(event: Event) {
     }
 }
 
-/// Ends `thread`'s wait with `result`, on its home CPU: it runs; a thread
-/// not waiting is left as it is.
+/// Cancels `thread`'s timer and ends its wait with `result`, on its home
+/// CPU: it leaves the sleep queue of its event and runs; a thread not
+/// waiting is left as it is.
 ///
 /// # Panics
 ///
-/// If it waits for an event, runs already, or is suspended in an
-/// interruptible wait: not yet.
+/// If it runs already, or is suspended in an interruptible wait: not yet.
 pub fn clear_wait(thread: &'static Thread, result: WaitResult) {
     let _section = CriticalSection::enter();
     if let Some(event) = thread.wait_event() {
-        panic!(
-            "clear_wait: thread {thread:p} waits for event {:#x}, not yet",
-            usize::from(event)
-        );
+        let mut queues = smp::current().sleep_queues();
+        // SAFETY: a thread waiting for an event is on its home CPU's queue
+        // for it.
+        unsafe { queues[event.hash()].cursor_mut_from_ptr(thread) }.remove();
+        drop(queues);
+        thread.set_wait_event(None);
     }
+    clock::timeout::reset_timeout_check(thread.timer());
     let state = thread.state();
     if !state.contains(ThreadState::WAIT) {
         return;
