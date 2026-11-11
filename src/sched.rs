@@ -12,6 +12,7 @@ use crate::arch::{self, Machine as _};
 use crate::ast::{self, Ast};
 use crate::clock::{self, Timeout};
 use crate::config::HZ;
+use crate::error::Error;
 use crate::machine::CpuState;
 use crate::processor::{self, ActionQueueAdapter, Processor, State};
 use crate::smp;
@@ -49,6 +50,58 @@ pub type RunQueue = LinkedList<RunQueueAdapter>;
 /// How many run queues each processor has, one per priority.
 pub const RUN_QUEUES: usize = 65;
 
+/// A thread's, task's or set's priority: Mach counts 0 as the highest.
+#[derive(Clone, Copy)]
+pub struct Priority(u32);
+
+impl Priority {
+    /// The highest, the first run queue's.
+    pub const HIGHEST: Self = Self(0);
+
+    /// The lowest, the last run queue's.
+    pub const LOWEST: Self = Self(64);
+
+    /// Whether it is higher than `other`.
+    pub const fn outranks(self, other: Self) -> bool {
+        self.0 < other.0
+    }
+
+    /// The lower of it and `other`.
+    pub fn weaker(self, other: Self) -> Self {
+        Self(self.0.max(other.0))
+    }
+
+    /// Its run queue's index.
+    pub fn index(self) -> usize {
+        usize::try_from(self.0).unwrap()
+    }
+
+    /// The priority a thread of this base priority is scheduled at after
+    /// `usage`, within the run queues.
+    pub fn aged_by(self, usage: u32) -> Self {
+        Self((self.0 + (usage >> (PRIORITY_SHIFT + SCHEDULER_SHIFT))).min(Self::LOWEST.0))
+    }
+}
+
+impl From<Priority> for u32 {
+    fn from(priority: Priority) -> Self {
+        priority.0
+    }
+}
+
+/// Fails with `InvalidArgument` past the lowest.
+impl TryFrom<u32> for Priority {
+    type Error = Error;
+
+    fn try_from(priority: u32) -> Result<Self, Error> {
+        if priority <= Self::LOWEST.0 {
+            Ok(Self(priority))
+        } else {
+            Err(Error::InvalidArgument)
+        }
+    }
+}
+
 /// The processors waiting for the action thread to shut them down or move
 /// them to another set.
 #[expect(dead_code, reason = "processor_shutdown and the action thread use it")]
@@ -73,10 +126,10 @@ pub fn recompute_priorities(_: &'static Timeout) {
 }
 
 /// The priority of system threads, and the default set's highest.
-pub const SYSTEM_PRIORITY: u32 = 6;
+pub const SYSTEM_PRIORITY: Priority = Priority(6);
 
 /// The priority of user threads.
-pub const USER_PRIORITY: u32 = 25;
+pub const USER_PRIORITY: Priority = Priority(25);
 
 /// The shortest quantum, in ticks: 33 context switches a second.
 pub const MIN_QUANTUM: u32 = HZ / 33;
@@ -85,11 +138,11 @@ pub const MIN_QUANTUM: u32 = HZ / 33;
 pub const SCHEDULER_SCALE: u32 = 128;
 
 /// How far `SCHEDULER_SCALE` shifts.
-pub const SCHEDULER_SHIFT: u32 = 7;
+const SCHEDULER_SHIFT: u32 = 7;
 
 /// How far a thread's use is shifted, past `SCHEDULER_SHIFT`, to age its
 /// priority.
-pub const PRIORITY_SHIFT: u32 = 17;
+const PRIORITY_SHIFT: u32 = 17;
 
 /// A thread's scheduling policy, one of `Policies`.
 #[derive(Clone, Copy)]
@@ -192,7 +245,10 @@ pub fn make_runnable(thread: &'static Thread, preemption: Preemption) {
         let current = cpu
             .active_thread()
             .expect("thread_setrun: no current thread");
-        if current.scheduled_priority() > thread.scheduled_priority() {
+        if thread
+            .scheduled_priority()
+            .outranks(current.scheduled_priority())
+        {
             processor.end_first_quantum();
             cpu.add_asts(Ast::BLOCK);
         }
@@ -385,9 +441,8 @@ pub fn idle_thread() -> ! {
     let section = CriticalSection::enter();
     let cpu = smp::current();
     let thread = cpu.active_thread().expect("idle_thread: no current thread");
-    let lowest = u32::try_from(RUN_QUEUES).unwrap() - 1;
-    thread.set_priority(lowest);
-    thread.set_scheduled_priority(lowest);
+    thread.set_priority(Priority::LOWEST);
+    thread.set_scheduled_priority(Priority::LOWEST);
     thread.insert_state(ThreadState::IDLE);
     assert!(
         cpu.processor().set_idle_thread(thread).is_ok(),

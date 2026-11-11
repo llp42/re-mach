@@ -16,7 +16,7 @@ use crate::ipc::port::{KernelObject, Port};
 use crate::ipc::space::Space;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, ProcessorSet};
-use crate::sched::{RUN_QUEUES, USER_PRIORITY};
+use crate::sched::{Priority, USER_PRIORITY};
 use crate::slab::{Cache, CacheBox};
 use crate::smp;
 use crate::sync::{CriticalSection, OnceLock, Token};
@@ -69,9 +69,9 @@ pub struct TaskMembers {
     /// Whether the task is alive.
     pub(super) active: bool,
     /// The priority of the task's threads.
-    pub(super) priority: u32,
+    pub(super) priority: Priority,
     /// The highest priority the task's threads may take.
-    pub(super) max_priority: u32,
+    pub(super) max_priority: Priority,
     /// How many times the task is suspended.
     pub(super) suspend_count: u32,
     /// How many times users stopped the task; the first suspends it.
@@ -252,20 +252,19 @@ impl Task {
     ///
     /// # Panics
     ///
-    /// If `host` is not a host's port or `max_priority` is not a priority,
-    /// if the cap is raised, or if it has threads: not yet.
-    pub(super) fn set_max_priority(&self, host: &Port, max_priority: u32) {
+    /// If `host` is not a host's port, if the cap is raised, or if it has
+    /// threads: not yet.
+    pub(super) fn set_max_priority(&self, host: &Port, max_priority: Priority) {
         assert!(
             matches!(
                 host.kernel_object(),
                 Some(KernelObject::Host(_) | KernelObject::HostPrivileged(_))
-            ) && max_priority < u32::try_from(RUN_QUEUES).unwrap(),
+            ),
             "task_max_priority: an invalid argument, not yet"
         );
         let mut members = self.members.lock();
-        // A larger number is lower.
         assert!(
-            max_priority >= members.max_priority,
+            !max_priority.outranks(members.max_priority),
             "task_max_priority: a raised cap, not yet"
         );
         members.max_priority = max_priority;
@@ -320,8 +319,8 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
         zero_fills: AtomicUsize::new(0),
         members: Token::new(TaskMembers {
             active: true,
-            // No higher than the set allows; a larger number is lower.
-            priority: USER_PRIORITY.max(DEFAULT_SET.max_priority()),
+            // No higher than the set allows.
+            priority: USER_PRIORITY.weaker(DEFAULT_SET.max_priority()),
             max_priority: DEFAULT_SET.max_priority(),
             suspend_count: 0,
             user_stop_count: 0,

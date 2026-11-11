@@ -12,7 +12,9 @@ use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusi
 use crate::config::MAX_CPUS;
 use crate::error::Error;
 use crate::ipc::port::Port;
-use crate::sched::{MIN_QUANTUM, Policies, RUN_QUEUES, RunQueue, SCHEDULER_SCALE, SYSTEM_PRIORITY};
+use crate::sched::{
+    MIN_QUANTUM, Policies, Priority, RUN_QUEUES, RunQueue, SCHEDULER_SCALE, SYSTEM_PRIORITY,
+};
 use crate::slab::{Cache, CacheBox};
 use crate::smp;
 use crate::sync::{CpuLock, CriticalSection, OnceLock, Token, TokenGuard};
@@ -194,13 +196,25 @@ impl Processor {
     /// Puts `thread` last at its scheduled priority.
     pub(super) fn enqueue(&self, thread: &'static Thread) {
         let mut queues = self.run_queues();
-        let priority = usize::try_from(thread.scheduled_priority()).unwrap();
+        let priority = thread.scheduled_priority().index();
         // SAFETY: a thread lives while it waits on a run queue.
         queues.lists[priority].push_back(unsafe { UnsafeRef::from_raw(thread) });
         if thread.bound().is_some() {
             queues.bound += 1;
         }
         self.queued.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The best priority among the threads waiting on its run queues that
+    /// are not bound to it.
+    fn best_unbound(&self) -> Option<Priority> {
+        let queues = self.run_queues();
+        queues
+            .lists
+            .iter()
+            .flat_map(RunQueue::iter)
+            .find(|thread| thread.bound().is_none())
+            .map(Thread::scheduled_priority)
     }
 
     /// Takes the best of its threads bound to it, or if none the best of
@@ -277,7 +291,7 @@ pub struct ProcessorSet {
     /// How many references it has.
     references: AtomicU32,
     /// The highest priority its threads may take.
-    max_priority: u32,
+    max_priority: Priority,
     /// The policies its threads may use.
     policies: Policies,
     /// Its processors' quantum, in ticks.
@@ -387,7 +401,7 @@ impl ProcessorSet {
     }
 
     /// The highest priority its threads may take.
-    pub(super) const fn max_priority(&self) -> u32 {
+    pub(super) const fn max_priority(&self) -> Priority {
         self.max_priority
     }
 
@@ -508,6 +522,26 @@ impl ProcessorSet {
                 processor.queued.load(Ordering::Relaxed) - queues.bound
             })
             .sum()
+    }
+
+    /// The best priority among the threads waiting on its run queue.
+    ///
+    /// # Panics
+    ///
+    /// If one of its processors is another running CPU's: that comes with
+    /// SMP.
+    pub(super) fn best_queued(&self) -> Option<Priority> {
+        (0..MAX_CPUS)
+            .map(|cpu| smp::of(cpu).processor())
+            .filter(|processor| processor.set().is_some_and(|set| ptr::eq(set, self)))
+            .filter_map(Processor::best_unbound)
+            .reduce(|best, priority| {
+                if priority.outranks(best) {
+                    priority
+                } else {
+                    best
+                }
+            })
     }
 
     /// `quantum` adjusted at run time: its processors take turns at
