@@ -49,6 +49,14 @@ bitflags::bitflags! {
     }
 }
 
+impl ThreadState {
+    /// The states that say whether it may run.
+    pub(super) const SCHEDULING: Self = Self::WAIT
+        .union(Self::SUSPENDED)
+        .union(Self::RUN)
+        .union(Self::UNINTERRUPTIBLE);
+}
+
 /// Whether a thread's quantum ran out at a tick.
 #[derive(Clone, Copy)]
 pub enum Quantum {
@@ -590,6 +598,13 @@ impl Thread {
         if self.sched_stamp.load(Ordering::Relaxed) != sched::scheduler_tick() {
             self.update_priority();
         }
+    }
+
+    /// Whether it is stuck: its scheduling state only `RUN`, and its use last
+    /// aged more than one scheduler tick ago.
+    pub(super) fn is_stuck(&self) -> bool {
+        self.state() & ThreadState::SCHEDULING == ThreadState::RUN
+            && sched::scheduler_tick().wrapping_sub(self.sched_stamp.load(Ordering::Relaxed)) > 1
     }
 
     /// Catches its use up with the scheduler's aging: each second missed
