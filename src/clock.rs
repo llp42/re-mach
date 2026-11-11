@@ -12,9 +12,9 @@ use crate::arch::{Current, Machine as _, PAGE_SIZE};
 use crate::config::HZ;
 use crate::machine::{self, CpuState, Mode};
 use crate::processor::State;
-use crate::sched;
+use crate::sched::{self, Priority};
 use crate::sync::{CriticalSection, OnceLock, Spinlock};
-use crate::{smp, vm};
+use crate::{smp, thread, vm};
 
 bitflags::bitflags! {
     /// Where a timeout stands, as Mach numbers it.
@@ -118,6 +118,16 @@ pub fn set_timeout(timeout: &'static Timeout, ticks: u64) {
     // SAFETY: a timeout lives while it waits in a wheel.
     slot.push_back(unsafe { UnsafeRef::from_raw(ptr::from_ref(timeout)) });
     drop(slot);
+}
+
+/// A softclock thread's work, on the CPU of the processor it is bound to:
+/// at the highest priority, it waits with no event each time it runs.
+pub fn softclock() -> ! {
+    thread::set_own_priority(Priority::HIGHEST);
+    loop {
+        sched::assert_wait(None);
+        sched::block();
+    }
 }
 
 /// A time, in seconds and nanoseconds since 1970 or since boot.

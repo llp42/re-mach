@@ -3,7 +3,8 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The scheduler.
 
-use core::ptr;
+use core::num::{NonZero, TryFromIntError};
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use intrusive_collections::{LinkedList, UnsafeRef};
@@ -25,22 +26,37 @@ pub type SleepQueue = LinkedList<SleepQueueAdapter>;
 /// How many sleep queues each CPU has.
 pub const SLEEP_QUEUES: usize = 1031;
 
-/// What a thread waits for: an address.
-#[derive(Clone, Copy)]
-pub struct Event(usize);
+/// What a thread waits for: an address, never 0.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Event(NonZero<usize>);
 
 impl Event {
     /// The event of `object`'s address.
     pub fn of<T>(object: &T) -> Self {
-        Self(ptr::from_ref(object).addr())
+        Self(NonNull::from(object).addr())
     }
 
     /// Its sleep queue: its address as a signed number, complemented if
     /// negative, modulo the queues.
     const fn hash(self) -> usize {
-        let address = self.0.cast_signed();
+        let address = self.0.get().cast_signed();
         let positive = if address < 0 { !address } else { address };
         positive.cast_unsigned() % SLEEP_QUEUES
+    }
+}
+
+impl From<Event> for usize {
+    fn from(event: Event) -> Self {
+        event.0.get()
+    }
+}
+
+/// Fails for 0, which no event is.
+impl TryFrom<usize> for Event {
+    type Error = TryFromIntError;
+
+    fn try_from(address: usize) -> Result<Self, TryFromIntError> {
+        NonZero::try_from(address).map(Self)
     }
 }
 
@@ -274,31 +290,35 @@ pub fn make_runnable(thread: &'static Thread, preemption: Preemption) {
     }
 }
 
-/// Makes the current thread wait for `event`, uninterruptibly: it goes on
-/// its CPU's sleep queue for the event, and stops running once it blocks.
+/// Makes the current thread wait, uninterruptibly, for `event` or for none:
+/// with an event it goes on its CPU's sleep queue for it, and it stops
+/// running once it blocks.
 ///
 /// # Panics
 ///
 /// If it waits for an event already.
-fn assert_wait(event: Event) {
+pub fn assert_wait(event: Option<Event>) {
     let _section = CriticalSection::enter();
     let cpu = smp::current();
     let thread = cpu.active_thread().expect("assert_wait: no current thread");
-    let waited = thread.wait_event();
-    assert!(
-        waited == 0,
-        "assert_wait: already asserted event {waited:#x}"
-    );
-    // SAFETY: a thread lives while it waits on a sleep queue.
-    cpu.sleep_queues()[event.hash()].push_back(unsafe { UnsafeRef::from_raw(thread) });
-    thread.set_wait_event(event.0);
+    if let Some(waited) = thread.wait_event() {
+        panic!(
+            "assert_wait: already asserted event {:#x}",
+            usize::from(waited)
+        );
+    }
+    if let Some(event) = event {
+        // SAFETY: a thread lives while it waits on a sleep queue.
+        cpu.sleep_queues()[event.hash()].push_back(unsafe { UnsafeRef::from_raw(thread) });
+        thread.set_wait_event(Some(event));
+    }
     thread.insert_state(ThreadState::WAIT | ThreadState::UNINTERRUPTIBLE);
 }
 
 /// Makes the current thread wait for `event`, releases `guard`'s lock and
 /// blocks; returns once the thread runs again.
 pub fn sleep<T>(event: Event, guard: SpinlockGuard<'_, T>) {
-    assert_wait(event);
+    assert_wait(Some(event));
     drop(guard);
     block();
 }
@@ -314,13 +334,13 @@ pub fn wakeup(event: Event) {
     let mut queues = smp::current().sleep_queues();
     let mut cursor = queues[event.hash()].front_mut();
     while let Some(thread) = cursor.get() {
-        if thread.wait_event() != event.0 {
+        if thread.wait_event() != Some(event) {
             cursor.move_next();
             continue;
         }
         // SAFETY: it waited on the queue, and goes on a run queue.
         let thread = unsafe { &*UnsafeRef::into_raw(cursor.remove().unwrap()) };
-        thread.set_wait_event(0);
+        thread.set_wait_event(None);
         let state = thread.state();
         assert!(
             [

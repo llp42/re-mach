@@ -20,7 +20,7 @@ use crate::ipc::port::{KernelObject, Port};
 use crate::machine::Mode;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, Processor, ProcessorSet};
-use crate::sched::{self, Policy, Preemption, Priority, SCHEDULER_SCALE};
+use crate::sched::{self, Event, Policy, Preemption, Priority, SCHEDULER_SCALE};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{CriticalSection, OnceLock};
 use crate::task::Task;
@@ -723,14 +723,15 @@ impl Thread {
         self.state.store(state.bits(), Ordering::Relaxed);
     }
 
-    /// The address of the event it waits for; 0 for none.
-    pub(super) fn wait_event(&self) -> usize {
-        self.wait_event.load(Ordering::Relaxed)
+    /// The event it waits for, if any.
+    pub(super) fn wait_event(&self) -> Option<Event> {
+        Event::try_from(self.wait_event.load(Ordering::Relaxed)).ok()
     }
 
-    /// Sets the event it waits for; 0 for none.
-    pub(super) fn set_wait_event(&self, event: usize) {
-        self.wait_event.store(event, Ordering::Relaxed);
+    /// Sets the event it waits for, or none.
+    pub(super) fn set_wait_event(&self, event: Option<Event>) {
+        self.wait_event
+            .store(event.map_or(0, usize::from), Ordering::Relaxed);
     }
 
     /// Sets its base priority, while it runs.

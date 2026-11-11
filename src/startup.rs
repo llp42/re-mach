@@ -12,9 +12,10 @@ use crate::{bootstrap, clock, machine, processor, sched, task};
 use crate::{device, ipc, smp, vm};
 
 /// The startup thread's work: starting the other kernel threads and the
-/// bootstrap tasks; so far only an idle thread for each processor, the
-/// device service, the kernel task's creation time and the start of the
-/// bootstrap, then it becomes the pageout daemon.
+/// bootstrap tasks; so far only an idle thread for each processor, then a
+/// softclock thread for each, the device service, the kernel task's
+/// creation time and the start of the bootstrap, then it becomes the
+/// pageout daemon.
 fn start_kernel_threads() -> ! {
     let kernel_task = task::KERNEL_TASK
         .get()
@@ -25,6 +26,16 @@ fn start_kernel_threads() -> ! {
         thread.set_name(format_args!("idle/{cpu}"));
         thread.bind(smp::of(cpu).processor());
         thread.start(sched::idle_thread);
+        thread
+            .resume()
+            .unwrap_or_else(|error| panic!("start_kernel_threads: thread_resume: {error:?}"));
+    }
+    for cpu in (0..MAX_CPUS).filter(|&cpu| machine::has_processor(cpu)) {
+        let thread = Thread::create(kernel_task)
+            .unwrap_or_else(|error| panic!("start_kernel_threads: thread_create: {error:?}"));
+        thread.set_name(format_args!("softclock/{cpu}"));
+        thread.bind(smp::of(cpu).processor());
+        thread.start(clock::softclock);
         thread
             .resume()
             .unwrap_or_else(|error| panic!("start_kernel_threads: thread_resume: {error:?}"));
