@@ -125,6 +125,25 @@ pub fn recompute_priorities(_: &'static Timeout) {
     clock::set_timeout(&RECOMPUTE_PRIORITIES, u64::from(HZ));
 }
 
+/// Computes each processor set's load and Mach factor, under the sets'
+/// token and its own; a set with no processor has none.
+///
+/// # Panics
+///
+/// If a set has processors: not yet.
+pub fn compute_mach_factor() {
+    let all = processor::ALL_SETS.lock();
+    for set in &all.list {
+        let members = set.lock();
+        assert!(
+            set.processor_count() == 0,
+            "compute_mach_factor: a set with processors, not yet"
+        );
+        drop(members);
+    }
+    drop(all);
+}
+
 /// The priority of system threads, and the default set's highest.
 pub const SYSTEM_PRIORITY: Priority = Priority(6);
 

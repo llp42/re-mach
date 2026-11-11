@@ -317,7 +317,7 @@ intrusive_adapter!(
         clippy::expl_impl_clone_on_copy,
         reason = "intrusive_adapter! writes Clone by hand"
     )]
-    AllSetsAdapter = UnsafeRef<ProcessorSet>: ProcessorSet { all_link => LinkedListAtomicLink }
+    pub AllSetsAdapter = UnsafeRef<ProcessorSet>: ProcessorSet { all_link => LinkedListAtomicLink }
 );
 
 /// A set's tasks and threads, and how many of each.
@@ -333,14 +333,14 @@ pub struct Members {
 }
 
 /// Every processor set, and how many there are.
-struct AllSets {
-    list: LinkedList<AllSetsAdapter>,
+pub struct AllSets {
+    pub(super) list: LinkedList<AllSetsAdapter>,
     count: u32,
 }
 
 /// The processor sets, behind one token: they change only as sets are
 /// created and destroyed.
-static ALL_SETS: Token<AllSets> = Token::new(AllSets {
+pub static ALL_SETS: Token<AllSets> = Token::new(AllSets {
     list: LinkedList::new(AllSetsAdapter::NEW),
     count: 0,
 });
