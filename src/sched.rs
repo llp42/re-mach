@@ -5,7 +5,7 @@
 
 use core::num::{NonZero, TryFromIntError};
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 
 use intrusive_collections::{LinkedList, UnsafeRef};
 
@@ -13,7 +13,7 @@ use crate::arch::{self, Machine as _};
 use crate::ast::{self, Ast};
 use crate::clock;
 use crate::clock::timeout::Timeout;
-use crate::config::HZ;
+use crate::config::{HZ, MAX_CPUS};
 use crate::error::Error;
 use crate::machine::CpuState;
 use crate::processor::{self, ActionQueueAdapter, Processor, State};
@@ -166,20 +166,72 @@ pub fn recompute_priorities(_: &'static Timeout) {
     }
 }
 
-/// Computes each processor set's load and Mach factor, under the sets'
-/// token and its own; a set with no processor has none.
-///
-/// # Panics
-///
-/// If a set has processors: not yet.
+/// What Mach factors and load averages are scaled by.
+const LOAD_SCALE: i64 = 1000;
+
+/// How much of its last value each system average keeps, over
+/// `LOAD_SCALE`: they span 5 seconds, 30 seconds and a minute.
+const DECAY: [i64; 3] = [800, 966, 983];
+
+/// The default set's load averages over those spans, by `LOAD_SCALE`;
+/// written only by `compute_mach_factor`.
+static AVENRUN: [AtomicI64; 3] = [const { AtomicI64::new(0) }; 3];
+
+/// The default set's Mach factors over those spans, by `LOAD_SCALE`;
+/// written only by `compute_mach_factor`.
+static MACH_FACTOR: [AtomicI64; 3] = [const { AtomicI64::new(0) }; 3];
+
+/// Computes each processor set's Mach factor and loads, under the sets'
+/// token and its own, from the threads its processors queue and run, the
+/// current one aside; the default set's feed the system averages. A set
+/// with no processor has none.
 pub fn compute_mach_factor() {
     let all = processor::ALL_SETS.lock();
     for set in &all.list {
         let members = set.lock();
-        assert!(
-            set.processor_count() == 0,
-            "compute_mach_factor: a set with processors, not yet"
-        );
+        let count = i64::from(set.processor_count());
+        if count > 0 {
+            // Each processor's run queues hold the set's threads too.
+            let (queued, idle) = (0..MAX_CPUS)
+                .map(|cpu| smp::of(cpu).processor())
+                .filter(|processor| processor.set().is_some_and(|its| ptr::eq(its, set)))
+                .fold((0, 0), |(queued, idle), processor| {
+                    (
+                        queued + i64::from(processor.queued()),
+                        idle + i64::from(matches!(processor.state(), State::Idle)),
+                    )
+                });
+            let is_default = ptr::eq(set, &raw const processor::DEFAULT_SET);
+            // Less the current thread, in the default set.
+            let threads = queued + count - idle - i64::from(is_default);
+            let (factor, load) = if threads > count {
+                (
+                    count * LOAD_SCALE / (threads + 1),
+                    (threads << SCHEDULER_SHIFT) / count,
+                )
+            } else {
+                ((count - threads) * LOAD_SCALE, i64::from(SCHEDULER_SCALE))
+            };
+            let average = threads * LOAD_SCALE;
+            set.update_averages(factor, average, u32::try_from(load).unwrap());
+            if is_default {
+                for (decay, (mach_factor, avenrun)) in
+                    DECAY.into_iter().zip(MACH_FACTOR.iter().zip(&AVENRUN))
+                {
+                    let decayed = |old: i64, now: i64| {
+                        (old * decay + now * (LOAD_SCALE - decay)) / LOAD_SCALE
+                    };
+                    mach_factor.store(
+                        decayed(mach_factor.load(Ordering::Relaxed), factor),
+                        Ordering::Relaxed,
+                    );
+                    avenrun.store(
+                        decayed(avenrun.load(Ordering::Relaxed), average),
+                        Ordering::Relaxed,
+                    );
+                }
+            }
+        }
         drop(members);
     }
     drop(all);
@@ -578,7 +630,8 @@ pub fn idle_thread() -> ! {
 
 /// The scheduler thread's work: it records itself as the scheduler
 /// thread, then waits with no event, uninterruptibly, for
-/// `recompute_priorities` to wake it; woken, it waits again.
+/// `recompute_priorities` to wake it; woken, it computes the Mach factor,
+/// then waits again.
 ///
 /// # Panics
 ///
@@ -591,6 +644,7 @@ pub fn sched_thread() -> ! {
     loop {
         assert_wait(None);
         block();
+        compute_mach_factor();
     }
 }
 

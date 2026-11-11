@@ -313,7 +313,7 @@ impl Thread {
         let mut machine_state = arch::MachineState::new()?;
         let port = Port::allocate_kernel()?;
         port.make_send();
-        // A full share of a processor; a set's load average is at least 1.
+        // A full share of a processor.
         let sched_usage = TIMER_RATE * SCHEDULER_SCALE;
         let mut thread = CACHE.allocate(Self {
             sleep_link: LinkedListAtomicLink::new(),
@@ -333,7 +333,8 @@ impl Thread {
             max_priority: AtomicU32::new(0),
             sched_pri: AtomicU32::new(0),
             policy: Policy::Timeshare,
-            cpu_usage: AtomicU32::new(TIMER_RATE),
+            // Set below, by its set's load average.
+            cpu_usage: AtomicU32::new(0),
             sched_usage: AtomicU32::new(sched_usage),
             sched_stamp: AtomicU32::new(sched::scheduler_tick()),
             active: AtomicBool::new(true),
@@ -395,6 +396,9 @@ impl Thread {
             set.deallocate();
             set = current;
         };
+        // Its share at the set's load average, taken as at least 1.
+        let load_average = set.load_average().max(i64::from(SCHEDULER_SCALE));
+        *thread.cpu_usage.get_mut() = u32::try_from(i64::from(sched_usage) / load_average).unwrap();
         let max_priority = members.max_priority.weaker(set.max_priority());
         *thread.max_priority.get_mut() = u32::from(max_priority);
         let priority = members.priority.weaker(max_priority);

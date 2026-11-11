@@ -5,7 +5,9 @@
 
 use core::ops::DerefMut;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, Ordering,
+};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
@@ -300,8 +302,15 @@ pub struct ProcessorSet {
     /// count; at 0, twice the quantum of 1. Changed only under `members`'
     /// token, and read without it at each tick.
     machine_quantum: [AtomicU32; MAX_CPUS + 1],
-    /// Its load, scaled by `SCHEDULER_SCALE`.
-    load: u32,
+    /// Its Mach factor, scaled by `LOAD_SCALE`; written only by
+    /// `compute_mach_factor`.
+    mach_factor: AtomicI64,
+    /// Its load average, scaled by `LOAD_SCALE`; written only by
+    /// `compute_mach_factor`.
+    load_average: AtomicI64,
+    /// Its load, scaled by `SCHEDULER_SCALE`; written only by
+    /// `compute_mach_factor`, and read without its token.
+    load: AtomicU32,
     /// Its port, for controlling it.
     port: AtomicPtr<Port>,
     /// Its name port, for information about it.
@@ -362,7 +371,9 @@ impl ProcessorSet {
             policies: Policies::TIMESHARE,
             quantum: AtomicU32::new(MIN_QUANTUM),
             machine_quantum: [const { AtomicU32::new(MIN_QUANTUM) }; MAX_CPUS + 1],
-            load: SCHEDULER_SCALE,
+            mach_factor: AtomicI64::new(0),
+            load_average: AtomicI64::new(0),
+            load: AtomicU32::new(SCHEDULER_SCALE),
             port: AtomicPtr::new(ptr::null_mut()),
             name_port: AtomicPtr::new(ptr::null_mut()),
             members: Token::new(Members {
@@ -415,9 +426,28 @@ impl ProcessorSet {
         self.quantum.load(Ordering::Relaxed)
     }
 
+    /// Its load average, scaled by `LOAD_SCALE`.
+    pub(super) fn load_average(&self) -> i64 {
+        self.load_average.load(Ordering::Relaxed)
+    }
+
     /// Its load, scaled by `SCHEDULER_SCALE`.
-    pub(super) const fn load(&self) -> u32 {
-        self.load
+    pub(super) fn load(&self) -> u32 {
+        self.load.load(Ordering::Relaxed)
+    }
+
+    /// Moves its Mach factor and load average a fifth of the way to
+    /// `factor` and `average`, and its load half way to `load`; by
+    /// `compute_mach_factor` only, under `members`' token.
+    pub(super) fn update_averages(&self, factor: i64, average: i64, load: u32) {
+        let mach_factor = self.mach_factor.load(Ordering::Relaxed);
+        self.mach_factor
+            .store((4 * mach_factor + factor) / 5, Ordering::Relaxed);
+        let load_average = self.load_average.load(Ordering::Relaxed);
+        self.load_average
+            .store((4 * load_average + average) / 5, Ordering::Relaxed);
+        let old = self.load.load(Ordering::Relaxed);
+        self.load.store(old.midpoint(load), Ordering::Relaxed);
     }
 
     /// Sets its port, once, before others reach it.
