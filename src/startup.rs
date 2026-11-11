@@ -36,6 +36,10 @@ fn start_kernel_threads() -> ! {
         thread.set_name(format_args!("softclock/{cpu}"));
         thread.bind(smp::of(cpu).processor());
         thread.start(clock::softclock);
+        assert!(
+            smp::of(cpu).timeouts().set_thread(thread).is_ok(),
+            "start_kernel_threads: a softclock thread already"
+        );
         thread
             .resume()
             .unwrap_or_else(|error| panic!("start_kernel_threads: thread_resume: {error:?}"));

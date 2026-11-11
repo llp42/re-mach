@@ -60,6 +60,22 @@ impl TryFrom<usize> for Event {
     }
 }
 
+/// How a thread's wait ended, as Mach numbers it; only the results used
+/// here.
+pub enum WaitResult {
+    /// It was woken.
+    Awakened,
+}
+
+impl WaitResult {
+    /// Its number.
+    pub(super) const fn number(self) -> u8 {
+        match self {
+            Self::Awakened => 0,
+        }
+    }
+}
+
 /// The runnable threads of one priority.
 pub type RunQueue = LinkedList<RunQueueAdapter>;
 
@@ -324,7 +340,7 @@ pub fn sleep<T>(event: Event, guard: SpinlockGuard<'_, T>) {
 }
 
 /// Wakes the threads waiting for `event` on the current CPU's sleep queue:
-/// each leaves it and runs.
+/// each leaves it, awakened, and runs.
 ///
 /// # Panics
 ///
@@ -353,8 +369,43 @@ pub fn wakeup(event: Event) {
             state.bits()
         );
         thread.set_state((state - ThreadState::WAIT) | ThreadState::RUN);
+        thread.set_wait_result(WaitResult::Awakened);
         make_runnable(thread, Preemption::Allowed);
     }
+}
+
+/// Ends `thread`'s wait with `result`, on its home CPU: it runs; a thread
+/// not waiting is left as it is.
+///
+/// # Panics
+///
+/// If it waits for an event, runs already, or is suspended in an
+/// interruptible wait: not yet.
+pub fn clear_wait(thread: &'static Thread, result: WaitResult) {
+    let _section = CriticalSection::enter();
+    if let Some(event) = thread.wait_event() {
+        panic!(
+            "clear_wait: thread {thread:p} waits for event {:#x}, not yet",
+            usize::from(event)
+        );
+    }
+    let state = thread.state();
+    if !state.contains(ThreadState::WAIT) {
+        return;
+    }
+    assert!(
+        [
+            ThreadState::WAIT | ThreadState::SUSPENDED | ThreadState::UNINTERRUPTIBLE,
+            ThreadState::WAIT | ThreadState::UNINTERRUPTIBLE,
+            ThreadState::WAIT,
+        ]
+        .contains(&state),
+        "clear_wait: thread {thread:p} in state {:#x}, not yet",
+        state.bits()
+    );
+    thread.set_state((state - ThreadState::WAIT) | ThreadState::RUN);
+    thread.set_wait_result(result);
+    make_runnable(thread, Preemption::Allowed);
 }
 
 /// Gives the current CPU up to the next thread to run, which may be the

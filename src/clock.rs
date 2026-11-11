@@ -4,7 +4,9 @@
 //! The clock: the time of day and timeouts.
 
 use core::ptr;
-use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, AtomicU64, AtomicUsize, Ordering, fence};
+use core::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicI64, AtomicU8, AtomicU64, AtomicUsize, Ordering, fence,
+};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
@@ -12,9 +14,10 @@ use crate::arch::{Current, Machine as _, PAGE_SIZE};
 use crate::config::HZ;
 use crate::machine::{self, CpuState, Mode};
 use crate::processor::State;
-use crate::sched::{self, Priority};
+use crate::sched::{self, Priority, WaitResult};
 use crate::sync::{CriticalSection, OnceLock, Spinlock};
-use crate::{smp, thread, vm};
+use crate::thread::{self, Thread};
+use crate::{smp, vm};
 
 bitflags::bitflags! {
     /// Where a timeout stands, as Mach numbers it.
@@ -73,6 +76,10 @@ pub struct Wheel {
     /// The last tick whose timeouts have been checked for: those of a tick
     /// with none are at once, the rest by the softclock thread.
     checked_ticks: AtomicU64,
+    /// Its softclock thread, set as it is created.
+    thread: OnceLock<&'static Thread>,
+    /// Whether its softclock thread was woken and has not waited since.
+    running: AtomicBool,
 }
 
 impl Wheel {
@@ -82,7 +89,14 @@ impl Wheel {
             slots: [const { Spinlock::new(LinkedList::new(TimeoutAdapter::NEW)) }; WHEEL_SLOTS],
             ticks: AtomicU64::new(0),
             checked_ticks: AtomicU64::new(0),
+            thread: OnceLock::new(),
+            running: AtomicBool::new(false),
         }
+    }
+
+    /// Sets its softclock thread, once.
+    pub fn set_thread(&self, thread: &'static Thread) -> Result<(), &'static Thread> {
+        self.thread.set(thread)
     }
 
     /// The slot of the timeouts due at `tick`.
@@ -121,12 +135,19 @@ pub fn set_timeout(timeout: &'static Timeout, ticks: u64) {
 }
 
 /// A softclock thread's work, on the CPU of the processor it is bound to:
-/// at the highest priority, it waits with no event each time it runs.
+/// at the highest priority, each time it runs it marks itself not running
+/// and waits with no event, in one critical section.
 pub fn softclock() -> ! {
     thread::set_own_priority(Priority::HIGHEST);
     loop {
+        let section = CriticalSection::enter();
+        smp::current()
+            .timeouts()
+            .running
+            .store(false, Ordering::Relaxed);
         sched::assert_wait(None);
         sched::block();
+        drop(section);
     }
 }
 
@@ -344,7 +365,8 @@ pub fn map_time() {
 /// Takes a clock tick on the current CPU, `microseconds` after the one
 /// before, with the thread it interrupted running in `mode`: the tick is
 /// the thread's, and the CPU's in that mode, or idle; it advances the
-/// CPU's timeouts, and on the boot CPU the time of day and the uptime.
+/// CPU's timeouts, and on the boot CPU the time of day and the uptime, then
+/// wakes the softclock thread if a timeout is due or the wheel is behind.
 pub fn interrupt(microseconds: u32, mode: Mode) {
     let cpu = smp::current();
     let thread = cpu.active_thread();
@@ -364,11 +386,15 @@ pub fn interrupt(microseconds: u32, mode: Mode) {
     let ticks = wheel.ticks.load(Ordering::Relaxed) + 1;
     wheel.ticks.store(ticks, Ordering::Relaxed);
     // The softclock thread runs the timeouts due; with none due, and none
-    // behind, the tick is checked already.
+    // behind, the tick is checked already, else the thread is woken unless
+    // it was already.
     let slot = wheel.slot(ticks).lock();
-    if slot.is_empty() && wheel.checked_ticks.load(Ordering::Relaxed) + 1 == ticks {
+    let wake = if slot.is_empty() && wheel.checked_ticks.load(Ordering::Relaxed) + 1 == ticks {
         wheel.checked_ticks.store(ticks, Ordering::Relaxed);
-    }
+        false
+    } else {
+        !wheel.running.swap(true, Ordering::Relaxed)
+    };
     drop(slot);
     if cpu.id() == 0 {
         let nanoseconds = i64::from(microseconds) * 1000;
@@ -380,5 +406,12 @@ pub fn interrupt(microseconds: u32, mode: Mode) {
             mapped.set_time(time);
             mapped.set_uptime(uptime);
         }
+    }
+    if wake {
+        let thread = wheel
+            .thread
+            .get()
+            .expect("clock_interrupt: no softclock thread");
+        sched::clear_wait(thread, WaitResult::Awakened);
     }
 }
