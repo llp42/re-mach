@@ -13,9 +13,9 @@ use crate::{device, ipc, smp, vm};
 
 /// The startup thread's work: starting the other kernel threads and the
 /// bootstrap tasks; so far only an idle thread for each processor, then a
-/// softclock thread for each, the reaper, the device service, the kernel
-/// task's creation time and the start of the bootstrap, then it becomes
-/// the pageout daemon.
+/// softclock thread for each, the reaper, the scheduler thread, the device
+/// service, the kernel task's creation time and the start of the
+/// bootstrap, then it becomes the pageout daemon.
 fn start_kernel_threads() -> ! {
     let kernel_task = task::KERNEL_TASK
         .get()
@@ -45,6 +45,8 @@ fn start_kernel_threads() -> ! {
             .unwrap_or_else(|error| panic!("start_kernel_threads: thread_resume: {error:?}"));
     }
     thread::kernel_thread(kernel_task, thread::reaper_thread)
+        .unwrap_or_else(|error| panic!("start_kernel_threads: kernel_thread: {error:?}"));
+    thread::kernel_thread(kernel_task, sched::sched_thread)
         .unwrap_or_else(|error| panic!("start_kernel_threads: kernel_thread: {error:?}"));
     device::create_service();
     kernel_task.creation_time.store(clock::stamp());

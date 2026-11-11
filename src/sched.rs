@@ -17,7 +17,7 @@ use crate::error::Error;
 use crate::machine::CpuState;
 use crate::processor::{self, ActionQueueAdapter, Processor, State};
 use crate::smp;
-use crate::sync::{CriticalSection, SpinlockGuard};
+use crate::sync::{CriticalSection, OnceLock, SpinlockGuard};
 use crate::thread::{Quantum, RunQueueAdapter, SleepQueueAdapter, Thread, ThreadState};
 
 /// The threads sleeping on the events that hash to one slot.
@@ -147,14 +147,22 @@ pub fn scheduler_tick() -> u32 {
     SCHEDULER_TICK.load(Ordering::Relaxed)
 }
 
+/// The scheduler thread, set as it starts.
+static SCHED_THREAD: OnceLock<&'static Thread> = OnceLock::new();
+
 /// What recomputes threads' priorities each second.
 pub static RECOMPUTE_PRIORITIES: Timeout = Timeout::new(recompute_priorities);
 
 /// Ages threads' use once more and sets itself again for a second later,
-/// on the boot CPU, then once a second.
+/// on the boot CPU, then once a second; it wakes the scheduler thread,
+/// once that has started.
 pub fn recompute_priorities(_: &'static Timeout) {
     SCHEDULER_TICK.fetch_add(1, Ordering::Relaxed);
     clock::set_timeout(&RECOMPUTE_PRIORITIES, u64::from(HZ));
+    if let Some(&thread) = SCHED_THREAD.get() {
+        // Its home CPU is this one while only the boot CPU runs threads.
+        clear_wait(thread, WaitResult::Awakened);
+    }
 }
 
 /// Computes each processor set's load and Mach factor, under the sets'
@@ -564,6 +572,24 @@ pub fn idle_thread() -> ! {
             ),
         }
         drop(section);
+    }
+}
+
+/// The scheduler thread's work: it records itself as the scheduler
+/// thread, then waits with no event, uninterruptibly, for
+/// `recompute_priorities` to wake it; woken, it waits again.
+///
+/// # Panics
+///
+/// If a scheduler thread ran already.
+pub fn sched_thread() -> ! {
+    let thread = smp::current()
+        .active_thread()
+        .expect("sched_thread: no current thread");
+    assert!(SCHED_THREAD.set(thread).is_ok(), "sched_thread: twice");
+    loop {
+        assert_wait(None);
+        block();
     }
 }
 
