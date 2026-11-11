@@ -35,7 +35,7 @@ fn start_kernel_threads() -> ! {
             .unwrap_or_else(|error| panic!("start_kernel_threads: thread_create: {error:?}"));
         thread.set_name(format_args!("softclock/{cpu}"));
         thread.bind(smp::of(cpu).processor());
-        thread.start(clock::softclock);
+        thread.start(clock::softclock::softclock);
         assert!(
             smp::of(cpu).timeouts().set_thread(thread).is_ok(),
             "start_kernel_threads: a softclock thread already"
@@ -49,7 +49,7 @@ fn start_kernel_threads() -> ! {
     thread::kernel_thread(kernel_task, sched::sched_thread)
         .unwrap_or_else(|error| panic!("start_kernel_threads: kernel_thread: {error:?}"));
     device::create_service();
-    kernel_task.creation_time.store(clock::stamp());
+    kernel_task.creation_time.store(clock::time::stamp());
     bootstrap::create();
     smp::current()
         .active_thread()
@@ -68,7 +68,7 @@ pub fn start() -> ! {
     vm::init();
     ipc::init();
     arch::Current::init();
-    clock::map_time();
+    clock::mapped_time::map_time();
     machine::init_info();
     task::init();
     thread::init();

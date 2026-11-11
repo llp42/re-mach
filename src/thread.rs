@@ -14,7 +14,8 @@ use core::sync::atomic::{
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use crate::ast::Ast;
-use crate::clock::{self, TimeValue};
+use crate::clock;
+use crate::clock::time::TimeValue;
 use crate::config::MAX_CPUS;
 use crate::error::Error;
 use crate::ipc::port::{KernelObject, Port};
@@ -338,7 +339,7 @@ impl Thread {
             active: AtomicBool::new(true),
             set: AtomicPtr::new(ptr::null_mut()),
             may_assign: true,
-            creation_time: clock::stamp(),
+            creation_time: clock::time::stamp(),
             // Its task's, copied below under the task's token.
             name: Name::new(),
             // SAFETY: its box, unused until given up below, outlives the thread.
