@@ -4,7 +4,7 @@
 //! The pageout daemon.
 
 use super::page;
-use crate::sched::{self, Event};
+use crate::sched::{self, Event, Priority};
 use crate::sync::Spinlock;
 use crate::thread;
 
@@ -19,7 +19,7 @@ static REQUESTED: Spinlock<()> = Spinlock::new(());
 ///
 /// If a pool is not usable: evicting pages comes later.
 pub fn run() -> ! {
-    thread::set_own_priority(0);
+    thread::set_own_priority(Priority::HIGHEST);
     loop {
         let requested = REQUESTED.lock();
         assert!(page::usable(), "vm_pageout_scan: eviction, not yet");

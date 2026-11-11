@@ -81,7 +81,14 @@ pub fn check(thread: &Thread) {
                     }
                 }
                 Some(set) if !processor.is_first_quantum() && set.queued() > 0 => {
-                    panic!("ast_check: the set's run queue, not yet")
+                    let current = thread.scheduled_priority();
+                    // Its best waiting thread is at least as high.
+                    if set
+                        .best_queued()
+                        .is_some_and(|best| !current.outranks(best))
+                    {
+                        cpu.add_asts(Ast::BLOCK);
+                    }
                 }
                 _ => {}
             }

@@ -20,7 +20,7 @@ use crate::ipc::port::{KernelObject, Port};
 use crate::machine::Mode;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, Processor, ProcessorSet};
-use crate::sched::{self, Policy, Preemption, RUN_QUEUES, SCHEDULER_SCALE};
+use crate::sched::{self, Policy, Preemption, Priority, SCHEDULER_SCALE};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{CriticalSection, OnceLock};
 use crate::task::Task;
@@ -187,13 +187,6 @@ const fn aged(usage: u32, (first, second): (u32, i32)) -> u32 {
     } else {
         (usage >> first) - (usage >> second.unsigned_abs())
     }
-}
-
-/// The priority a thread of base priority `priority` is scheduled at after
-/// `usage`, within the run queues.
-fn computed_priority(priority: u32, usage: u32) -> u32 {
-    (priority + (usage >> (sched::PRIORITY_SHIFT + sched::SCHEDULER_SHIFT)))
-        .min(u32::try_from(RUN_QUEUES).unwrap() - 1)
 }
 
 /// The time `time` gained since `charged`, which takes it now.
@@ -397,11 +390,11 @@ impl Thread {
             set.deallocate();
             set = current;
         };
-        let max_priority = members.max_priority.max(set.max_priority());
-        *thread.max_priority.get_mut() = max_priority;
-        let priority = members.priority.max(max_priority);
-        *thread.priority.get_mut() = priority;
-        *thread.sched_pri.get_mut() = computed_priority(priority, sched_usage);
+        let max_priority = members.max_priority.weaker(set.max_priority());
+        *thread.max_priority.get_mut() = u32::from(max_priority);
+        let priority = members.priority.weaker(max_priority);
+        *thread.priority.get_mut() = u32::from(priority);
+        *thread.sched_pri.get_mut() = u32::from(priority.aged_by(sched_usage));
         *thread.suspend_count.get_mut() = members.suspend_count + 1 + u32::from(set.is_empty());
         thread.name.copy_from(&members.name);
         // Nothing is published yet; only the set's reference is undone, and
@@ -578,10 +571,9 @@ impl Thread {
     /// Schedules it at the priority its base priority and use give.
     fn compute_my_priority(&self) {
         let usage = self.sched_usage.load(Ordering::Relaxed);
-        self.sched_pri.store(
-            computed_priority(self.priority.load(Ordering::Relaxed), usage),
-            Ordering::Relaxed,
-        );
+        let priority = Priority::try_from(self.priority.load(Ordering::Relaxed)).unwrap();
+        self.sched_pri
+            .store(u32::from(priority.aged_by(usage)), Ordering::Relaxed);
     }
 
     /// Catches its use up with the scheduler's aging, if it missed any.
@@ -742,18 +734,18 @@ impl Thread {
     }
 
     /// Sets its base priority, while it runs.
-    pub(super) fn set_priority(&self, priority: u32) {
-        self.priority.store(priority, Ordering::Relaxed);
+    pub(super) fn set_priority(&self, priority: Priority) {
+        self.priority.store(u32::from(priority), Ordering::Relaxed);
     }
 
     /// The priority it is scheduled at.
-    pub(super) fn scheduled_priority(&self) -> u32 {
-        self.sched_pri.load(Ordering::Relaxed)
+    pub(super) fn scheduled_priority(&self) -> Priority {
+        Priority::try_from(self.sched_pri.load(Ordering::Relaxed)).unwrap()
     }
 
     /// Sets the priority it is scheduled at, while on no run queue.
-    pub(super) fn set_scheduled_priority(&self, priority: u32) {
-        self.sched_pri.store(priority, Ordering::Relaxed);
+    pub(super) fn set_scheduled_priority(&self, priority: Priority) {
+        self.sched_pri.store(u32::from(priority), Ordering::Relaxed);
     }
 
     /// Its scheduling policy.
@@ -804,15 +796,20 @@ impl Thread {
 /// # Panics
 ///
 /// If the thread is not timeshared, or is depressed: those come later.
-pub fn set_own_priority(priority: u32) {
+pub fn set_own_priority(priority: Priority) {
     let _section = CriticalSection::enter();
     let thread = smp::current()
         .active_thread()
         .expect("thread_set_own_priority: no current thread");
-    if priority < thread.max_priority.load(Ordering::Relaxed) {
-        thread.max_priority.store(priority, Ordering::Relaxed);
+    let max_priority = Priority::try_from(thread.max_priority.load(Ordering::Relaxed)).unwrap();
+    if priority.outranks(max_priority) {
+        thread
+            .max_priority
+            .store(u32::from(priority), Ordering::Relaxed);
     }
-    thread.priority.store(priority, Ordering::Relaxed);
+    thread
+        .priority
+        .store(u32::from(priority), Ordering::Relaxed);
     assert!(
         thread.usage_sets_priority(),
         "compute_priority: fixed priority or depressed, not yet"
