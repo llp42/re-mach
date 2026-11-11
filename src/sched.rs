@@ -5,7 +5,7 @@
 
 use core::num::{NonZero, TryFromIntError};
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicU32, AtomicUsize, Ordering};
 
 use intrusive_collections::{LinkedList, UnsafeRef};
 
@@ -17,7 +17,7 @@ use crate::collections::ArrayVec;
 use crate::config::{HZ, MAX_CPUS};
 use crate::error::Error;
 use crate::machine::CpuState;
-use crate::processor::{self, ActionQueueAdapter, Processor, State};
+use crate::processor::{self, Processor, State};
 use crate::smp;
 use crate::sync::{CriticalSection, OnceLock, SpinlockGuard};
 use crate::thread::{Quantum, RunQueueAdapter, SleepQueueAdapter, Thread, ThreadState};
@@ -140,9 +140,9 @@ impl TryFrom<u32> for Priority {
 }
 
 /// The processors waiting for the action thread to shut them down or move
-/// them to another set.
-#[expect(dead_code, reason = "processor_shutdown and the action thread use it")]
-static ACTION_QUEUE: LinkedList<ActionQueueAdapter> = LinkedList::new(ActionQueueAdapter::NEW);
+/// them to another set, a bit for each CPU: set with Release, taken with
+/// Acquire.
+static ACTION: AtomicUsize = AtomicUsize::new(0);
 
 /// How many times threads' priorities have been recomputed, once a second.
 static SCHEDULER_TICK: AtomicU32 = AtomicU32::new(0);
@@ -683,6 +683,25 @@ fn do_thread_scan() {
         if !full {
             return;
         }
+    }
+}
+
+/// The action thread's work: each time it runs it waits on `ACTION`,
+/// uninterruptibly, then takes the processors there, so far none, and
+/// blocks.
+///
+/// # Panics
+///
+/// If a processor waits there: not yet.
+pub fn action_thread() -> ! {
+    loop {
+        // Before the check, so a later wake is not lost.
+        assert_wait(Some(Event::of(&ACTION)));
+        assert!(
+            ACTION.swap(0, Ordering::Acquire) == 0,
+            "processor_doaction: not yet"
+        );
+        block();
     }
 }
 

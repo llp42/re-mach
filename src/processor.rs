@@ -27,7 +27,6 @@ use crate::thread::{RunQueueAdapter, SetThreadAdapter, Thread};
 use crate::{ipc_host, machine};
 
 /// A processor: one per CPU, in that CPU's data.
-#[expect(dead_code, reason = "the dispatcher and processor_info read them")]
 pub struct Processor {
     /// What it is doing, a `State`.
     state: AtomicU8,
@@ -45,21 +44,11 @@ pub struct Processor {
     run_queues: CpuLock<RunQueues>,
     /// Its idle thread, once that runs.
     idle_thread: OnceLock<&'static Thread>,
-    /// Its place in the action queue.
-    action_link: LinkedListAtomicLink,
     /// Its port, for controlling it.
     port: AtomicPtr<Port>,
     /// Its name port, for information about it.
     name_port: AtomicPtr<Port>,
 }
-
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    pub ActionQueueAdapter = &'static Processor: Processor { action_link => LinkedListAtomicLink }
-);
 
 /// What a processor is doing, as Mach numbers it; only the states used
 /// here.
@@ -109,7 +98,6 @@ impl Processor {
                 })
             },
             idle_thread: OnceLock::new(),
-            action_link: LinkedListAtomicLink::new(),
             port: AtomicPtr::new(ptr::null_mut()),
             name_port: AtomicPtr::new(ptr::null_mut()),
         }
