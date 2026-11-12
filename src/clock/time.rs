@@ -7,6 +7,7 @@ use core::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
 use crate::arch::{Current, Machine as _};
 use crate::config::HZ;
+use crate::host::Host;
 
 /// A time, in seconds and nanoseconds since 1970 or since boot.
 #[derive(Clone, Copy)]
@@ -35,6 +36,25 @@ impl TimeValue {
 
 /// Nanoseconds in a second.
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
+
+/// A time in seconds and microseconds, as Mach's `time_value_t`.
+#[derive(Clone, Copy)]
+pub struct MicrosecondTime {
+    seconds: i64,
+    microseconds: i32,
+}
+
+impl MicrosecondTime {
+    /// Its seconds.
+    pub const fn seconds(self) -> i64 {
+        self.seconds
+    }
+
+    /// Its microseconds, under a second.
+    pub const fn microseconds(self) -> i32 {
+        self.microseconds
+    }
+}
 
 /// A time in two atomics, read and written apart.
 pub struct AtomicTimeValue {
@@ -128,6 +148,22 @@ pub fn stamp() -> TimeValue {
     last.time
         .load()
         .add_nanoseconds(since.min(NANOSECONDS_PER_SECOND / i64::from(HZ) - 1))
+}
+
+/// The time of day for `host`, in microseconds, as `host_get_time` reads
+/// it.
+///
+/// # Panics
+///
+/// With no host: not yet.
+pub fn host_time(host: Option<&Host>) -> MicrosecondTime {
+    assert!(host.is_some(), "host_get_time: KERN_INVALID_HOST, not yet");
+    let time = stamp();
+    // Cut to microseconds, as TIME_VALUE64_TO_TIME_VALUE.
+    MicrosecondTime {
+        seconds: time.seconds,
+        microseconds: i32::try_from(time.nanoseconds / 1000).unwrap(),
+    }
 }
 
 /// Sets the time of day, on the boot CPU.
