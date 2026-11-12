@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Devices; so far only the master device port, the device server's map
 //! and caches, device lookup, network input, the device pager, terminals'
-//! input settings and the interrupt thread.
+//! input settings, the I/O completion thread and the interrupt thread.
 
 pub mod interrupt;
 mod lookup;
@@ -16,10 +16,11 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::arch::PAGE_SIZE;
 use crate::ipc::port::Port;
+use crate::sched::{self, Event, Priority};
 use crate::slab::{CacheBox, MIN_ALIGN, RawCache};
 use crate::sync::OnceLock;
-use crate::vm;
 use crate::vm::map::Map;
+use crate::{task, thread, vm};
 
 /// The master device port, which devices are opened through; once
 /// `create_service` makes it.
@@ -39,12 +40,12 @@ static TRAP_REQUEST_CACHE: RawCache = RawCache::new("io_req", 2048, MIN_ALIGN, P
 /// device port, a port the kernel receives on that stands for nothing, then
 /// the device server's I/O map, which waits for space, and its caches, then
 /// device lookup, network input, the device pager and terminals' input
-/// settings.
+/// settings, then the I/O completion thread.
 ///
 /// # Panics
 ///
-/// If the port can't be allocated, or the kernel map has no room for the
-/// I/O map.
+/// If the port can't be allocated, the kernel map has no room for the I/O
+/// map, or the I/O completion thread can't be made.
 pub fn create_service() {
     let port = Port::allocate_kernel()
         .unwrap_or_else(|error| panic!("can't allocate master device port: {error:?}"));
@@ -57,4 +58,23 @@ pub fn create_service() {
     net::init();
     pager::init();
     terminal::init();
+    let kernel_task = task::KERNEL_TASK
+        .get()
+        .expect("device_service_create: no kernel task");
+    thread::kernel_thread(kernel_task, io_done_thread)
+        .unwrap_or_else(|error| panic!("device_service_create: kernel_thread: {error:?}"));
+}
+
+/// What the I/O completion thread waits on; only its address counts.
+static IO_DONE: u8 = 0;
+
+/// The I/O completion thread's work: at the highest priority; so far no I/O
+/// completes, so it only waits on `IO_DONE`, uninterruptibly, each time it
+/// runs.
+fn io_done_thread() -> ! {
+    thread::set_own_priority(Priority::HIGHEST);
+    loop {
+        sched::assert_wait(Some(Event::of(&IO_DONE)));
+        sched::block();
+    }
 }
