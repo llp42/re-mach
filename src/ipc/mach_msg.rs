@@ -10,7 +10,7 @@ use super::entry::Rights;
 use super::kernel_message::{
     self, EXPAND_FACTOR, Header, KernelMessage, MessageBits, SAVED_MESSAGE_SIZE,
 };
-use super::port::PortName;
+use super::port::{Port, PortName};
 use super::space::KERNEL_SPACE;
 use crate::{ipc_kobject, smp};
 
@@ -27,13 +27,14 @@ bitflags::bitflags! {
 
 /// Sends the message at `message`, `send_size` bytes, then receives one on
 /// `receive_name`, as `mach_msg_trap` does; so far a request to a port the
-/// kernel receives on, from `fast_get` until the kernel serves it.
+/// kernel receives on, from `fast_get` until its reply is received
+/// directly.
 ///
 /// # Panics
 ///
 /// If no thread runs on the CPU. On every other path: not yet; as
-/// `kernel_message::get` and `ipc_kobject::server`. Then, at receiving the
-/// reply directly: not yet.
+/// `kernel_message::get` and `ipc_kobject::server`. Then, at copying the
+/// reply out: not yet.
 pub fn trap(
     message: usize,
     option: u32,
@@ -117,6 +118,26 @@ pub fn trap(
     drop(destination_state);
     assert!(kernel, "mach_msg_trap: fast_send_receive, not yet");
     // kernel_send.
-    let _reply = ipc_kobject::server(message);
-    panic!("mach_msg_trap: receiving the reply directly, not yet")
+    let mut reply = ipc_kobject::server(message);
+    // SAFETY: the reply's destination is the reply port's exposed address,
+    // and the reply holds a reference to it.
+    let reply_port = unsafe { &*ptr::with_exposed_provenance::<Port>(reply.header().remote_port) };
+    let mut reply_state = reply_port.state.lock();
+    // Received directly only from a live port this space receives on under
+    // `receive_name`, in no set, with no thread waiting and nothing queued.
+    assert!(
+        reply_state.active
+            && reply_state.receiver == NonNull::from(&**space)
+            && reply_state.receiver_name == receive_name
+            && reply_state.set.is_none(),
+        "mach_msg_trap: ipc_mqueue_send_always, not yet"
+    );
+    assert!(
+        reply_state.receivers.is_empty() && reply_state.messages.is_empty(),
+        "mach_msg_trap: ipc_mqueue_send_always, not yet"
+    );
+    reply.header_mut().sequence_number = reply_state.sequence_number;
+    reply_state.sequence_number = reply_state.sequence_number.wrapping_add(1);
+    drop(reply_state);
+    panic!("mach_msg_trap: copying the reply out, not yet")
 }

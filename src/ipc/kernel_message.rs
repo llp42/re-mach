@@ -7,6 +7,8 @@ use core::mem::{ManuallyDrop, offset_of};
 use core::ptr::NonNull;
 use core::slice;
 
+use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
+
 use super::MessageType;
 use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::error::Error;
@@ -100,14 +102,25 @@ impl From<MessageBits> for u32 {
 /// A kernel message: its buffer, from kalloc.
 pub struct KernelMessage(NonNull<Buffer>);
 
-/// A kernel message's buffer: its size, then the message, header first.
+/// A kernel message's buffer: its place in a port's queue, its size, then
+/// the message, header first.
 #[repr(C)]
-struct Buffer {
+pub(super) struct Buffer {
+    /// Its place in the queue of the port it waits on.
+    link: LinkedListAtomicLink,
     /// Its size, in bytes.
     size: usize,
     /// The message's header.
     header: Header,
 }
+
+intrusive_adapter!(
+    #[expect(
+        clippy::expl_impl_clone_on_copy,
+        reason = "intrusive_adapter! writes Clone by hand"
+    )]
+    pub(super) QueueAdapter = UnsafeRef<Buffer>: Buffer { link => LinkedListAtomicLink }
+);
 
 /// The bytes a buffer holds before its message.
 const OVERHEAD: usize = offset_of!(Buffer, header);
@@ -150,6 +163,7 @@ impl KernelMessage {
         // a `Buffer`.
         unsafe {
             buffer.cast::<u8>().write_bytes(0, size);
+            (&raw mut (*buffer.as_ptr()).link).write(LinkedListAtomicLink::new());
             (&raw mut (*buffer.as_ptr()).size).write(size);
         }
         Ok(Self(buffer))

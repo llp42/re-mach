@@ -81,6 +81,8 @@ pub struct Thread {
     task_link: LinkedListAtomicLink,
     /// Its place in its set's threads.
     set_link: LinkedListAtomicLink,
+    /// Its place in the queue of a port it waits on.
+    ipc_link: LinkedListAtomicLink,
     /// How many references it has.
     references: AtomicU32,
     /// Its task.
@@ -243,6 +245,14 @@ intrusive_adapter!(
     pub SetThreadAdapter = UnsafeRef<Thread>: Thread { set_link => LinkedListAtomicLink }
 );
 
+intrusive_adapter!(
+    #[expect(
+        clippy::expl_impl_clone_on_copy,
+        reason = "intrusive_adapter! writes Clone by hand"
+    )]
+    pub IpcQueueAdapter = UnsafeRef<Thread>: Thread { ipc_link => LinkedListAtomicLink }
+);
+
 /// What threads need of the machine.
 pub trait MachineThread: Sized {
     /// Sets up threads' machine state, on the boot CPU.
@@ -335,6 +345,7 @@ impl Thread {
             run_link: LinkedListAtomicLink::new(),
             task_link: LinkedListAtomicLink::new(),
             set_link: LinkedListAtomicLink::new(),
+            ipc_link: LinkedListAtomicLink::new(),
             references: AtomicU32::new(2),
             // SAFETY: a task lives while it has threads.
             task: unsafe { UnsafeRef::from_raw(task) },
