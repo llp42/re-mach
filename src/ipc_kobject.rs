@@ -5,10 +5,12 @@
 
 mod mach_host;
 
+use core::ptr;
 use core::sync::atomic::Ordering;
 
 use crate::ipc::MessageType;
 use crate::ipc::kernel_message::{Header, KernelMessage, MessageBits};
+use crate::ipc::port::Port;
 use crate::task;
 
 /// The size of a reply's buffer.
@@ -50,17 +52,16 @@ const fn type_word(name: MessageType, size: u16, number: u32) -> u64 {
 /// Serves `request`, sent to a port the kernel receives on, as
 /// `ipc_kobject_server` does: a reply with its header filled in, for the
 /// routine its id names to finish; so far through that routine, counted in
-/// the kernel task's messages.
+/// the kernel task's messages, and the release of the request's
+/// destination right.
 ///
 /// # Panics
 ///
 /// If no reply can be allocated, or no routine serves the request's id:
-/// not yet; as the routine. Then, at the destination's destroy: not yet.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "ipc_kobject_server frees or destroys the request"
-)]
-pub fn server(request: KernelMessage) -> ! {
+/// not yet; as the routine. If the destination right is neither a send nor
+/// a send-once right; for a send-once right: not yet; as
+/// `Port::release_send`. Then, at the request's free: not yet.
+pub fn server(mut request: KernelMessage) -> ! {
     let mut reply = KernelMessage::allocate(REPLY_SIZE)
         .unwrap_or_else(|_| panic!("ipc_kobject_server: dropping request, not yet"));
     let header = request.header();
@@ -86,5 +87,20 @@ pub fn server(request: KernelMessage) -> ! {
         .messages_received
         .fetch_add(1, Ordering::Relaxed);
     kernel_task.messages_sent.fetch_add(1, Ordering::Relaxed);
-    panic!("ipc_kobject_server: destroy destination, not yet")
+    // The destination's right is released: a send-once notification would
+    // come back here.
+    let header = request.header_mut();
+    // SAFETY: copied in, the destination is a port's exposed address, and
+    // the request holds a reference to it.
+    let destination = unsafe { &*ptr::with_exposed_provenance::<Port>(header.remote_port) };
+    match header.bits.remote() {
+        Some(MessageType::PortSend) => destination.release_send(),
+        Some(MessageType::PortSendOnce) => {
+            panic!("ipc_kobject_server: ipc_port_release_sonce, not yet")
+        }
+        _ => panic!("ipc_object_destroy: strange destination rights"),
+    }
+    // So that destroying the request does not release it again.
+    header.remote_port = 0;
+    panic!("ipc_kobject_server: ikm_cache_free, not yet")
 }

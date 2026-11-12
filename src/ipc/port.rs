@@ -113,6 +113,23 @@ impl Port {
         self.references.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Drops a reference to it, which is not its last.
+    ///
+    /// # Panics
+    ///
+    /// On its last reference: not yet.
+    fn release(&self) {
+        // Only the last reference's drop frees it.
+        assert!(
+            self.references
+                .try_update(Ordering::Release, Ordering::Relaxed, |references| {
+                    (references > 1).then(|| references - 1)
+                })
+                .is_ok(),
+            "ip_release: the last reference, not yet"
+        );
+    }
+
     /// Makes a send right for it from its receive right, which holds a
     /// reference.
     pub fn make_send(&self) {
@@ -121,6 +138,28 @@ impl Port {
         state.send_rights += 1;
         drop(state);
         self.references.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Releases a send right for it, which the caller holds, with its
+    /// reference, as `ipc_port_release_send` does.
+    ///
+    /// # Panics
+    ///
+    /// If it has no send right. If it is dead, or the right is its last
+    /// send right: not yet. As `release`.
+    pub fn release_send(&self) {
+        let mut state = self.state.lock();
+        self.release();
+        assert!(state.active, "ipc_port_release_send: a dead port, not yet");
+        state.send_rights = state
+            .send_rights
+            .checked_sub(1)
+            .expect("ipc_port_release_send: no send right");
+        assert!(
+            state.send_rights != 0,
+            "ipc_port_release_send: no senders left, not yet"
+        );
+        drop(state);
     }
 
     /// Puts a send right for it, which the caller holds, in `space`, as

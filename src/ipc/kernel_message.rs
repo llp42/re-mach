@@ -56,6 +56,20 @@ impl MessageBits {
         Self(u32::from_le_bytes([remote, local, 0, 0]))
     }
 
+    /// Its destination's right type, as `MACH_MSGH_BITS_REMOTE` gives it, if
+    /// it has one.
+    ///
+    /// # Panics
+    ///
+    /// If the type is not one used here: not yet.
+    pub fn remote(self) -> Option<MessageType> {
+        let [remote, ..] = self.0.to_le_bytes();
+        (remote != 0).then(|| {
+            MessageType::try_from(remote)
+                .unwrap_or_else(|number| panic!("MACH_MSGH_BITS_REMOTE: type {number}, not yet"))
+        })
+    }
+
     /// Its reply port's right type, as `MACH_MSGH_BITS_LOCAL` gives it, if
     /// it has one.
     ///
