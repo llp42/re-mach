@@ -57,15 +57,6 @@ SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
 SPDX-FileContributor: David B. Golub
 SPDX-License-Identifier: CMU-Mach
 
-SPDX-FileName: device/net_io.c
-SPDX-FileCopyrightText: 1993-1989 Carnegie Mellon University
-SPDX-FileCopyrightText: 1990-1991 The Regents of the University of California
-SPDX-FileContributor: David B. Golub
-SPDX-FileContributor: Steven McCanne
-SPDX-FileContributor: Van Jacobson
-SPDX-License-Identifier: CMU-Mach AND BSD-3-Clause
-SPDX-FileComment: The BSD-3-Clause notice covers the file's Berkeley Packet Filter section, which re-mach does not draw on.
-
 SPDX-FileName: i386/i386/apic.c
 SPDX-FileCopyrightText: 2020 Free Software Foundation, Inc.
 SPDX-FileContributor: Almudena Garcia Jurado-Centurion
