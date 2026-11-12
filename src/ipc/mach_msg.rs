@@ -5,8 +5,9 @@
 
 use core::ptr::{self, NonNull};
 
+use super::MessageType;
 use super::entry::Rights;
-use super::kernel_message;
+use super::kernel_message::{self, MessageBits};
 use super::port::PortName;
 use super::space::KERNEL_SPACE;
 use crate::{ipc_kobject, smp};
@@ -21,14 +22,6 @@ bitflags::bitflags! {
         const RECEIVE = 1 << 1;
     }
 }
-
-/// A request's header bits as the user sends them: a copied send right
-/// for its destination, and a send-once right made for its reply port.
-const REQUEST_BITS: u32 = 0x1513;
-
-/// A request's header bits once copied in: a send right for its
-/// destination, and a send-once right for its reply port.
-const COPIED_REQUEST_BITS: u32 = 0x1211;
 
 /// Sends the message at `message`, `send_size` bytes, then receives one on
 /// `receive_name`, as `mach_msg_trap` does; so far a request to a port the
@@ -59,10 +52,13 @@ pub fn trap(
     let mut message = kernel_message::get(message, send_size);
     // fast_copyin.
     let header = message.header_mut();
+    // A copied send right for the destination, and a send-once right made
+    // for the reply port.
     assert!(
-        header.bits == REQUEST_BITS,
-        "mach_msg_trap: header bits {:#x}, not yet",
         header.bits
+            == MessageBits::new(Some(MessageType::CopySend), Some(MessageType::MakeSendOnce)),
+        "mach_msg_trap: header bits {:#x}, not yet",
+        u32::from(header.bits)
     );
     let reply_name = PortName::from(u32::try_from(header.local_port).unwrap());
     assert!(
@@ -101,7 +97,7 @@ pub fn trap(
     destination_port.reference();
     reply_state.send_once_rights += 1;
     reply_port.reference();
-    header.bits = COPIED_REQUEST_BITS;
+    header.bits = MessageBits::new(Some(MessageType::PortSend), Some(MessageType::PortSendOnce));
     header.remote_port = ptr::from_ref(destination_port).expose_provenance();
     header.local_port = ptr::from_ref(reply_port).expose_provenance();
     let kernel = destination_state.receiver == NonNull::from(&KERNEL_SPACE);

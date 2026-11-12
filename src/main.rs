@@ -34,3 +34,7 @@ mod syscall;
 mod task;
 mod thread;
 mod vm;
+
+/// The kernel's name and version, as the boot banner and
+/// `host_get_kernel_version` give them.
+const VERSION: &str = concat!(env!("CARGO_PKG_NAME"), " ", env!("CARGO_PKG_VERSION"));
