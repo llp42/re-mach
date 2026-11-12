@@ -4,6 +4,7 @@
 //! The host calls' server routines, as MIG makes them from `mach_host`'s
 //! definitions; only those written so far.
 
+use core::mem::offset_of;
 use core::ptr;
 
 use super::{INTEGER_32_TYPE, type_word};
@@ -19,6 +20,7 @@ const BASE: i32 = 2600;
 pub(super) fn routine(id: i32) -> Option<fn(&KernelMessage, &mut KernelMessage)> {
     match id.wrapping_sub(BASE) {
         35 => Some(host_reboot),
+        38 => Some(host_info),
         46 => Some(host_get_kernel_version),
         _ => None,
     }
@@ -58,6 +60,87 @@ fn host_reboot(request: &KernelMessage, _reply: &mut KernelMessage) {
     // the request holds a reference to it.
     let port = unsafe { &*ptr::with_exposed_provenance::<Port>(request.header.remote_port) };
     machine::host_reboot(ipc_host::privileged_host(port), request.options)
+}
+
+/// `host_info`'s request, as MIG lays it out.
+#[repr(C)]
+struct InfoRequest {
+    /// The request's header.
+    header: Header,
+    /// The flavor's type word.
+    flavor_type: u64,
+    /// The flavor.
+    flavor: i32,
+    /// Padding to 8 bytes.
+    flavor_pad: [u8; 4],
+    /// The count's type word.
+    count_type: u64,
+    /// The count of integers asked for.
+    count: u32,
+    /// Padding to 8 bytes.
+    count_pad: [u8; 4],
+}
+
+/// `host_info`'s reply, as MIG lays it out.
+#[repr(C)]
+struct InfoReply {
+    /// The reply's header.
+    header: Header,
+    /// The return code's type word.
+    return_code_type: u64,
+    /// The routine's return code.
+    return_code: u32,
+    /// Padding to 8 bytes.
+    return_code_pad: [u8; 4],
+    /// The information's type word.
+    info_type: u64,
+    /// The information, its first integers used.
+    info: [i32; 1024],
+}
+
+/// Serves `host_info`, as MIG's stub does: a request of 64 bytes, not
+/// complex, its flavor and count one inline 32-bit integer each, gets up to
+/// 1024 integers from `host::info` with the host its destination stands
+/// for; the reply holds those used.
+///
+/// # Panics
+///
+/// On any other request: not yet; as `host::info`.
+fn host_info(request: &KernelMessage, reply: &mut KernelMessage) {
+    // SAFETY: MIG's layout of the request, `repr(C)`, a `Header` first,
+    // integers only.
+    let request = unsafe { request.layout::<InfoRequest>() };
+    assert!(
+        request.header.size == 64
+            && !request.header.bits.is_complex()
+            && request.flavor_type == INTEGER_32_TYPE
+            && request.count_type == INTEGER_32_TYPE,
+        "host_info: MIG_BAD_ARGUMENTS, not yet"
+    );
+    // SAFETY: MIG's layout of the reply, `repr(C)`, a `Header` first,
+    // integers only.
+    let reply = unsafe { reply.layout_mut::<InfoReply>() };
+    let count = usize::try_from(request.count)
+        .unwrap()
+        .min(reply.info.len());
+    // SAFETY: as in `host_reboot`.
+    let port = unsafe { &*ptr::with_exposed_provenance::<Port>(request.header.remote_port) };
+    let count = match host::info(
+        ipc_host::host(port),
+        request.flavor,
+        &mut reply.info[..count],
+    ) {
+        Ok(count) => count,
+        Err(error) => {
+            reply.return_code = error.into();
+            return;
+        }
+    };
+    reply.return_code = 0;
+    reply.info_type = type_word(MessageType::Integer32, 32, u32::try_from(count).unwrap());
+    // The integers used, padded to 8 bytes.
+    let size = offset_of!(InfoReply, info) + (size_of::<i32>() * count).next_multiple_of(8);
+    reply.header.size = u32::try_from(size).unwrap();
 }
 
 /// `host_get_kernel_version`'s reply, as MIG lays it out.

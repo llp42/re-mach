@@ -185,6 +185,20 @@ static AVENRUN: [AtomicI64; 3] = [const { AtomicI64::new(0) }; 3];
 /// written only by `compute_mach_factor`.
 static MACH_FACTOR: [AtomicI64; 3] = [const { AtomicI64::new(0) }; 3];
 
+/// The default set's load averages, by `LOAD_SCALE`.
+pub fn load_averages() -> [i64; 3] {
+    AVENRUN
+        .each_ref()
+        .map(|average| average.load(Ordering::Relaxed))
+}
+
+/// The default set's Mach factors, by `LOAD_SCALE`.
+pub fn mach_factors() -> [i64; 3] {
+    MACH_FACTOR
+        .each_ref()
+        .map(|factor| factor.load(Ordering::Relaxed))
+}
+
 /// Computes each processor set's Mach factor and loads, under the sets'
 /// token and its own, from the threads its processors queue and run, the
 /// current one aside; the default set's feed the system averages. A set

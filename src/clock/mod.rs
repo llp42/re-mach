@@ -14,10 +14,14 @@ use mapped_time::MAPPED_TIME;
 use time::{publish, snapshot};
 
 use crate::arch::{Current, Machine as _};
+use crate::config::HZ;
 use crate::machine::{self, CpuState, Mode};
 use crate::processor::State;
 use crate::sched::{self, WaitResult};
 use crate::smp;
+
+/// A tick's length, in microseconds.
+pub const TICK_MICROSECONDS: u32 = 1_000_000 / HZ;
 
 /// Takes a clock tick on the current CPU, `microseconds` after the one
 /// before, with the thread it interrupted running in `mode`: the tick is
