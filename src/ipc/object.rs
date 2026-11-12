@@ -59,20 +59,27 @@ pub(super) fn copy_out(
     let mut state = space.state.write();
     assert!(state.active, "ipc_object_copyout: a dead space, not yet");
     // A space holds each send-once right under a name of its own.
-    if !matches!(message_type, MessageType::PortSendOnce) {
-        right::reverse(space, &state, port);
-    }
-    let (name, entry) = state.allocate()?;
-    let port_state = port.state.lock();
-    assert!(
-        port_state.active,
-        "ipc_object_copyout: a dead port, not yet"
-    );
-    // SAFETY: the space's lock, held, guards its entries, and no reference
-    // to this new one is alive.
-    unsafe { (*entry.as_ptr()).object = Some(NonNull::from(port)) };
-    // SAFETY: `allocate` gave the space's entry for `name`, which the lock
-    // still guards, and no reference to it is alive.
+    let found = if matches!(message_type, MessageType::PortSendOnce) {
+        None
+    } else {
+        right::reverse(space, &state, port)
+    };
+    let (name, entry, port_state) = if let Some(found) = found {
+        found
+    } else {
+        let (name, entry) = state.allocate()?;
+        let port_state = port.state.lock();
+        assert!(
+            port_state.active,
+            "ipc_object_copyout: a dead port, not yet"
+        );
+        // SAFETY: the space's lock, held, guards its entries, and no
+        // reference to this new one is alive.
+        unsafe { (*entry.as_ptr()).object = Some(NonNull::from(port)) };
+        (name, entry, port_state)
+    };
+    // SAFETY: `reverse` or `allocate` gave the space's entry for `name`,
+    // which the lock still guards, and no reference to it is alive.
     unsafe { right::copy_out(&mut state, name, entry, message_type, port, port_state) };
     drop(state);
     Ok(name)
@@ -88,8 +95,8 @@ pub(super) fn copy_out(
 ///
 /// # Panics
 ///
-/// If `port` is dead: not yet; as `SpaceState::allocate_name`,
-/// `right::reverse` and `right::copy_out`.
+/// If `port` is dead, or `space` holds a send right for it: not yet; as
+/// `SpaceState::allocate_name`, `right::reverse` and `right::copy_out`.
 pub(super) fn copy_out_name(
     space: &Space,
     port: &Port,
@@ -99,7 +106,11 @@ pub(super) fn copy_out_name(
     let mut state = space.state.write();
     let entry = state.allocate_name(name)?;
     if !matches!(message_type, MessageType::PortSendOnce) {
-        right::reverse(space, &state, port);
+        let found = right::reverse(space, &state, port);
+        assert!(
+            found.is_none(),
+            "ipc_object_copyout_name: a right ipc_right_reverse found, not yet"
+        );
     }
     // SAFETY: the space's lock, held, guards its entries, and no reference
     // to this one is alive.
