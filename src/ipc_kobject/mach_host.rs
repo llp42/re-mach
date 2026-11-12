@@ -11,7 +11,7 @@ use super::{INTEGER_32_TYPE, type_word};
 use crate::ipc::MessageType;
 use crate::ipc::kernel_message::{Header, KernelMessage};
 use crate::ipc::port::Port;
-use crate::{host, ipc_host, machine};
+use crate::{clock, host, ipc_host, machine};
 
 /// The subsystem's first id.
 const BASE: i32 = 2600;
@@ -19,11 +19,59 @@ const BASE: i32 = 2600;
 /// The routine serving a request of `id`, if one is written.
 pub(super) fn routine(id: i32) -> Option<fn(&KernelMessage, &mut KernelMessage)> {
     match id.wrapping_sub(BASE) {
+        34 => Some(host_get_time),
         35 => Some(host_reboot),
         38 => Some(host_info),
         46 => Some(host_get_kernel_version),
         _ => None,
     }
+}
+
+/// `host_get_time`'s reply, as MIG lays it out.
+#[repr(C)]
+struct TimeReply {
+    /// The reply's header.
+    header: Header,
+    /// The return code's type word.
+    return_code_type: u64,
+    /// The routine's return code.
+    return_code: u32,
+    /// Padding to 8 bytes.
+    return_code_pad: [u8; 4],
+    /// The time's type word.
+    current_time_type: u64,
+    /// The time's seconds.
+    seconds: i64,
+    /// The time's microseconds.
+    microseconds: i32,
+    /// Padding to 8 bytes.
+    microseconds_pad: [u8; 4],
+}
+
+/// Serves `host_get_time`, as MIG's stub does: a request of its header
+/// alone, not complex, gets the time of day from `clock::time::host_time`
+/// with the host its destination stands for.
+///
+/// # Panics
+///
+/// On any other request: not yet; as `clock::time::host_time`.
+fn host_get_time(request: &KernelMessage, reply: &mut KernelMessage) {
+    let header = request.header();
+    assert!(
+        header.size == 32 && !header.bits.is_complex(),
+        "host_get_time: MIG_BAD_ARGUMENTS, not yet"
+    );
+    // SAFETY: as in `host_reboot`.
+    let port = unsafe { &*ptr::with_exposed_provenance::<Port>(header.remote_port) };
+    let time = clock::time::host_time(ipc_host::host(port));
+    // SAFETY: MIG's layout of the reply, `repr(C)`, a `Header` first,
+    // integers only.
+    let reply = unsafe { reply.layout_mut::<TimeReply>() };
+    reply.return_code = 0;
+    reply.header.size = u32::try_from(size_of::<TimeReply>()).unwrap();
+    reply.current_time_type = type_word(MessageType::Integer64, 64, 2);
+    reply.seconds = time.seconds();
+    reply.microseconds = time.microseconds();
 }
 
 /// `host_reboot`'s request, as MIG lays it out.

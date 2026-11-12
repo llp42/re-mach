@@ -24,6 +24,8 @@ use crate::{ipc_host, vm};
 pub enum MessageType {
     /// `MACH_MSG_TYPE_INTEGER_32`: 32-bit integers.
     Integer32,
+    /// `MACH_MSG_TYPE_INTEGER_64`: 64-bit integers.
+    Integer64,
     /// `MACH_MSG_TYPE_STRING_C`: a NUL-terminated string.
     StringC,
     /// `MACH_MSG_TYPE_PORT_SEND`: a send right.
@@ -42,6 +44,7 @@ impl MessageType {
     pub const fn number(self) -> u8 {
         match self {
             Self::Integer32 => 2,
+            Self::Integer64 => 11,
             Self::StringC => 12,
             Self::PortSend => 17,
             Self::PortSendOnce => 18,
@@ -58,6 +61,7 @@ impl TryFrom<u8> for MessageType {
     fn try_from(number: u8) -> Result<Self, u8> {
         match number {
             2 => Ok(Self::Integer32),
+            11 => Ok(Self::Integer64),
             12 => Ok(Self::StringC),
             17 => Ok(Self::PortSend),
             18 => Ok(Self::PortSendOnce),
