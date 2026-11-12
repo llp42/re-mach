@@ -18,12 +18,54 @@ use crate::sync::OnceLock;
 use crate::vm::map::Map;
 use crate::{ipc_host, vm};
 
-/// A right as a message carries it, by Mach's type names; only the ones
-/// used here.
+/// What a message carries, data or a right, by Mach's type names; only the
+/// ones used here.
 #[derive(Clone, Copy)]
 pub enum MessageType {
+    /// `MACH_MSG_TYPE_INTEGER_32`: 32-bit integers.
+    Integer32,
+    /// `MACH_MSG_TYPE_STRING_C`: a NUL-terminated string.
+    StringC,
     /// `MACH_MSG_TYPE_PORT_SEND`: a send right.
     PortSend,
+    /// `MACH_MSG_TYPE_PORT_SEND_ONCE`: a send-once right.
+    PortSendOnce,
+    /// `MACH_MSG_TYPE_COPY_SEND`: a send right copied from the sender's.
+    CopySend,
+    /// `MACH_MSG_TYPE_MAKE_SEND_ONCE`: a send-once right made from the
+    /// sender's receive right.
+    MakeSendOnce,
+}
+
+impl MessageType {
+    /// Its number, Mach's `mach_msg_type_name_t`.
+    pub const fn number(self) -> u8 {
+        match self {
+            Self::Integer32 => 2,
+            Self::StringC => 12,
+            Self::PortSend => 17,
+            Self::PortSendOnce => 18,
+            Self::CopySend => 19,
+            Self::MakeSendOnce => 21,
+        }
+    }
+}
+
+impl TryFrom<u8> for MessageType {
+    type Error = u8;
+
+    /// The type of Mach's number `number`, if it is one used here.
+    fn try_from(number: u8) -> Result<Self, u8> {
+        match number {
+            2 => Ok(Self::Integer32),
+            12 => Ok(Self::StringC),
+            17 => Ok(Self::PortSend),
+            18 => Ok(Self::PortSendOnce),
+            19 => Ok(Self::CopySend),
+            21 => Ok(Self::MakeSendOnce),
+            _ => Err(number),
+        }
+    }
 }
 
 /// The kernel's map for IPC buffers, such as out-of-line data in its

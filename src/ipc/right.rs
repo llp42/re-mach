@@ -52,7 +52,8 @@ pub(super) fn reverse(space: &Space, state: &SpaceState, port: &Port) {
 ///
 /// # Panics
 ///
-/// If `entry` holds rights: not yet.
+/// If `entry` holds rights, or for a send-once right: not yet. For a type
+/// that is not a right.
 pub(super) unsafe fn copy_out(
     state: &mut SpaceState,
     name: PortName,
@@ -77,5 +78,9 @@ pub(super) unsafe fn copy_out(
             entry.bits.rights |= Rights::SEND;
             entry.bits.user_references += 1;
         }
+        MessageType::PortSendOnce => {
+            panic!("ipc_right_copyout: MACH_MSG_TYPE_PORT_SEND_ONCE, not yet")
+        }
+        _ => panic!("ipc_right_copyout: strange rights"),
     }
 }

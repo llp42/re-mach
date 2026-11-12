@@ -185,7 +185,7 @@ pub enum KernelObject {
     /// A memory object's name port, which names it to `vm_region`.
     PagerName(#[expect(dead_code, reason = "vm_object_lookup_name reads it")] NonNull<Object>),
     /// The host's port.
-    Host(#[expect(dead_code, reason = "convert_port_to_host reads it")] &'static Host),
+    Host(&'static Host),
     /// The host's privileged port.
     HostPrivileged(&'static Host),
     /// A processor set's port.

@@ -18,5 +18,5 @@ pub struct BootModule {
 
 /// Prints the kernel's name and version.
 pub fn banner() {
-    crate::println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    crate::println!("{}", crate::VERSION);
 }

@@ -5,26 +5,54 @@
 
 mod mach_host;
 
-use crate::ipc::kernel_message::{Header, KernelMessage};
+use crate::ipc::MessageType;
+use crate::ipc::kernel_message::{Header, KernelMessage, MessageBits};
 
 /// The size of a reply's buffer.
 const REPLY_SIZE: usize = 8192;
 
-/// MIG's type word for one inline 32-bit integer: name 2, 32 bits, one.
-const INTEGER_32_TYPE: u64 = 0x0000_0001_2000_2002;
+/// MIG's type word for one inline 32-bit integer.
+const INTEGER_32_TYPE: u64 = type_word(MessageType::Integer32, 32, 1);
 
-/// The size of MIG's reply header: the header, the return code's type word
-/// and the return code, padded to 8 bytes.
-const REPLY_HEADER_SIZE: u32 = 48;
+/// MIG's reply header, `mig_reply_header_t`: the header, the return code's
+/// type word, then the return code.
+#[repr(C)]
+struct ReplyHeader {
+    /// The reply's header.
+    header: Header,
+    /// The return code's type word.
+    return_code_type: u64,
+    /// The routine's return code.
+    return_code: u32,
+}
+
+/// MIG's type word, Mach's `mach_msg_type_t`, for `number` inline items of
+/// type `name`, `size` bits each.
+const fn type_word(name: MessageType, size: u16, number: u32) -> u64 {
+    let [size_low, size_high] = size.to_le_bytes();
+    let [number_0, number_1, number_2, number_3] = number.to_le_bytes();
+    // The name, the size, then the inline bit, bit 29; the number above.
+    u64::from_le_bytes([
+        name.number(),
+        size_low,
+        size_high,
+        1 << 5,
+        number_0,
+        number_1,
+        number_2,
+        number_3,
+    ])
+}
 
 /// Serves `request`, sent to a port the kernel receives on, as
 /// `ipc_kobject_server` does: a reply with its header filled in, for the
-/// routine its id names to finish; so far up to that routine.
+/// routine its id names to finish; so far through that routine.
 ///
 /// # Panics
 ///
 /// If no reply can be allocated, or no routine serves the request's id:
-/// not yet; as the routine.
+/// not yet; as the routine. Once it returns, at the kernel task's message
+/// counts: not yet.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "ipc_kobject_server frees or destroys the request"
@@ -33,17 +61,20 @@ pub fn server(request: KernelMessage) -> ! {
     let mut reply = KernelMessage::allocate(REPLY_SIZE)
         .unwrap_or_else(|_| panic!("ipc_kobject_server: dropping request, not yet"));
     let header = request.header();
+    // SAFETY: MIG's reply header, `repr(C)`, a `Header` first, integers only.
+    let reply_header = unsafe { reply.layout_mut::<ReplyHeader>() };
     // To the request's reply port, with the right it carries.
-    *reply.header_mut() = Header {
-        bits: (header.bits >> 8) & 0xff,
-        size: REPLY_HEADER_SIZE,
+    reply_header.header = Header {
+        bits: MessageBits::new(header.bits.local(), None),
+        size: u32::try_from(size_of::<ReplyHeader>()).unwrap(),
         remote_port: header.local_port,
         local_port: 0,
         sequence_number: 0,
         id: header.id.wrapping_add(100),
     };
-    reply.body_mut()[..8].copy_from_slice(&INTEGER_32_TYPE.to_le_bytes());
+    reply_header.return_code_type = INTEGER_32_TYPE;
     let routine = mach_host::routine(header.id)
         .unwrap_or_else(|| panic!("ipc_kobject_server: MIG_BAD_ID, not yet"));
-    routine(&request, &mut reply)
+    routine(&request, &mut reply);
+    panic!("ipc_kobject_server: messages_received, not yet")
 }

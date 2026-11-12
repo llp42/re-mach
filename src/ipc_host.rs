@@ -66,6 +66,15 @@ pub fn init_set(set: &'static ProcessorSet) {
     }
 }
 
+/// The host `port` stands for while alive, if it is one of a host's ports,
+/// as `convert_port_to_host` finds it.
+pub fn host(port: &Port) -> Option<&'static Host> {
+    match port.kernel_object() {
+        Some(KernelObject::Host(host) | KernelObject::HostPrivileged(host)) => Some(host),
+        _ => None,
+    }
+}
+
 /// The host `port` stands for while alive, if it is a host's privileged
 /// port, as `convert_port_to_host_priv` finds it.
 pub fn privileged_host(port: &Port) -> Option<&'static Host> {

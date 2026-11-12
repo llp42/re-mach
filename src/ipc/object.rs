@@ -58,7 +58,10 @@ pub(super) fn copy_out(
 ) -> Result<PortName, Error> {
     let mut state = space.state.write();
     assert!(state.active, "ipc_object_copyout: a dead space, not yet");
-    right::reverse(space, &state, port);
+    // A space holds each send-once right under a name of its own.
+    if !matches!(message_type, MessageType::PortSendOnce) {
+        right::reverse(space, &state, port);
+    }
     let (name, entry) = state.allocate()?;
     let port_state = port.state.lock();
     assert!(
@@ -95,7 +98,9 @@ pub(super) fn copy_out_name(
 ) -> Result<(), Error> {
     let mut state = space.state.write();
     let entry = state.allocate_name(name)?;
-    right::reverse(space, &state, port);
+    if !matches!(message_type, MessageType::PortSendOnce) {
+        right::reverse(space, &state, port);
+    }
     // SAFETY: the space's lock, held, guards its entries, and no reference
     // to this one is alive.
     if unsafe { entry.as_ref() }.in_use() {

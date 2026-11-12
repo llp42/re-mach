@@ -7,6 +7,7 @@ use core::mem::offset_of;
 use core::ptr::NonNull;
 use core::slice;
 
+use super::MessageType;
 use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::error::Error;
 use crate::kalloc;
@@ -16,7 +17,7 @@ use crate::kalloc;
 #[repr(C)]
 pub struct Header {
     /// Its ports' right types, and whether it is complex.
-    pub bits: u32,
+    pub bits: MessageBits,
     /// Its size, in bytes.
     pub size: u32,
     /// Its destination.
@@ -29,9 +30,57 @@ pub struct Header {
     pub id: i32,
 }
 
-/// The header bit of a message whose body holds rights or out-of-line
-/// memory.
-pub const COMPLEX: u32 = 1 << 31;
+/// A message header's bits, as Mach's: its ports' right types, and whether
+/// it is complex.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct MessageBits(u32);
+
+impl MessageBits {
+    /// The bit of a message whose body holds rights or out-of-line memory,
+    /// `MACH_MSGH_BITS_COMPLEX`.
+    const COMPLEX: u32 = 1 << 31;
+
+    /// The bits of a simple message with right types `remote` for its
+    /// destination and `local` for its reply port, as `MACH_MSGH_BITS` makes
+    /// them; `None`, type 0, for no port.
+    pub const fn new(remote: Option<MessageType>, local: Option<MessageType>) -> Self {
+        let remote = match remote {
+            Some(message_type) => message_type.number(),
+            None => 0,
+        };
+        let local = match local {
+            Some(message_type) => message_type.number(),
+            None => 0,
+        };
+        Self(u32::from_le_bytes([remote, local, 0, 0]))
+    }
+
+    /// Its reply port's right type, as `MACH_MSGH_BITS_LOCAL` gives it, if
+    /// it has one.
+    ///
+    /// # Panics
+    ///
+    /// If the type is not one used here: not yet.
+    pub fn local(self) -> Option<MessageType> {
+        let [_, local, ..] = self.0.to_le_bytes();
+        (local != 0).then(|| {
+            MessageType::try_from(local)
+                .unwrap_or_else(|number| panic!("MACH_MSGH_BITS_LOCAL: type {number}, not yet"))
+        })
+    }
+
+    /// Whether its message's body holds rights or out-of-line memory.
+    pub const fn is_complex(self) -> bool {
+        self.0 & Self::COMPLEX != 0
+    }
+}
+
+impl From<MessageBits> for u32 {
+    fn from(bits: MessageBits) -> Self {
+        bits.0
+    }
+}
 
 /// A kernel message: its buffer, from kalloc.
 pub struct KernelMessage(NonNull<Buffer>);
@@ -89,21 +138,50 @@ impl KernelMessage {
         unsafe { &mut (*self.0.as_ptr()).header }
     }
 
-    /// Its body: the bytes past its header, to the buffer's end.
-    pub fn body(&self) -> &[u8] {
-        let buffer = self.0.as_ptr();
-        // SAFETY: the buffer's bytes past the header, ours alone.
-        unsafe {
-            slice::from_raw_parts(
-                buffer.cast::<u8>().add(size_of::<Buffer>()),
-                (*buffer).size - size_of::<Buffer>(),
-            )
-        }
+    /// Its message, read in place as a `T`.
+    ///
+    /// # Safety
+    ///
+    /// `T` is `#[repr(C)]`, a `Header` first, aligned to at most 8 bytes,
+    /// and any bytes make one.
+    ///
+    /// # Panics
+    ///
+    /// If its buffer can't hold a `T`.
+    pub unsafe fn layout<T>(&self) -> &T {
+        // SAFETY: the caller's; the place is in the buffer, 8-aligned and
+        // zeroed at allocation, and ours alone.
+        unsafe { self.start::<T>().as_ref() }
     }
 
-    /// Its body, to change.
-    pub fn body_mut(&mut self) -> &mut [u8] {
-        &mut self.message_mut()[size_of::<Header>()..]
+    /// Its message as a `T`, to change in place.
+    ///
+    /// # Safety
+    ///
+    /// As `layout`.
+    ///
+    /// # Panics
+    ///
+    /// As `layout`.
+    pub unsafe fn layout_mut<T>(&mut self) -> &mut T {
+        // SAFETY: as in `layout`.
+        unsafe { self.start::<T>().as_mut() }
+    }
+
+    /// Where its message starts, for a `T` there.
+    ///
+    /// # Panics
+    ///
+    /// If its buffer can't hold a `T`.
+    fn start<T>(&self) -> NonNull<T> {
+        // SAFETY: the buffer is ours alone.
+        let size = unsafe { (*self.0.as_ptr()).size };
+        assert!(
+            size_of::<T>() <= size - OVERHEAD,
+            "a message's layout past its buffer"
+        );
+        // SAFETY: the header's place, within the buffer.
+        unsafe { self.0.byte_add(OVERHEAD) }.cast()
     }
 
     /// Its message, header then body, to the buffer's end.
