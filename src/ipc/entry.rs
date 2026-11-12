@@ -5,13 +5,13 @@
 
 use core::ptr::NonNull;
 
-use super::port::Port;
+use super::port::{Port, PortName};
 use crate::slab::Cache;
 
 /// An entry: a name, its rights, and the port they are for.
 pub struct Entry {
     /// Its name.
-    pub(super) name: u32,
+    pub(super) name: PortName,
     /// Its rights, and their user references.
     pub(super) bits: EntryBits,
     /// The port its rights are for.
@@ -27,7 +27,7 @@ unsafe impl Sync for Entry {}
 
 impl Entry {
     /// A new entry for `name` that holds no rights.
-    pub(super) const fn new(name: u32) -> Self {
+    pub(super) const fn new(name: PortName) -> Self {
         Self {
             name,
             bits: EntryBits {
@@ -64,7 +64,7 @@ bitflags::bitflags! {
 }
 
 /// The entry of name 0, which every space reserves.
-pub static ZERO_ENTRY: Entry = Entry::new(0);
+pub static ZERO_ENTRY: Entry = Entry::new(PortName::NULL);
 
 /// The cache entries come from.
 pub(super) static CACHE: Cache<Entry> = Cache::new("ipc_entry");

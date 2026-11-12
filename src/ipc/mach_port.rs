@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Port calls: what tasks ask of a space's names.
 
-use super::port::Port;
+use super::port::{Port, PortName};
 use super::space::Space;
 use super::{MessageType, object};
 use crate::error::Error;
@@ -20,12 +20,12 @@ use crate::error::Error;
 /// If `name` is null or dead: not yet; as `object::copy_out_name`.
 pub fn insert_right(
     space: &Space,
-    name: u32,
+    name: PortName,
     port: &Port,
     message_type: MessageType,
 ) -> Result<(), Error> {
     assert!(
-        name != 0 && name != u32::MAX,
+        name.is_valid(),
         "mach_port_insert_right: an invalid name, not yet"
     );
     object::copy_out_name(space, port, message_type, name)

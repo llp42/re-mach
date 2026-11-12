@@ -15,7 +15,7 @@ use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::boot::BootModule;
 use crate::error::Error;
 use crate::host::HOST;
-use crate::ipc::port::Port;
+use crate::ipc::port::{Port, PortName};
 use crate::ipc::{MessageType, mach_port};
 use crate::sched::{self, Event, USER_PRIORITY};
 use crate::sync::Spinlock;
@@ -369,7 +369,7 @@ fn load_segment(map: &Map, bytes: &[u8], segment: &Segment) -> Result<(), elf_lo
 
 /// The boot script's insert of a port argument: a send right made for
 /// `port` and given to `task`; the name it takes there.
-fn insert_right(task: &Task, port: &Port) -> u32 {
+fn insert_right(task: &Task, port: &Port) -> PortName {
     port.make_send();
     insert_send_right(task, port)
 }
@@ -380,8 +380,8 @@ fn insert_right(task: &Task, port: &Port) -> u32 {
 /// # Panics
 ///
 /// If an insert fails but for a name in use.
-fn insert_send_right(task: &Task, port: &Port) -> u32 {
-    let mut name = 1;
+fn insert_send_right(task: &Task, port: &Port) -> PortName {
+    let mut name = PortName::from(1);
     loop {
         match mach_port::insert_right(&task.space, name, port, MessageType::PortSend) {
             Ok(()) => return name,
@@ -390,7 +390,7 @@ fn insert_send_right(task: &Task, port: &Port) -> u32 {
                 "task_insert_send_right: {error:?}"
             ),
         }
-        name += 1;
+        name = PortName::from(u32::from(name) + 1);
     }
 }
 

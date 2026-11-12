@@ -7,6 +7,7 @@ use core::ptr::{self, NonNull};
 
 use super::entry::Rights;
 use super::kernel_message;
+use super::port::PortName;
 use super::space::KERNEL_SPACE;
 use crate::{ipc_kobject, smp};
 
@@ -42,9 +43,9 @@ pub fn trap(
     option: u32,
     send_size: u32,
     _receive_size: u32,
-    receive_name: u32,
+    receive_name: PortName,
     _timeout: u32,
-    _notify: u32,
+    _notify: PortName,
 ) -> u32 {
     assert!(
         option == (Options::SEND | Options::RECEIVE).bits(),
@@ -63,7 +64,7 @@ pub fn trap(
         "mach_msg_trap: header bits {:#x}, not yet",
         header.bits
     );
-    let reply_name = u32::try_from(header.local_port).unwrap();
+    let reply_name = PortName::from(u32::try_from(header.local_port).unwrap());
     assert!(
         reply_name == receive_name,
         "mach_msg_trap: slow_copyin, not yet"
@@ -74,7 +75,7 @@ pub fn trap(
         .filter(|entry| entry.bits.rights.contains(Rights::RECEIVE))
         .unwrap_or_else(|| panic!("mach_msg_trap: slow_copyin, not yet"));
     let destination = state
-        .lookup(u32::try_from(header.remote_port).unwrap())
+        .lookup(PortName::from(u32::try_from(header.remote_port).unwrap()))
         .unwrap_or_else(|| panic!("mach_msg_trap: slow_copyin, not yet"));
     assert!(
         destination.bits.rights.bits() == Rights::SEND.bits(),

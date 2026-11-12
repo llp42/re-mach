@@ -3,10 +3,13 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Mach traps: the table system calls index, and the traps written so far.
 
+use core::sync::atomic::Ordering;
+
 use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::error::Error;
+use crate::host::HOST;
 use crate::ipc::mach_msg;
-use crate::ipc::port::Port;
+use crate::ipc::port::{Port, PortName};
 use crate::{print, smp};
 
 /// A Mach trap, as the table holds it.
@@ -57,7 +60,7 @@ pub static MACH_TRAPS: [MachTrap; COUNT] = {
     traps[26] = MachTrap::Written(reply_port, 0);
     traps[27] = MachTrap::NotYet("mach_thread_self");
     traps[28] = MachTrap::NotYet("mach_task_self");
-    traps[29] = MachTrap::NotYet("mach_host_self");
+    traps[29] = MachTrap::Written(host_self, 0);
     traps[30] = MachTrap::Written(print, 1);
     traps[39] = MachTrap::NotYet("syscall_device_writev_request");
     traps[40] = MachTrap::NotYet("syscall_device_write_request");
@@ -110,9 +113,9 @@ fn message(arguments: &[usize; 7]) -> u32 {
         option,
         send_size,
         receive_size,
-        receive_name,
+        PortName::from(receive_name),
         timeout,
-        notify,
+        PortName::from(notify),
     )
 }
 
@@ -127,7 +130,27 @@ fn reply_port(_: &[usize; 7]) -> u32 {
     let thread = smp::current()
         .active_thread()
         .expect("mach_reply_port: no current thread");
-    Port::allocate(&thread.task().space).expect("mach_reply_port: a failed allocation, not yet")
+    Port::allocate(&thread.task().space)
+        .expect("mach_reply_port: a failed allocation, not yet")
+        .into()
+}
+
+/// Gives the caller a send right for the host's port, as `mach_host_self`:
+/// its name in the caller's task's space.
+///
+/// # Panics
+///
+/// If the host has no port, or no thread runs on the CPU; as
+/// `Port::copy_out_send`.
+fn host_self(_: &[usize; 7]) -> u32 {
+    // SAFETY: the host's ports are never freed.
+    let port = unsafe { HOST.port.load(Ordering::Acquire).as_ref() }
+        .expect("mach_host_self: no host port");
+    port.make_send();
+    let thread = smp::current()
+        .active_thread()
+        .expect("mach_host_self: no current thread");
+    port.copy_out_send(&thread.task().space).into()
 }
 
 /// How many bytes `print` copies in at a time, at most.

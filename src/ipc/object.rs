@@ -6,7 +6,7 @@
 use core::ptr::NonNull;
 
 use super::entry::Rights;
-use super::port::Port;
+use super::port::{Port, PortName};
 use super::space::Space;
 use super::{MessageType, right};
 use crate::error::Error;
@@ -24,7 +24,7 @@ use crate::slab::CacheBox;
 /// # Panics
 ///
 /// As `SpaceState::allocate`.
-pub(super) fn allocate(space: &Space, mut port: CacheBox<Port>) -> Result<u32, Error> {
+pub(super) fn allocate(space: &Space, mut port: CacheBox<Port>) -> Result<PortName, Error> {
     let mut state = space.state.write();
     let (name, entry) = state.allocate()?;
     port.state.get_mut().receiver_name = name;
@@ -35,6 +35,42 @@ pub(super) fn allocate(space: &Space, mut port: CacheBox<Port>) -> Result<u32, E
     // The receive right, with no user references.
     entry.bits.rights |= Rights::RECEIVE;
     entry.object = Some(port);
+    drop(state);
+    Ok(name)
+}
+
+/// Puts the right `message_type` names, for `port`, in `space` under the
+/// lowest free name, as `ipc_object_copyout` does, and gives the name; the
+/// space takes the right and its reference.
+///
+/// # Errors
+///
+/// `ResourceShortage` if no entry or map node can be allocated.
+///
+/// # Panics
+///
+/// If `space` or `port` is dead: not yet; as `right::reverse` and
+/// `right::copy_out`.
+pub(super) fn copy_out(
+    space: &Space,
+    port: &Port,
+    message_type: MessageType,
+) -> Result<PortName, Error> {
+    let mut state = space.state.write();
+    assert!(state.active, "ipc_object_copyout: a dead space, not yet");
+    right::reverse(space, &state, port);
+    let (name, entry) = state.allocate()?;
+    let port_state = port.state.lock();
+    assert!(
+        port_state.active,
+        "ipc_object_copyout: a dead port, not yet"
+    );
+    // SAFETY: the space's lock, held, guards its entries, and no reference
+    // to this new one is alive.
+    unsafe { (*entry.as_ptr()).object = Some(NonNull::from(port)) };
+    // SAFETY: `allocate` gave the space's entry for `name`, which the lock
+    // still guards, and no reference to it is alive.
+    unsafe { right::copy_out(&mut state, name, entry, message_type, port, port_state) };
     drop(state);
     Ok(name)
 }
@@ -55,7 +91,7 @@ pub(super) fn copy_out_name(
     space: &Space,
     port: &Port,
     message_type: MessageType,
-    name: u32,
+    name: PortName,
 ) -> Result<(), Error> {
     let mut state = space.state.write();
     let entry = state.allocate_name(name)?;

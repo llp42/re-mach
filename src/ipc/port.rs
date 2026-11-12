@@ -6,8 +6,8 @@
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use super::object;
 use super::space::{self, Space};
+use super::{MessageType, object};
 use crate::error::Error;
 use crate::host::Host;
 use crate::processor::{Processor, ProcessorSet};
@@ -34,7 +34,7 @@ pub(super) struct PortState {
     /// The space that holds its receive right.
     pub(super) receiver: NonNull<Space>,
     /// Its receive right's name in that space.
-    pub(super) receiver_name: u32,
+    pub(super) receiver_name: PortName,
     /// How many send rights for it there are.
     pub(super) send_rights: u32,
     /// How many send-once rights for it there are.
@@ -54,7 +54,7 @@ impl Port {
             state: Spinlock::new(PortState {
                 active: true,
                 receiver,
-                receiver_name: 0,
+                receiver_name: PortName::NULL,
                 send_rights: 0,
                 send_once_rights: 0,
                 make_send_count: 0,
@@ -72,7 +72,7 @@ impl Port {
         let mut port = CACHE.allocate(Self::new(NonNull::from(&space::KERNEL_SPACE)))?;
         // Its address's low 32 bits, as GNU Mach names kernel ports.
         let address = ptr::from_ref(&*port).addr() & 0xffff_ffff;
-        port.state.get_mut().receiver_name = u32::try_from(address).unwrap();
+        port.state.get_mut().receiver_name = PortName::from(u32::try_from(address).unwrap());
         Ok(port)
     }
 
@@ -86,7 +86,7 @@ impl Port {
     /// # Panics
     ///
     /// As `object::allocate`.
-    pub fn allocate(space: &Space) -> Result<u32, Error> {
+    pub fn allocate(space: &Space) -> Result<PortName, Error> {
         let port = CACHE.allocate(Self::new(NonNull::from(space)))?;
         object::allocate(space, port)
     }
@@ -121,6 +121,61 @@ impl Port {
         state.send_rights += 1;
         drop(state);
         self.references.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Puts a send right for it, which the caller holds, in `space`, as
+    /// `ipc_port_copyout_send` does; gives its name there.
+    ///
+    /// # Panics
+    ///
+    /// If the copy-out fails: not yet; as `object::copy_out`.
+    pub fn copy_out_send(&self, space: &Space) -> PortName {
+        object::copy_out(space, self, MessageType::PortSend)
+            .expect("ipc_port_copyout_send: a failed copy-out, not yet")
+    }
+}
+
+/// A port's name in a space, as Mach's `mach_port_name_t`.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct PortName(u32);
+
+impl PortName {
+    /// `MACH_PORT_NAME_NULL`: no port.
+    pub(super) const NULL: Self = Self(0);
+    /// `MACH_PORT_NAME_DEAD`: a dead port.
+    const DEAD: Self = Self(u32::MAX);
+
+    /// Whether it names a port, as `MACH_PORT_NAME_VALID`: neither null nor
+    /// dead.
+    pub(super) fn is_valid(self) -> bool {
+        self != Self::NULL && self != Self::DEAD
+    }
+
+    /// Its key in a space's map.
+    pub(super) fn key(self) -> u64 {
+        u64::from(self.0)
+    }
+
+    /// The name of `key` in a space's map.
+    ///
+    /// # Panics
+    ///
+    /// If `key` is past 32 bits.
+    pub(super) fn from_key(key: u64) -> Self {
+        Self(u32::try_from(key).unwrap())
+    }
+}
+
+impl From<u32> for PortName {
+    fn from(name: u32) -> Self {
+        Self(name)
+    }
+}
+
+impl From<PortName> for u32 {
+    fn from(name: PortName) -> Self {
+        name.0
     }
 }
 
