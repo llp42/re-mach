@@ -7,6 +7,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::AtomicU32;
 
 use super::entry::{self, Entry, ZERO_ENTRY};
+use super::port::PortName;
 use crate::collections::radix_tree::RadixTree;
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
@@ -54,7 +55,7 @@ impl Space {
     /// `ResourceShortage` if no space can be allocated.
     pub fn create() -> Result<CacheBox<Self>, Error> {
         let mut map = RadixTree::new();
-        map.insert(0, NonNull::from(&ZERO_ENTRY))
+        map.insert(PortName::NULL.key(), NonNull::from(&ZERO_ENTRY))
             .map_err(|_| Error::ResourceShortage)?;
         CACHE.allocate(Self {
             references: AtomicU32::new(2),
@@ -71,9 +72,9 @@ impl Space {
 impl SpaceState {
     /// The entry of `name`, if it holds rights, as `ipc_entry_lookup` finds
     /// it.
-    pub(super) fn lookup(&self, name: u32) -> Option<&Entry> {
+    pub(super) fn lookup(&self, name: PortName) -> Option<&Entry> {
         self.map
-            .lookup(u64::from(name))
+            .lookup(name.key())
             // SAFETY: the space's lock, held, guards its entries, and no
             // mutable reference to one is alive while the state is shared.
             .map(|entry| unsafe { entry.as_ref() })
@@ -89,10 +90,10 @@ impl SpaceState {
     /// # Panics
     ///
     /// If the space is dead: not yet.
-    pub(super) fn allocate(&mut self) -> Result<(u32, NonNull<Entry>), Error> {
+    pub(super) fn allocate(&mut self) -> Result<(PortName, NonNull<Entry>), Error> {
         assert!(self.active, "ipc_entry_alloc: a dead space, not yet");
         // Entries are never freed yet, so there is no free list to take from.
-        let entry = CacheBox::into_raw(entry::CACHE.allocate(Entry::new(0))?);
+        let entry = CacheBox::into_raw(entry::CACHE.allocate(Entry::new(PortName::NULL))?);
         let Ok(key) = self.map.insert_alloc(entry) else {
             // SAFETY: it came from `into_raw` of an entry box, and the map
             // didn't take it.
@@ -100,7 +101,7 @@ impl SpaceState {
             return Err(Error::ResourceShortage);
         };
         self.size += 1;
-        let name = u32::try_from(key).unwrap();
+        let name = PortName::from_key(key);
         // SAFETY: the space's lock, held, guards its entries, and no
         // reference to this one is alive.
         unsafe { (*entry.as_ptr()).name = name };
@@ -116,9 +117,9 @@ impl SpaceState {
     /// # Panics
     ///
     /// If the space is dead, or the name's entry is free: not yet.
-    pub(super) fn allocate_name(&mut self, name: u32) -> Result<NonNull<Entry>, Error> {
+    pub(super) fn allocate_name(&mut self, name: PortName) -> Result<NonNull<Entry>, Error> {
         assert!(self.active, "ipc_entry_alloc_name: a dead space, not yet");
-        let key = u64::from(name);
+        let key = name.key();
         if let Some(entry) = self.map.lookup(key) {
             // SAFETY: the space's lock, held, guards its entries, and no
             // reference to this one is alive.

@@ -7,7 +7,7 @@ use core::ptr::{self, NonNull};
 
 use super::MessageType;
 use super::entry::{Entry, Rights};
-use super::port::{Port, PortState};
+use super::port::{Port, PortName, PortState};
 use super::space::{Space, SpaceState};
 use crate::arch::PhysAddr;
 use crate::sync::SpinlockGuard;
@@ -55,7 +55,7 @@ pub(super) fn reverse(space: &Space, state: &SpaceState, port: &Port) {
 /// If `entry` holds rights: not yet.
 pub(super) unsafe fn copy_out(
     state: &mut SpaceState,
-    name: u32,
+    name: PortName,
     entry: NonNull<Entry>,
     message_type: MessageType,
     port: &Port,

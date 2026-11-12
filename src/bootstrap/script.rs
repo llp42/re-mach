@@ -311,7 +311,7 @@ impl Script {
                 let name = bootstrap::insert_right(task, unsafe { port.as_ref() });
                 // Its name in decimal, written from the end.
                 let mut digits = [0; 10];
-                let (mut start, mut rest) = (digits.len(), name);
+                let (mut start, mut rest) = (digits.len(), u32::from(name));
                 loop {
                     start -= 1;
                     digits[start] = b'0' + u8::try_from(rest % 10).unwrap();
