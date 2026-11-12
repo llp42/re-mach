@@ -6,15 +6,18 @@
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use intrusive_collections::LinkedList;
+
+use super::port_set::PortSet;
 use super::space::{self, Space};
-use super::{MessageType, object};
+use super::{MessageType, kernel_message, object};
 use crate::error::Error;
 use crate::host::Host;
 use crate::processor::{Processor, ProcessorSet};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::Spinlock;
 use crate::task::Task;
-use crate::thread::Thread;
+use crate::thread::{IpcQueueAdapter, Thread};
 use crate::vm::object::Object;
 
 /// A port: its reference count, and its state under its lock.
@@ -26,8 +29,8 @@ pub struct Port {
 }
 
 /// A port's state under its lock; so far only whether it is alive, its
-/// receiver and its name there, its send and send-once rights and what it
-/// stands for.
+/// receiver and its name there, its send and send-once rights, what it
+/// stands for, its set, its sequence number and its message queue.
 pub(super) struct PortState {
     /// Whether it is alive.
     pub(super) active: bool,
@@ -43,6 +46,14 @@ pub(super) struct PortState {
     make_send_count: u32,
     /// What it stands for, when the kernel receives on it.
     kernel_object: Option<KernelObject>,
+    /// The set it is in, if any.
+    pub(super) set: Option<NonNull<PortSet>>,
+    /// The sequence number of the next message received from it.
+    pub(super) sequence_number: u32,
+    /// The messages queued on it, oldest first.
+    pub(super) messages: LinkedList<kernel_message::QueueAdapter>,
+    /// The threads waiting to receive from it, latest first.
+    pub(super) receivers: LinkedList<IpcQueueAdapter>,
 }
 
 impl Port {
@@ -59,6 +70,10 @@ impl Port {
                 send_once_rights: 0,
                 make_send_count: 0,
                 kernel_object: None,
+                set: None,
+                sequence_number: 0,
+                messages: LinkedList::new(kernel_message::QueueAdapter::NEW),
+                receivers: LinkedList::new(IpcQueueAdapter::NEW),
             }),
         }
     }
