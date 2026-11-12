@@ -439,7 +439,28 @@ struct Reserve {
     free: usize,
 }
 
-/// Free frames kept for DMA, below `DMA_RESERVE_LIMIT`.
+impl Reserve {
+    /// Takes its highest free frame, keeping the lowest for DMA longest.
+    fn take(&mut self) -> Option<usize> {
+        let word = self.frames.iter().rposition(|&bits| bits != 0)?;
+        let bit = usize::try_from(self.frames[word].ilog2()).unwrap();
+        self.frames[word] &= !(1 << bit);
+        self.free -= 1;
+        Some(word * 64 + bit)
+    }
+
+    /// Puts `frame` in, if it is not in already.
+    const fn put(&mut self, frame: usize) {
+        let bit = 1 << (frame % 64);
+        if self.frames[frame / 64] & bit == 0 {
+            self.frames[frame / 64] |= bit;
+            self.free += 1;
+        }
+    }
+}
+
+/// Free frames kept for DMA, below `DMA_RESERVE_LIMIT`; allocations take
+/// them once the colour queues are empty.
 static DMA_RESERVE: Spinlock<Reserve> = Spinlock::new(Reserve {
     frames: [0; DMA_RESERVE_LIMIT / PAGE_SIZE / 64],
     free: 0,
@@ -561,11 +582,7 @@ pub fn release(range: Range<PhysAddr>) {
     for frame in range.start.0.div_ceil(PAGE_SIZE)..range.end.0 / PAGE_SIZE {
         if frame < reserved {
             let mut reserve = DMA_RESERVE.lock();
-            let bit = 1 << (frame % 64);
-            if reserve.frames[frame / 64] & bit == 0 {
-                reserve.frames[frame / 64] |= bit;
-                reserve.free += 1;
-            }
+            reserve.put(frame);
             drop(reserve);
         } else {
             QUEUES.free.push(color(frame), &array.pages[frame - first]);
@@ -646,8 +663,8 @@ pub fn init() {
 
 /// Takes a free page from the colour `index` picks among this CPU's, else
 /// from the aligned groups of 16, 32, … colours around it, or around its
-/// hint, up to all; `None` when no page is free. `index` is the page's index
-/// in its object plus the object's colour.
+/// hint, up to all, else from the DMA reserve; `None` when no page is free.
+/// `index` is the page's index in its object plus the object's colour.
 pub fn allocate(index: usize) -> Option<&'static Page> {
     let cpu_colors = COLORS / machine::processor_count();
     let first = smp::current().id() * cpu_colors + index % cpu_colors;
@@ -671,7 +688,7 @@ pub fn allocate(index: usize) -> Option<&'static Page> {
                 continue;
             }
             if QUEUES.free.pages.load(Ordering::Relaxed) == 0 {
-                return None;
+                return allocate_reserved();
             }
             if let Some(page) = QUEUES.free.pop(color) {
                 if looked >= 8 {
@@ -684,13 +701,31 @@ pub fn allocate(index: usize) -> Option<&'static Page> {
         searched = group..group + size;
         size *= 2;
     }
-    None
+    allocate_reserved()
 }
 
-/// Puts `page`, which `allocate` gave and nothing uses now, back on its
-/// colour's free queue.
+/// Takes the page of the DMA reserve's highest free frame, as GNU Mach's
+/// segment walk ends at its DMA segment; `None` when the reserve is empty.
+fn allocate_reserved() -> Option<&'static Page> {
+    let array = pages();
+    let mut reserve = DMA_RESERVE.lock();
+    let frame = reserve.take();
+    drop(reserve);
+    Some(&array.pages[frame? - array.start.0 / PAGE_SIZE])
+}
+
+/// Puts `page`, which `allocate` gave and nothing uses now, back in its
+/// pool: the DMA reserve for a frame below its end, else its colour's free
+/// queue.
 pub fn free(page: &'static Page) {
-    QUEUES.free.push(color(page.address().0 / PAGE_SIZE), page);
+    let frame = page.address().0 / PAGE_SIZE;
+    if frame < reserve_end(pages().pages.len() * PAGE_SIZE) {
+        let mut reserve = DMA_RESERVE.lock();
+        reserve.put(frame);
+        drop(reserve);
+    } else {
+        QUEUES.free.push(color(frame), page);
+    }
 }
 
 /// Takes a free page as `allocate` does for `index`, and fills it with
