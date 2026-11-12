@@ -42,6 +42,11 @@ SPDX-FileCopyrightText: 1991, 1990, 1989, 1988 Carnegie Mellon University
 SPDX-FileContributor: David B. Golub
 SPDX-License-Identifier: CMU-Mach
 
+SPDX-FileName: device/dev_pager.c
+SPDX-FileCopyrightText: 1993-1989 Carnegie Mellon University
+SPDX-FileContributor: David B. Golub
+SPDX-License-Identifier: CMU-Mach
+
 SPDX-FileName: device/device_init.c
 SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
 SPDX-FileContributor: David B. Golub

@@ -2,11 +2,13 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Devices; so far only the master device port, the device server's map
-//! and caches, device lookup, network input and the interrupt thread.
+//! and caches, device lookup, network input, the device pager and the
+//! interrupt thread.
 
 pub mod interrupt;
 mod lookup;
 mod net;
+mod pager;
 
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
@@ -35,7 +37,7 @@ static TRAP_REQUEST_CACHE: RawCache = RawCache::new("io_req", 2048, MIN_ALIGN, P
 /// Creates the device service, in the kernel task: so far only the master
 /// device port, a port the kernel receives on that stands for nothing, then
 /// the device server's I/O map, which waits for space, and its caches, then
-/// device lookup and network input.
+/// device lookup, network input and the device pager.
 ///
 /// # Panics
 ///
@@ -51,4 +53,5 @@ pub fn create_service() {
     TRAP_REQUEST_CACHE.register();
     lookup::init();
     net::init();
+    pager::init();
 }
