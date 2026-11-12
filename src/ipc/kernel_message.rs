@@ -230,6 +230,12 @@ impl KernelMessage {
         Ok(())
     }
 
+    /// Its buffer's size, in bytes.
+    pub(super) fn size(&self) -> usize {
+        // SAFETY: the buffer is ours alone.
+        unsafe { (*self.0.as_ptr()).size }
+    }
+
     /// Its header.
     pub fn header(&self) -> &Header {
         // SAFETY: the buffer holds a header, and is ours alone.
@@ -328,6 +334,22 @@ pub fn get(address: usize, size: u32) -> KernelMessage {
         "ipc_kmsg_get: MACH_SEND_INVALID_DATA, not yet"
     );
     message
+}
+
+/// Copies `size` bytes of `message`, header first, to the user's message at
+/// `address`, then saves or frees it, as `ipc_kmsg_put` does.
+///
+/// # Panics
+///
+/// If its buffer can't hold `size` bytes. If the copy-out fails: not yet.
+pub fn put(address: usize, mut message: KernelMessage, size: u32) {
+    let length = usize::try_from(size).unwrap();
+    let copied = arch::Current::copy_out(&message.message_mut()[..length], address);
+    message.cache_or_free();
+    assert!(
+        copied.is_ok(),
+        "ipc_kmsg_put: MACH_RCV_INVALID_DATA, not yet"
+    );
 }
 
 impl Drop for KernelMessage {

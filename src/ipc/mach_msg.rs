@@ -12,6 +12,7 @@ use super::kernel_message::{
 };
 use super::port::{Port, PortName};
 use super::space::KERNEL_SPACE;
+use crate::arch::PAGE_SIZE;
 use crate::{ipc_kobject, smp};
 
 bitflags::bitflags! {
@@ -27,14 +28,13 @@ bitflags::bitflags! {
 
 /// Sends the message at `message`, `send_size` bytes, then receives one on
 /// `receive_name`, as `mach_msg_trap` does; so far a request to a port the
-/// kernel receives on, from `fast_get` until its reply is copied out.
+/// kernel receives on, and its reply. Gives `MACH_MSG_SUCCESS`.
 ///
 /// # Panics
 ///
 /// If no thread runs on the CPU, or the reply port has no send-once right.
 /// On every other path: not yet; as `kernel_message::get`,
-/// `ipc_kobject::server` and `Port::release`. Then, at putting the reply:
-/// not yet.
+/// `ipc_kobject::server`, `Port::release` and `kernel_message::put`.
 #[expect(
     clippy::too_many_lines,
     reason = "mach_msg_trap's fast path, in GNU Mach's order"
@@ -62,13 +62,13 @@ pub fn trap(
     let fits = length * EXPAND_FACTOR <= SAVED_MESSAGE_SIZE
         && length >= size_of::<Header>()
         && length.is_multiple_of(4);
-    let mut message = fits
+    let mut request = fits
         .then(KernelMessage::take_cached)
         .flatten()
         .and_then(|mut cached| cached.copy_in(message, send_size).is_ok().then_some(cached))
         .unwrap_or_else(|| kernel_message::get(message, send_size));
     // fast_copyin.
-    let header = message.header_mut();
+    let header = request.header_mut();
     // A copied send right for the destination, and a send-once right made
     // for the reply port.
     assert!(
@@ -122,7 +122,7 @@ pub fn trap(
     drop(destination_state);
     assert!(kernel, "mach_msg_trap: fast_send_receive, not yet");
     // kernel_send.
-    let mut reply = ipc_kobject::server(message);
+    let mut reply = ipc_kobject::server(request);
     // SAFETY: the reply's destination is the reply port's exposed address,
     // and the reply holds a reference to it.
     let reply_port = unsafe { &*ptr::with_exposed_provenance::<Port>(reply.header().remote_port) };
@@ -180,5 +180,13 @@ pub fn trap(
     header.bits = MessageBits::new(None, Some(MessageType::PortSendOnce));
     header.local_port = usize::try_from(u32::from(name)).unwrap();
     header.remote_port = usize::try_from(u32::from(PortName::NULL)).unwrap();
-    panic!("mach_msg_trap: putting the reply, not yet")
+    // fast_put: only a saved buffer is copied out here.
+    assert!(
+        reply.size() != PAGE_SIZE,
+        "mach_msg_trap: fast_put of a saved buffer, not yet"
+    );
+    // slow_put.
+    kernel_message::put(message, reply, reply_size);
+    // MACH_MSG_SUCCESS.
+    0
 }
