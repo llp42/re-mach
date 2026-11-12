@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
-//! Devices; so far only the master device port, device lookup, the device
-//! pager, terminals' input settings and the interrupt thread.
+//! Devices; so far only the master device port, device lookup, terminals'
+//! input settings and the interrupt thread.
 
 pub mod interrupt;
 mod lookup;
-mod pager;
 mod terminal;
 
 use core::ptr;
@@ -21,7 +20,7 @@ pub static MASTER_PORT: AtomicPtr<Port> = AtomicPtr::new(ptr::null_mut());
 
 /// Creates the device service, in the kernel task: so far only the master
 /// device port, a port the kernel receives on that stands for nothing, then
-/// device lookup, the device pager and terminals' input settings.
+/// device lookup and terminals' input settings.
 ///
 /// # Panics
 ///
@@ -31,6 +30,5 @@ pub fn create_service() {
         .unwrap_or_else(|error| panic!("can't allocate master device port: {error:?}"));
     MASTER_PORT.store(CacheBox::into_raw(port).as_ptr(), Ordering::Release);
     lookup::init();
-    pager::init();
     terminal::init();
 }
