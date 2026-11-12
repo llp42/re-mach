@@ -30,7 +30,6 @@ impl CpuSubtype {
 }
 
 /// What the host knows of a processor slot that holds one.
-#[expect(dead_code, reason = "host_info and processor_info read it")]
 pub struct Slot {
     pub ty: CpuType,
     pub subtype: CpuSubtype,
@@ -90,6 +89,11 @@ impl Slot {
 /// One per processor, set once it is found.
 static SLOTS: [OnceLock<Slot>; MAX_CPUS] = [const { OnceLock::new() }; MAX_CPUS];
 
+/// Slot `cpu`, if it holds a processor.
+pub fn slot(cpu: usize) -> Option<&'static Slot> {
+    SLOTS[cpu].get()
+}
+
 /// Whether slot `cpu` holds a processor.
 pub fn has_processor(cpu: usize) -> bool {
     SLOTS[cpu].get().is_some()
@@ -114,16 +118,29 @@ pub fn store_slot(cpu: usize, slot: Slot) {
 
 /// What the host knows of the machine, as Mach's interface gives it; the
 /// CPUs available come with them.
-#[expect(dead_code, reason = "host_info reads it")]
 pub struct MachineInfo {
     /// The kernel's major version.
+    #[expect(dead_code, reason = "GNU Mach sets it and reads it nowhere")]
     major_version: i32,
     /// The kernel's minor version.
+    #[expect(dead_code, reason = "GNU Mach sets it and reads it nowhere")]
     minor_version: i32,
     /// The most CPUs the kernel supports.
     max_cpus: i32,
     /// The bytes of memory, holes within its segments included.
     memory_size: usize,
+}
+
+impl MachineInfo {
+    /// The most CPUs the kernel supports.
+    pub const fn max_cpus(&self) -> i32 {
+        self.max_cpus
+    }
+
+    /// The bytes of memory, holes within its segments included.
+    pub const fn memory_size(&self) -> usize {
+        self.memory_size
+    }
 }
 
 /// The kernel's version, as Mach's interface numbers it.
@@ -132,6 +149,16 @@ const MINOR_VERSION: i32 = 0;
 
 /// The machine's information, once `init_info` fills it in.
 static INFO: OnceLock<MachineInfo> = OnceLock::new();
+
+/// The machine's information.
+///
+/// # Panics
+///
+/// If it is not filled in.
+#[track_caller]
+pub fn info() -> &'static MachineInfo {
+    INFO.get().expect("machine: no information yet")
+}
 
 /// Fills in the machine's information, on the boot CPU.
 ///
@@ -150,6 +177,11 @@ pub fn init_info() {
 
 /// How many processors are up.
 static AVAILABLE_CPUS: AtomicU32 = AtomicU32::new(0);
+
+/// How many processors are up.
+pub fn available_cpus() -> u32 {
+    AVAILABLE_CPUS.load(Ordering::Relaxed)
+}
 
 /// Brings processor `cpu` up, on its CPU: its slot says it runs, it counts
 /// as available, and its processor joins its set.
