@@ -166,6 +166,19 @@ pub fn host_time(host: Option<&Host>) -> MicrosecondTime {
     }
 }
 
+/// The time of day for `host`, as `host_get_time64` reads it.
+///
+/// # Panics
+///
+/// With no host: not yet.
+pub fn host_time64(host: Option<&Host>) -> TimeValue {
+    assert!(
+        host.is_some(),
+        "host_get_time64: KERN_INVALID_HOST, not yet"
+    );
+    stamp()
+}
+
 /// Sets the time of day, on the boot CPU.
 pub fn set_time(time: TimeValue) {
     let last = snapshot();

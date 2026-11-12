@@ -22,6 +22,7 @@ pub(super) fn routine(id: i32) -> Option<fn(&KernelMessage, &mut KernelMessage)>
         34 => Some(host_get_time),
         35 => Some(host_reboot),
         38 => Some(host_info),
+        43 => Some(host_get_time64),
         46 => Some(host_get_kernel_version),
         _ => None,
     }
@@ -189,6 +190,51 @@ fn host_info(request: &KernelMessage, reply: &mut KernelMessage) {
     // The integers used, padded to 8 bytes.
     let size = offset_of!(InfoReply, info) + (size_of::<i32>() * count).next_multiple_of(8);
     reply.header.size = u32::try_from(size).unwrap();
+}
+
+/// `host_get_time64`'s reply, as MIG lays it out.
+#[repr(C)]
+struct Time64Reply {
+    /// The reply's header.
+    header: Header,
+    /// The return code's type word.
+    return_code_type: u64,
+    /// The routine's return code.
+    return_code: u32,
+    /// Padding to 8 bytes.
+    return_code_pad: [u8; 4],
+    /// The time's type word.
+    current_time_type: u64,
+    /// The time's seconds.
+    seconds: i64,
+    /// The time's nanoseconds.
+    nanoseconds: i64,
+}
+
+/// Serves `host_get_time64`, as MIG's stub does: a request of its header
+/// alone, not complex, gets the time of day from
+/// `clock::time::host_time64` with the host its destination stands for.
+///
+/// # Panics
+///
+/// On any other request: not yet; as `clock::time::host_time64`.
+fn host_get_time64(request: &KernelMessage, reply: &mut KernelMessage) {
+    let header = request.header();
+    assert!(
+        header.size == 32 && !header.bits.is_complex(),
+        "host_get_time64: MIG_BAD_ARGUMENTS, not yet"
+    );
+    // SAFETY: as in `host_reboot`.
+    let port = unsafe { &*ptr::with_exposed_provenance::<Port>(header.remote_port) };
+    let time = clock::time::host_time64(ipc_host::host(port));
+    // SAFETY: MIG's layout of the reply, `repr(C)`, a `Header` first,
+    // integers only.
+    let reply = unsafe { reply.layout_mut::<Time64Reply>() };
+    reply.return_code = 0;
+    reply.seconds = time.seconds;
+    reply.nanoseconds = time.nanoseconds;
+    reply.header.size = u32::try_from(size_of::<Time64Reply>()).unwrap();
+    reply.current_time_type = type_word(MessageType::Integer64, 64, 2);
 }
 
 /// `host_get_kernel_version`'s reply, as MIG lays it out.
