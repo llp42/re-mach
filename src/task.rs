@@ -47,6 +47,10 @@ pub struct Task {
     pub(super) faults: AtomicUsize,
     /// Its pages filled with zeros on a fault.
     pub(super) zero_fills: AtomicUsize,
+    /// The messages it sent.
+    pub(super) messages_sent: AtomicUsize,
+    /// The messages it received.
+    pub(super) messages_received: AtomicUsize,
     /// Whether it is alive, its priorities and suspensions, its threads and
     /// its name.
     pub(super) members: Token<TaskMembers>,
@@ -318,6 +322,8 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
         creation_time: clock::time::stamp().into(),
         faults: AtomicUsize::new(0),
         zero_fills: AtomicUsize::new(0),
+        messages_sent: AtomicUsize::new(0),
+        messages_received: AtomicUsize::new(0),
         members: Token::new(TaskMembers {
             active: true,
             // No higher than the set allows.

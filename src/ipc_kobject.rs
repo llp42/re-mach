@@ -5,8 +5,11 @@
 
 mod mach_host;
 
+use core::sync::atomic::Ordering;
+
 use crate::ipc::MessageType;
 use crate::ipc::kernel_message::{Header, KernelMessage, MessageBits};
+use crate::task;
 
 /// The size of a reply's buffer.
 const REPLY_SIZE: usize = 8192;
@@ -46,13 +49,13 @@ const fn type_word(name: MessageType, size: u16, number: u32) -> u64 {
 
 /// Serves `request`, sent to a port the kernel receives on, as
 /// `ipc_kobject_server` does: a reply with its header filled in, for the
-/// routine its id names to finish; so far through that routine.
+/// routine its id names to finish; so far through that routine, counted in
+/// the kernel task's messages.
 ///
 /// # Panics
 ///
 /// If no reply can be allocated, or no routine serves the request's id:
-/// not yet; as the routine. Once it returns, at the kernel task's message
-/// counts: not yet.
+/// not yet; as the routine. Then, at the destination's destroy: not yet.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "ipc_kobject_server frees or destroys the request"
@@ -76,5 +79,12 @@ pub fn server(request: KernelMessage) -> ! {
     let routine = mach_host::routine(header.id)
         .unwrap_or_else(|| panic!("ipc_kobject_server: MIG_BAD_ID, not yet"));
     routine(&request, &mut reply);
-    panic!("ipc_kobject_server: messages_received, not yet")
+    let kernel_task = task::KERNEL_TASK
+        .get()
+        .expect("ipc_kobject_server: no kernel task");
+    kernel_task
+        .messages_received
+        .fetch_add(1, Ordering::Relaxed);
+    kernel_task.messages_sent.fetch_add(1, Ordering::Relaxed);
+    panic!("ipc_kobject_server: destroy destination, not yet")
 }
