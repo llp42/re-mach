@@ -37,6 +37,11 @@ as a whole, are below, each with the copyright lines, authors and
 licence it carries at that commit. The licence texts are in LICENSES/,
 named by their identifiers.
 
+SPDX-FileName: device/chario.c
+SPDX-FileCopyrightText: 1993-1988 Carnegie Mellon University
+SPDX-FileContributor: David B. Golub
+SPDX-License-Identifier: CMU-Mach
+
 SPDX-FileName: device/dev_lookup.c
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988 Carnegie Mellon University
 SPDX-FileContributor: David B. Golub
@@ -144,6 +149,11 @@ SPDX-FileName: i386/intel/pmap.h
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988 Carnegie Mellon University
 SPDX-FileContributor: Avadis Tevanian, Jr.
 SPDX-FileContributor: Michael Wayne Young
+SPDX-License-Identifier: CMU-Mach
+
+SPDX-FileName: include/device/tty_status.h
+SPDX-FileCopyrightText: 1991, 1990 Carnegie Mellon University
+SPDX-FileContributor: David B. Golub
 SPDX-License-Identifier: CMU-Mach
 
 SPDX-FileName: include/mach/exec/exec.h
