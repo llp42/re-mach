@@ -114,6 +114,16 @@ impl Snapshot {
             counter: AtomicU64::new(0),
         }
     }
+
+    /// The counter's change since its tick, in nanoseconds, kept under a
+    /// tick.
+    fn since_tick(&self) -> i64 {
+        let since =
+            Current::counter_nanoseconds().saturating_sub(self.counter.load(Ordering::Relaxed));
+        i64::try_from(since)
+            .unwrap_or(i64::MAX)
+            .min(NANOSECONDS_PER_SECOND / i64::from(HZ) - 1)
+    }
 }
 
 /// The clock's snapshots, a ring only the boot CPU writes; a reader stalled
@@ -143,11 +153,14 @@ pub(super) fn publish(time: TimeValue, uptime: TimeValue, counter: u64) {
 /// boot CPU's last tick, kept under a tick.
 pub fn stamp() -> TimeValue {
     let last = snapshot();
-    let since = Current::counter_nanoseconds().saturating_sub(last.counter.load(Ordering::Relaxed));
-    let since = i64::try_from(since).unwrap_or(i64::MAX);
-    last.time
-        .load()
-        .add_nanoseconds(since.min(NANOSECONDS_PER_SECOND / i64::from(HZ) - 1))
+    last.time.load().add_nanoseconds(last.since_tick())
+}
+
+/// The time since boot now, with the counter's change since the boot CPU's
+/// last tick, kept under a tick.
+pub fn uptime() -> TimeValue {
+    let last = snapshot();
+    last.uptime.load().add_nanoseconds(last.since_tick())
 }
 
 /// The time of day for `host`, in microseconds, as `host_get_time` reads
@@ -177,6 +190,19 @@ pub fn host_time64(host: Option<&Host>) -> TimeValue {
         "host_get_time64: KERN_INVALID_HOST, not yet"
     );
     stamp()
+}
+
+/// The time since boot for `host`, as `host_get_uptime64` reads it.
+///
+/// # Panics
+///
+/// With no host: not yet.
+pub fn host_uptime64(host: Option<&Host>) -> TimeValue {
+    assert!(
+        host.is_some(),
+        "host_get_uptime64: KERN_INVALID_HOST, not yet"
+    );
+    uptime()
 }
 
 /// Sets the time of day, on the boot CPU.
