@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Kernel messages: messages in kernel buffers.
 
-use core::mem::offset_of;
+use core::mem::{ManuallyDrop, offset_of};
 use core::ptr::NonNull;
 use core::slice;
 
@@ -11,6 +11,7 @@ use super::MessageType;
 use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::error::Error;
 use crate::kalloc;
+use crate::sync::CpuLocal;
 
 /// A message's header, in Mach's layout. Its ports are names as the user
 /// sent them, then, once copied in, ports' exposed addresses.
@@ -113,7 +114,21 @@ const OVERHEAD: usize = offset_of!(Buffer, header);
 
 /// How much a message may grow in the kernel: a port name's 4 bytes become
 /// a port's 8.
-const EXPAND_FACTOR: usize = 2;
+pub(super) const EXPAND_FACTOR: usize = 2;
+
+/// The largest message a saved buffer, a page, holds.
+pub(super) const SAVED_MESSAGE_SIZE: usize = PAGE_SIZE - OVERHEAD;
+
+/// Each CPU's saved buffer, if it has one, as `ipc_kmsg_cache`.
+static CACHE: CpuLocal<Option<SavedBuffer>> = CpuLocal::new(None);
+
+/// A saved buffer, a page, in a CPU's slot.
+#[derive(Clone, Copy)]
+struct SavedBuffer(NonNull<Buffer>);
+
+// SAFETY: only its slot holds a saved buffer, whose bytes are plain
+// integers; the CPU that takes it owns it alone.
+unsafe impl Send for SavedBuffer {}
 
 impl KernelMessage {
     /// A new one, in a zeroed kalloc buffer of `size` bytes.
@@ -138,6 +153,67 @@ impl KernelMessage {
             (&raw mut (*buffer.as_ptr()).size).write(size);
         }
         Ok(Self(buffer))
+    }
+
+    /// The current CPU's saved one, taken from its slot, as
+    /// `ikm_cache_alloc_try` does; `None` if the slot is empty.
+    pub(super) fn take_cached() -> Option<Self> {
+        CACHE.lock().take().map(|SavedBuffer(buffer)| Self(buffer))
+    }
+
+    /// One of the saved size, a page: the current CPU's saved one, or a new
+    /// one, as `ikm_cache_alloc` does.
+    ///
+    /// # Errors
+    ///
+    /// As `allocate`.
+    ///
+    /// # Panics
+    ///
+    /// As `allocate`.
+    fn allocate_saved() -> Result<Self, Error> {
+        Self::take_cached().map_or_else(|| Self::allocate(PAGE_SIZE), Ok)
+    }
+
+    /// Saves it in the current CPU's slot if it is of the saved size and the
+    /// slot is empty, else frees it, as `ikm_cache_free` does.
+    pub fn cache_or_free(self) {
+        let message = ManuallyDrop::new(self);
+        // SAFETY: the buffer is ours alone.
+        if unsafe { (*message.0.as_ptr()).size } == PAGE_SIZE {
+            let mut slot = CACHE.lock();
+            let empty = slot.is_none();
+            if empty {
+                *slot = Some(SavedBuffer(message.0));
+            }
+            drop(slot);
+            if empty {
+                return;
+            }
+        }
+        // Freed outside the slot.
+        drop(ManuallyDrop::into_inner(message));
+    }
+
+    /// Copies the user's message at `address`, `size` bytes, into it, as
+    /// `copyinmsg` does: its size is set, and its ports keep their names'
+    /// 32 bits.
+    ///
+    /// # Errors
+    ///
+    /// As `Machine::copy_in`.
+    ///
+    /// # Panics
+    ///
+    /// If its buffer can't hold `size` bytes.
+    pub(super) fn copy_in(&mut self, address: usize, size: u32) -> Result<(), Error> {
+        let length = usize::try_from(size).unwrap();
+        arch::Current::copy_in(address, &mut self.message_mut()[..length])?;
+        let header = self.header_mut();
+        header.size = size;
+        header.remote_port &= 0xffff_ffff;
+        header.local_port &= 0xffff_ffff;
+        Ok(())
     }
 
     /// Its header.
@@ -212,14 +288,15 @@ impl KernelMessage {
     }
 }
 
-/// Copies the user's message at `address`, `size` bytes, into a new kernel
-/// message, as `ipc_kmsg_get` does; its ports keep their names' 32 bits.
+/// Copies the user's message at `address`, `size` bytes, into a kernel
+/// message of the saved size, cached or new, as `ipc_kmsg_get` does; its
+/// ports keep their names' 32 bits.
 ///
 /// # Panics
 ///
 /// If `size` is below a header or not a multiple of 8, if the message
-/// might outgrow a page, if no buffer can be allocated, or if the message
-/// can't be copied in: not yet.
+/// might outgrow a saved buffer, if no buffer can be allocated, or if the
+/// message can't be copied in: not yet.
 pub fn get(address: usize, size: u32) -> KernelMessage {
     let length = usize::try_from(size).unwrap();
     assert!(
@@ -227,18 +304,25 @@ pub fn get(address: usize, size: u32) -> KernelMessage {
         "ipc_kmsg_get: MACH_SEND_MSG_TOO_SMALL, not yet"
     );
     assert!(
-        length * EXPAND_FACTOR <= PAGE_SIZE - OVERHEAD,
+        length * EXPAND_FACTOR <= SAVED_MESSAGE_SIZE,
         "ipc_kmsg_get: a buffer beyond a page, not yet"
     );
-    let mut message = KernelMessage::allocate(PAGE_SIZE)
+    let mut message = KernelMessage::allocate_saved()
         .unwrap_or_else(|_| panic!("ipc_kmsg_get: MACH_SEND_NO_BUFFER, not yet"));
     assert!(
-        arch::Current::copy_in(address, &mut message.message_mut()[..length]).is_ok(),
+        message.copy_in(address, size).is_ok(),
         "ipc_kmsg_get: MACH_SEND_INVALID_DATA, not yet"
     );
-    let header = message.header_mut();
-    header.size = size;
-    header.remote_port &= 0xffff_ffff;
-    header.local_port &= 0xffff_ffff;
     message
+}
+
+impl Drop for KernelMessage {
+    /// Frees its buffer, as `ikm_free` does.
+    fn drop(&mut self) {
+        // SAFETY: the buffer is ours alone.
+        let size = unsafe { (*self.0.as_ptr()).size };
+        // SAFETY: the buffer came from `kalloc::allocate(size)`, and is not
+        // used again.
+        unsafe { kalloc::free(self.0.cast(), size) };
+    }
 }

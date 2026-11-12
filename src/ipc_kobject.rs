@@ -51,17 +51,18 @@ const fn type_word(name: MessageType, size: u16, number: u32) -> u64 {
 
 /// Serves `request`, sent to a port the kernel receives on, as
 /// `ipc_kobject_server` does: a reply with its header filled in, for the
-/// routine its id names to finish; so far through that routine, counted in
-/// the kernel task's messages, and the release of the request's
-/// destination right.
+/// routine its id names to finish, counted in the kernel task's messages;
+/// then the request's destination right is released and its buffer saved
+/// or freed. Gives the reply.
 ///
 /// # Panics
 ///
 /// If no reply can be allocated, or no routine serves the request's id:
 /// not yet; as the routine. If the destination right is neither a send nor
 /// a send-once right; for a send-once right: not yet; as
-/// `Port::release_send`. Then, at the request's free: not yet.
-pub fn server(mut request: KernelMessage) -> ! {
+/// `Port::release_send`. If the routine fails, or the reply port is not
+/// valid: not yet.
+pub fn server(mut request: KernelMessage) -> KernelMessage {
     let mut reply = KernelMessage::allocate(REPLY_SIZE)
         .unwrap_or_else(|_| panic!("ipc_kobject_server: dropping request, not yet"));
     let header = request.header();
@@ -102,5 +103,20 @@ pub fn server(mut request: KernelMessage) -> ! {
     }
     // So that destroying the request does not release it again.
     header.remote_port = 0;
-    panic!("ipc_kobject_server: ikm_cache_free, not yet")
+    // SAFETY: MIG's reply header, as for its header above.
+    let return_code = unsafe { reply.layout::<ReplyHeader>() }.return_code;
+    // A failed routine's request is destroyed; a MIG_NO_REPLY one replies
+    // later.
+    assert!(
+        return_code == 0,
+        "ipc_kobject_server: RetCode {return_code:#x}, ipc_kmsg_destroy or MIG_NO_REPLY, not yet"
+    );
+    // As ipc_kmsg_put, without the copy-out.
+    request.cache_or_free();
+    // Neither null nor dead.
+    assert!(
+        !matches!(reply.header().remote_port, 0 | usize::MAX),
+        "ipc_kobject_server: an invalid reply port, not yet"
+    );
+    reply
 }

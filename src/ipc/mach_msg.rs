@@ -7,7 +7,9 @@ use core::ptr::{self, NonNull};
 
 use super::MessageType;
 use super::entry::Rights;
-use super::kernel_message::{self, MessageBits};
+use super::kernel_message::{
+    self, EXPAND_FACTOR, Header, KernelMessage, MessageBits, SAVED_MESSAGE_SIZE,
+};
 use super::port::PortName;
 use super::space::KERNEL_SPACE;
 use crate::{ipc_kobject, smp};
@@ -25,12 +27,13 @@ bitflags::bitflags! {
 
 /// Sends the message at `message`, `send_size` bytes, then receives one on
 /// `receive_name`, as `mach_msg_trap` does; so far a request to a port the
-/// kernel receives on, from `fast_copyin` to `kernel_send`.
+/// kernel receives on, from `fast_get` until the kernel serves it.
 ///
 /// # Panics
 ///
 /// If no thread runs on the CPU. On every other path: not yet; as
-/// `kernel_message::get` and `ipc_kobject::server`.
+/// `kernel_message::get` and `ipc_kobject::server`. Then, at receiving the
+/// reply directly: not yet.
 pub fn trap(
     message: usize,
     option: u32,
@@ -48,8 +51,17 @@ pub fn trap(
         .active_thread()
         .expect("mach_msg_trap: no current thread");
     let space = &thread.task().space;
-    // With no cached buffer, fast_get goes to slow_get.
-    let mut message = kernel_message::get(message, send_size);
+    // fast_get: the CPU's saved buffer, if the message fits one, else
+    // slow_get; a failed copy-in frees it and goes to slow_get too.
+    let length = usize::try_from(send_size).unwrap();
+    let fits = length * EXPAND_FACTOR <= SAVED_MESSAGE_SIZE
+        && length >= size_of::<Header>()
+        && length.is_multiple_of(4);
+    let mut message = fits
+        .then(KernelMessage::take_cached)
+        .flatten()
+        .and_then(|mut cached| cached.copy_in(message, send_size).is_ok().then_some(cached))
+        .unwrap_or_else(|| kernel_message::get(message, send_size));
     // fast_copyin.
     let header = message.header_mut();
     // A copied send right for the destination, and a send-once right made
@@ -105,5 +117,6 @@ pub fn trap(
     drop(destination_state);
     assert!(kernel, "mach_msg_trap: fast_send_receive, not yet");
     // kernel_send.
-    ipc_kobject::server(message)
+    let _reply = ipc_kobject::server(message);
+    panic!("mach_msg_trap: receiving the reply directly, not yet")
 }
