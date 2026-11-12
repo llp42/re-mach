@@ -27,19 +27,23 @@ bitflags::bitflags! {
 
 /// Sends the message at `message`, `send_size` bytes, then receives one on
 /// `receive_name`, as `mach_msg_trap` does; so far a request to a port the
-/// kernel receives on, from `fast_get` until its reply is received
-/// directly.
+/// kernel receives on, from `fast_get` until its reply is copied out.
 ///
 /// # Panics
 ///
-/// If no thread runs on the CPU. On every other path: not yet; as
-/// `kernel_message::get` and `ipc_kobject::server`. Then, at copying the
-/// reply out: not yet.
+/// If no thread runs on the CPU, or the reply port has no send-once right.
+/// On every other path: not yet; as `kernel_message::get`,
+/// `ipc_kobject::server` and `Port::release`. Then, at putting the reply:
+/// not yet.
+#[expect(
+    clippy::too_many_lines,
+    reason = "mach_msg_trap's fast path, in GNU Mach's order"
+)]
 pub fn trap(
     message: usize,
     option: u32,
     send_size: u32,
-    _receive_size: u32,
+    receive_size: u32,
     receive_name: PortName,
     _timeout: u32,
     _notify: PortName,
@@ -139,5 +143,42 @@ pub fn trap(
     reply.header_mut().sequence_number = reply_state.sequence_number;
     reply_state.sequence_number = reply_state.sequence_number.wrapping_add(1);
     drop(reply_state);
-    panic!("mach_msg_trap: copying the reply out, not yet")
+    // fast_copyout.
+    let reply_size = reply.header().size;
+    assert!(
+        receive_size >= reply_size,
+        "mach_msg_trap: slow_copyout, MACH_RCV_TOO_LARGE, not yet"
+    );
+    // A reply, with the send-once right it carries.
+    assert!(
+        reply.header().bits == MessageBits::new(Some(MessageType::PortSendOnce), None),
+        "mach_msg_trap: copying out bits {:#x}, not yet",
+        u32::from(reply.header().bits)
+    );
+    let mut reply_state = reply_port.state.lock();
+    assert!(
+        reply_state.active,
+        "mach_msg_trap: slow_copyout, a dead port, not yet"
+    );
+    let payload = reply_state.protected_payload;
+    assert!(
+        reply_state.receiver == NonNull::from(&**space),
+        "mach_msg_trap: ipc_notify_send_once, not yet"
+    );
+    reply_port.release();
+    reply_state.send_once_rights = reply_state
+        .send_once_rights
+        .checked_sub(1)
+        .expect("mach_msg_trap: no send-once right");
+    let name = reply_state.receiver_name;
+    drop(reply_state);
+    assert!(
+        payload.is_none(),
+        "mach_msg_trap: a protected payload, not yet"
+    );
+    let header = reply.header_mut();
+    header.bits = MessageBits::new(None, Some(MessageType::PortSendOnce));
+    header.local_port = usize::try_from(u32::from(name)).unwrap();
+    header.remote_port = usize::try_from(u32::from(PortName::NULL)).unwrap();
+    panic!("mach_msg_trap: putting the reply, not yet")
 }

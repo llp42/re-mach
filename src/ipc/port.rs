@@ -30,7 +30,8 @@ pub struct Port {
 
 /// A port's state under its lock; so far only whether it is alive, its
 /// receiver and its name there, its send and send-once rights, what it
-/// stands for, its set, its sequence number and its message queue.
+/// stands for, its set, its sequence number, its message queue and its
+/// protected payload.
 pub(super) struct PortState {
     /// Whether it is alive.
     pub(super) active: bool,
@@ -54,6 +55,8 @@ pub(super) struct PortState {
     pub(super) messages: LinkedList<kernel_message::QueueAdapter>,
     /// The threads waiting to receive from it, latest first.
     pub(super) receivers: LinkedList<IpcQueueAdapter>,
+    /// What its received messages carry in place of its name, if set.
+    pub(super) protected_payload: Option<u64>,
 }
 
 impl Port {
@@ -74,6 +77,7 @@ impl Port {
                 sequence_number: 0,
                 messages: LinkedList::new(kernel_message::QueueAdapter::NEW),
                 receivers: LinkedList::new(IpcQueueAdapter::NEW),
+                protected_payload: None,
             }),
         }
     }
@@ -133,7 +137,7 @@ impl Port {
     /// # Panics
     ///
     /// On its last reference: not yet.
-    fn release(&self) {
+    pub(super) fn release(&self) {
         // Only the last reference's drop frees it.
         assert!(
             self.references
