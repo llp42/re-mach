@@ -24,6 +24,7 @@ pub(super) fn routine(id: i32) -> Option<fn(&KernelMessage, &mut KernelMessage)>
         38 => Some(host_info),
         43 => Some(host_get_time64),
         46 => Some(host_get_kernel_version),
+        47 => Some(host_get_uptime64),
         _ => None,
     }
 }
@@ -279,4 +280,49 @@ fn host_get_kernel_version(request: &KernelMessage, reply: &mut KernelMessage) {
     }
     reply.header.size = u32::try_from(size_of::<KernelVersionReply>()).unwrap();
     reply.kernel_version_type = type_word(MessageType::StringC, 8, 512);
+}
+
+/// `host_get_uptime64`'s reply, as MIG lays it out.
+#[repr(C)]
+struct Uptime64Reply {
+    /// The reply's header.
+    header: Header,
+    /// The return code's type word.
+    return_code_type: u64,
+    /// The routine's return code.
+    return_code: u32,
+    /// Padding to 8 bytes.
+    return_code_pad: [u8; 4],
+    /// The uptime's type word.
+    uptime_type: u64,
+    /// The uptime's seconds.
+    seconds: i64,
+    /// The uptime's nanoseconds.
+    nanoseconds: i64,
+}
+
+/// Serves `host_get_uptime64`, as MIG's stub does: a request of its header
+/// alone, not complex, gets the time since boot from
+/// `clock::time::host_uptime64` with the host its destination stands for.
+///
+/// # Panics
+///
+/// On any other request: not yet; as `clock::time::host_uptime64`.
+fn host_get_uptime64(request: &KernelMessage, reply: &mut KernelMessage) {
+    let header = request.header();
+    assert!(
+        header.size == 32 && !header.bits.is_complex(),
+        "host_get_uptime64: MIG_BAD_ARGUMENTS, not yet"
+    );
+    // SAFETY: as in `host_reboot`.
+    let port = unsafe { &*ptr::with_exposed_provenance::<Port>(header.remote_port) };
+    let uptime = clock::time::host_uptime64(ipc_host::host(port));
+    // SAFETY: MIG's layout of the reply, `repr(C)`, a `Header` first,
+    // integers only.
+    let reply = unsafe { reply.layout_mut::<Uptime64Reply>() };
+    reply.return_code = 0;
+    reply.seconds = uptime.seconds;
+    reply.nanoseconds = uptime.nanoseconds;
+    reply.header.size = u32::try_from(size_of::<Uptime64Reply>()).unwrap();
+    reply.uptime_type = type_word(MessageType::Integer64, 64, 2);
 }
