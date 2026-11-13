@@ -19,7 +19,7 @@ pub(super) enum Object {
     /// A port, by its reference.
     Port(Reference<Port>),
     /// A port set.
-    PortSet(#[expect(dead_code, reason = "ipc_right_destroy reads it")] NonNull<PortSet>),
+    PortSet(NonNull<PortSet>),
 }
 
 /// Puts the right for `object`, new, in `space` under a free name, as

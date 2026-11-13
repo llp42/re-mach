@@ -11,24 +11,24 @@ use super::port::PortName;
 use super::space::Space;
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
-use crate::sync::Spinlock;
+use crate::sync::{Spinlock, SpinlockGuard};
 use crate::thread::IpcQueueAdapter;
 
 /// A port set: its state under its lock.
 pub struct PortSet {
     /// Its state.
-    state: Spinlock<PortSetState>,
+    pub(super) state: Spinlock<PortSetState>,
 }
 
 /// A port set's state under its lock: whether it is alive, its reference
 /// count, its name, and its message queue.
 #[expect(
     dead_code,
-    reason = "ipc_pset_destroy and receiving from a set read them"
+    reason = "receiving from a set reads its name and its messages"
 )]
-struct PortSetState {
+pub(super) struct PortSetState {
     /// Whether it is alive.
-    active: bool,
+    pub(super) active: bool,
     /// How many references it has.
     references: u32,
     /// Its name in the space that holds it.
@@ -93,6 +93,31 @@ impl PortSet {
         object::allocate_name(space, set, name, |set| {
             Object::PortSet(CacheBox::into_raw(set))
         })
+    }
+
+    /// Destroys the port set of locked state `state`, alive, as
+    /// `ipc_pset_destroy` does: it is dead and unlocked, and the caller's
+    /// reference is released. Gives whether that was the last, as
+    /// `ips_check_unlock` reads it after the release; the caller then frees
+    /// the set, with nothing borrowing it.
+    ///
+    /// # Panics
+    ///
+    /// If it is dead. If a thread waits to receive from it: not yet.
+    pub(super) fn destroy(mut state: SpinlockGuard<'_, PortSetState>) -> bool {
+        assert!(state.active, "ipc_pset_destroy: a dead port set");
+        state.active = false;
+        // As ipc_mqueue_changed, under the queue's lock, the set's.
+        assert!(
+            state.receivers.is_empty(),
+            "ipc_mqueue_changed: thread_go, not yet"
+        );
+        // ipc_target_terminate does nothing.
+        // As ips_release: the caller's reference.
+        state.references -= 1;
+        let last = state.references == 0;
+        drop(state);
+        last
     }
 }
 

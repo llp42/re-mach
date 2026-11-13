@@ -9,8 +9,10 @@ use super::MessageType;
 use super::entry::{Entry, EntryBits, Rights};
 use super::object::Object;
 use super::port::{Port, PortName, PortState, PortType, Receiver};
+use super::port_set::{self, PortSet};
 use super::space::{Space, SpaceState};
 use crate::arch::PhysAddr;
+use crate::slab::CacheBox;
 use crate::sync::{SleepLockWriteGuard, SpinlockGuard};
 
 /// `port`'s key in a reverse map: its physical address over 8, as ports
@@ -155,15 +157,15 @@ fn check<'a>(state: &SpaceState, entry: &'a Entry) -> SpinlockGuard<'a, PortStat
 /// # Panics
 ///
 /// If the space is dead, `name` has no entry, a dead name has a request,
-/// an object or a message-accepted request, a receive right has no port or
-/// a dead one or one another space receives on, or for rights that are
-/// none of Mach's. If a receive right has a message-accepted or dead-name
-/// request, for a port set's right, or for a send or send-once right: not
-/// yet. As `SpaceState::deallocate`, `PortState::clear_receiver` and
-/// `Port::destroy`.
+/// an object or a message-accepted request, a port set right has a request
+/// or no set or a dead one, a receive right has no port or a dead one or
+/// one another space receives on, or for rights that are none of Mach's. If
+/// a receive right has a message-accepted or dead-name request, or for a
+/// send or send-once right: not yet. As `SpaceState::deallocate`,
+/// `PortSet::destroy`, `PortState::clear_receiver` and `Port::destroy`.
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the port's guard is moved into Port::destroy"
+    reason = "the set's and the port's guards are moved into their destroy"
 )]
 pub(super) fn destroy(
     space: &Space,
@@ -184,7 +186,33 @@ pub(super) fn destroy(
         state.deallocate(name);
         drop(state);
     } else if rights == Rights::PORT_SET.bits() {
-        panic!("ipc_right_destroy: MACH_PORT_TYPE_PORT_SET, not yet");
+        assert!(
+            entry.request == 0,
+            "ipc_right_destroy: a port set with a request"
+        );
+        let entry = state
+            .map
+            .get_mut(name.key())
+            .expect("ipc_right_destroy: no entry");
+        // The entry's reference, ours now.
+        let Some(Object::PortSet(pointer)) = entry.object.take() else {
+            panic!("ipc_right_destroy: a port set right with no set");
+        };
+        state.deallocate(name);
+        // SAFETY: the reference we hold keeps the set alive, and this borrow
+        // ends at `PortSet::destroy`'s return, before any free.
+        let set = unsafe { pointer.as_ref() };
+        let set_state = set.state.lock();
+        assert!(set_state.active, "ipc_right_destroy: a dead port set");
+        drop(state);
+        if PortSet::destroy(set_state) {
+            // As ips_check_unlock's io_free, with no lock held and nothing
+            // borrowing the set.
+            // SAFETY: every set is a `port_set::CACHE` box, given up once with
+            // `into_raw` to the entry that held it, whose pointer we took; its
+            // last reference is released, so nothing uses it after.
+            drop(unsafe { CacheBox::from_raw(&port_set::CACHE, pointer) });
+        }
     } else if rights == Rights::RECEIVE.bits() {
         assert!(
             !entry.bits.message_accepted,
