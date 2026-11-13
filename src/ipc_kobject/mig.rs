@@ -3,8 +3,13 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! MIG's server stubs, generated from a subsystem's routines.
 
+use core::marker::PhantomData;
+
 use crate::ipc::MessageType;
 use crate::ipc::kernel_message::Header;
+use crate::ipc::port::PortName;
+use crate::slab::CacheBox;
+use crate::vm::map::MapCopy;
 
 /// An argument as MIG lays it out: its type word, then its data, padded to 8 bytes.
 #[repr(C)]
@@ -27,14 +32,21 @@ pub(super) struct ReplyHeader {
 /// MIG's type word, Mach's `mach_msg_type_t`, for `number` inline items of
 /// type `name`, `size` bits each.
 pub(super) const fn type_word(name: MessageType, size: u16, number: u32) -> u64 {
+    // The inline bit, bit 29.
+    word(name, size, 1 << 5, number)
+}
+
+/// MIG's type word for `number` items of type `name`, `size` bits each,
+/// with `flags` from bit 24.
+const fn word(name: MessageType, size: u16, flags: u8, number: u32) -> u64 {
     let [size_low, size_high] = size.to_le_bytes();
     let [number_0, number_1, number_2, number_3] = number.to_le_bytes();
-    // The name, the size, then the inline bit, bit 29; the number above.
+    // The name, the size, then the flags; the number above.
     u64::from_le_bytes([
         name.number(),
         size_low,
         size_high,
-        1 << 5,
+        flags,
         number_0,
         number_1,
         number_2,
@@ -53,14 +65,62 @@ pub(super) unsafe trait Inline: Copy {
     const WORD: u64;
 }
 
-/// An element of MIG's inline arrays.
+/// An element of MIG's arrays.
 ///
 /// # Safety
 ///
 /// As `Inline`.
 pub(super) unsafe trait Element: Copy {
-    /// MIG's type word for `number` of them.
-    fn word(number: u32) -> u64;
+    /// Its type name.
+    const NAME: MessageType;
+    /// Its size, in bits.
+    const SIZE: u16;
+
+    /// MIG's type word for `number` of them inline.
+    fn word(number: u32) -> u64 {
+        type_word(Self::NAME, Self::SIZE, number)
+    }
+
+    /// MIG's type word for `number` of them out of line.
+    fn out_of_line_word(number: u32) -> u64 {
+        // The long-form bit, bit 30; not inline.
+        word(Self::NAME, Self::SIZE, 1 << 6, number)
+    }
+}
+
+/// An out-of-line array a routine gives: the copy holding it, and how many
+/// elements.
+pub(super) struct OutOfLine<T> {
+    /// The copy holding it.
+    copy: CacheBox<MapCopy>,
+    /// How many elements.
+    count: usize,
+    /// Their type.
+    element: PhantomData<T>,
+}
+
+impl<T: Element> OutOfLine<T> {
+    /// `count` elements in `copy`.
+    pub(super) const fn new(copy: CacheBox<MapCopy>, count: usize) -> Self {
+        Self {
+            copy,
+            count,
+            element: PhantomData,
+        }
+    }
+
+    /// Its type word, and the copy's address, which the reply takes.
+    ///
+    /// # Panics
+    ///
+    /// If the count is past 32 bits.
+    pub(super) fn into_parts(self) -> (u64, usize) {
+        let word = T::out_of_line_word(u32::try_from(self.count).unwrap());
+        (
+            word,
+            CacheBox::into_raw(self.copy).as_ptr().expose_provenance(),
+        )
+    }
 }
 
 /// A C string of `N` bytes, NUL-padded, MIG's `c_string[N]`.
@@ -94,9 +154,20 @@ unsafe impl<const N: usize> Inline for StringC<N> {
 
 // SAFETY: a primitive.
 unsafe impl Element for i32 {
-    fn word(number: u32) -> u64 {
-        type_word(MessageType::Integer32, 32, number)
-    }
+    const NAME: MessageType = MessageType::Integer32;
+    const SIZE: u16 = 32;
+}
+
+// SAFETY: a primitive.
+unsafe impl Element for u32 {
+    const NAME: MessageType = MessageType::Integer32;
+    const SIZE: u16 = 32;
+}
+
+// SAFETY: `repr(transparent)` over a `u32`.
+unsafe impl Element for PortName {
+    const NAME: MessageType = MessageType::PortName;
+    const SIZE: u16 = 32;
 }
 
 /// Generates a subsystem's stubs, `stub::<routine>`, and `routine(id)`: its
@@ -154,6 +225,16 @@ macro_rules! subsystem {
         $crate::ipc_kobject::mig::subsystem!(
             @sort $name $head [$($ins)* ($out count $element, $max)]
             [$($outs)* ($out count $element, $max)] [] []
+        );
+    };
+    // An out-of-line out-array.
+    (
+        @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*] []
+        [$out:ident: OutOfLine<$element:ty> $(, $($rest:tt)*)?]
+    ) => {
+        $crate::ipc_kobject::mig::subsystem!(
+            @sort $name $head [$($ins)*] [$($outs)* ($out out_of_line $element)] []
+            [$($($rest)*)?]
         );
     };
     // One fixed inline out-argument.
@@ -218,7 +299,7 @@ macro_rules! subsystem {
                 let port =
                     unsafe { &*ptr::with_exposed_provenance::<Port>($request.header.remote_port) };
                 // SAFETY: `Reply` is `repr(C)`, a `ReplyHeader`, then `Inline` or
-                // `Element` data only.
+                // `Element` data, or copies' addresses, only.
                 let $reply = unsafe { reply.layout_mut::<Reply>() };
                 // The intran's value drops right after the call.
                 let result: Result<
@@ -242,6 +323,7 @@ macro_rules! subsystem {
     (@field request count $element:ty, $max:literal) => { mig::Argument<u32> };
     (@field reply inline $type:ty) => { mig::Argument<$type> };
     (@field reply count $element:ty, $max:literal) => { mig::Argument<[$element; $max]> };
+    (@field reply out_of_line $element:ty) => { mig::Argument<usize> };
     // Its check: the word, whole.
     (@check $request:ident $in:ident inline $type:ty) => {
         $request.$in.word == <$type as mig::Inline>::WORD
@@ -254,12 +336,15 @@ macro_rules! subsystem {
     (@pass $request:ident $reply:ident $in:ident count $element:ty, $max:literal) => {
         &mut $reply.$in.data[..usize::try_from($request.$in.data).unwrap().min($max)]
     };
-    // What the routine gives: the data; for a count array, how many it filled.
+    // What the routine gives: the data; for a count array, how many it
+    // filled; for an out-of-line array, its copy.
     (@value inline $type:ty) => { $type };
     (@value count $element:ty, $max:literal) => { usize };
-    // The routine's success: nothing, or its out.
+    (@value out_of_line $element:ty) => { mig::OutOfLine<$element> };
+    // The routine's success: nothing, its out, or its outs.
     (@type) => { () };
     (@type $value:ty) => { $value };
+    (@type $($values:ty),+) => { ($($values),+) };
     // The reply with no outs: the code alone.
     (@reply $reply:ident $result:ident) => {
         $reply.head.return_code.data = $result.map_or_else(u32::from, |()| 0);
@@ -276,6 +361,18 @@ macro_rules! subsystem {
             }
         }
     };
+    // With several outs, none a count array: a failure's code; else 0, the
+    // whole size, then each out.
+    (@reply $reply:ident $result:ident $(($out:ident $kind:ident $($parameter:tt)*))+) => {
+        match $result {
+            Err(error) => $reply.head.return_code.data = u32::from(error),
+            Ok(($($out),+)) => {
+                $reply.head.return_code.data = 0;
+                $reply.head.header.size = u32::try_from(size_of::<Reply>()).unwrap();
+                $(mig::subsystem! { @pack $reply $out $kind $($parameter)* })+
+            }
+        }
+    };
     // Packing an out: the word, then the data.
     (@pack $reply:ident $out:ident inline $type:ty) => {
         $reply.$out.word = <$type as mig::Inline>::WORD;
@@ -284,6 +381,11 @@ macro_rules! subsystem {
     // A count array's word.
     (@pack $reply:ident $out:ident count $element:ty, $max:literal) => {
         $reply.$out.word = <$element as mig::Element>::word(u32::try_from($out).unwrap());
+    };
+    // An out-of-line array makes the reply complex; its word, then the copy.
+    (@pack $reply:ident $out:ident out_of_line $element:ty) => {
+        $reply.head.header.bits = $reply.head.header.bits.with_complex();
+        ($reply.$out.word, $reply.$out.data) = $out.into_parts();
     };
     // The reply's size: whole; with a count array, the elements used, padded to 8 bytes.
     (@size $out:ident inline $type:ty) => { size_of::<Reply>() };

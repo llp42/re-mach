@@ -161,6 +161,13 @@ SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
 SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
 SPDX-License-Identifier: LicenseRef-CMU-CSL
 
+SPDX-FileName: include/mach/mach_port.defs
+SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
+SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
+SPDX-FileCopyrightText: 1989 Richard P. Draves, Jr.
+SPDX-FileContributor: Rich Draves
+SPDX-License-Identifier: LicenseRef-CMU-CSL
+
 SPDX-FileName: include/mach/mach_types.defs
 SPDX-FileCopyrightText: 1994-1988 Carnegie Mellon University
 SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)

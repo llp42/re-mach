@@ -25,6 +25,7 @@ mod machine;
 mod name;
 mod panic;
 mod processor;
+mod reference;
 mod sched;
 mod slab;
 mod smp;

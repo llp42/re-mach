@@ -91,6 +91,11 @@ impl MessageBits {
     pub const fn is_complex(self) -> bool {
         self.0 & Self::COMPLEX != 0
     }
+
+    /// The same bits, complex.
+    pub const fn with_complex(self) -> Self {
+        Self(self.0 | Self::COMPLEX)
+    }
 }
 
 impl From<MessageBits> for u32 {

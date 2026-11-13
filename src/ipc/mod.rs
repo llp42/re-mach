@@ -28,6 +28,8 @@ pub enum MessageType {
     Integer64,
     /// `MACH_MSG_TYPE_STRING_C`: a NUL-terminated string.
     StringC,
+    /// `MACH_MSG_TYPE_PORT_NAME`: a port's name, no right.
+    PortName,
     /// `MACH_MSG_TYPE_PORT_SEND`: a send right.
     PortSend,
     /// `MACH_MSG_TYPE_PORT_SEND_ONCE`: a send-once right.
@@ -46,6 +48,7 @@ impl MessageType {
             Self::Integer32 => 2,
             Self::Integer64 => 11,
             Self::StringC => 12,
+            Self::PortName => 15,
             Self::PortSend => 17,
             Self::PortSendOnce => 18,
             Self::CopySend => 19,

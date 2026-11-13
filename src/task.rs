@@ -17,6 +17,7 @@ use crate::ipc::port::{KernelObject, Port};
 use crate::ipc::space::Space;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, ProcessorSet};
+use crate::reference::Reference;
 use crate::sched::{Priority, USER_PRIORITY};
 use crate::slab::{Cache, CacheBox};
 use crate::smp;
@@ -34,7 +35,7 @@ pub struct Task {
     /// Its address space.
     pub(super) map: UnsafeRef<Map>,
     /// Its names for ports and port sets.
-    pub(super) space: UnsafeRef<Space>,
+    pub(super) space: Reference<Space>,
     /// Its port, and the send right it hands out for it.
     pub(super) ports: Spinlock<TaskPorts>,
     /// Whether it may be moved to another processor set.
@@ -316,6 +317,16 @@ impl Task {
     }
 }
 
+/// The space of the task `port` stands for, with a reference to it taken
+/// under the port's lock, as `convert_port_to_space` gives it.
+pub fn space_of(port: &Port) -> Option<Reference<Space>> {
+    port.with_kernel_object(|object| match object {
+        // SAFETY: a task outlives its port's standing for it.
+        Some(KernelObject::Task(task)) => Some(unsafe { task.as_ref() }.space.clone()),
+        _ => None,
+    })
+}
+
 /// The kernel's task, once `init` creates it.
 pub static KERNEL_TASK: OnceLock<&'static Task> = OnceLock::new();
 
@@ -348,8 +359,8 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
         references: AtomicU32::new(2),
         // SAFETY: a task's map outlives it.
         map: unsafe { UnsafeRef::from_raw(ptr::from_ref(map)) },
-        // SAFETY: its box, unused until given up below, outlives the task.
-        space: unsafe { UnsafeRef::from_raw(ptr::from_mut(&mut *space)) },
+        // SAFETY: the box, given up below, holds the task's reference.
+        space: unsafe { Reference::from_raw(NonNull::from(&mut *space)) },
         ports: Spinlock::new(TaskPorts {
             self_port: None,
             self_send: None,

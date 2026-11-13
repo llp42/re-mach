@@ -15,7 +15,6 @@ pub enum Placement {
     /// At the address given.
     Fixed,
     /// Wherever it fits.
-    #[expect(dead_code, reason = "the vm_allocate RPC asks for it")]
     Anywhere,
 }
 

@@ -6,7 +6,37 @@
 use super::port::{Port, PortName};
 use super::space::Space;
 use super::{MessageType, object};
+use crate::arch::PAGE_SIZE;
 use crate::error::Error;
+use crate::slab::CacheBox;
+use crate::vm;
+use crate::vm::map::MapCopy;
+use crate::vm::user::Placement;
+
+/// The names `space` holds rights under and their types, as
+/// `mach_port_names` lists them: each array moved into a copy, and how many
+/// elements both hold.
+///
+/// # Panics
+///
+/// If the space is dead, or no room is left in the IPC map: not yet. As
+/// `vm::user::allocate`. Always, at wiring the arrays: not yet.
+pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
+    let state = space.state.read();
+    assert!(state.active, "mach_port_names: a dead space, not yet");
+    // At most this many names.
+    let bound = usize::try_from(state.size).unwrap();
+    let size = (bound * size_of::<PortName>()).next_multiple_of(PAGE_SIZE);
+    drop(state);
+    let map = super::KERNEL_MAP
+        .get()
+        .expect("mach_port_names: no IPC map");
+    let names = vm::user::allocate(map, 0, size, Placement::Anywhere)
+        .unwrap_or_else(|_| panic!("mach_port_names: no more room in ipc_kernel_map, not yet"));
+    let types = vm::user::allocate(map, 0, size, Placement::Anywhere)
+        .unwrap_or_else(|_| panic!("mach_port_names: no more room in ipc_kernel_map, not yet"));
+    panic!("mach_port_names: vm_map_pageable of {names:#x} and {types:#x}, not yet");
+}
 
 /// Inserts the right `message_type` names, for `port`, in `space` as
 /// `name`; the space takes the right and its reference.

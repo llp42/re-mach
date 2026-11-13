@@ -4,20 +4,19 @@
 //! Spaces: a task's names for ports and port sets.
 
 use core::ptr::NonNull;
-use core::sync::atomic::AtomicU32;
 
 use super::entry::{self, Entry, ZERO_ENTRY};
 use super::port::PortName;
 use crate::collections::radix_tree::RadixTree;
 use crate::error::Error;
+use crate::reference::{Count, Counted};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::SleepLock;
 
 /// A space: the names a task gives ports and port sets.
 pub struct Space {
     /// How many references it has.
-    #[expect(dead_code, reason = "the space calls read it")]
-    references: AtomicU32,
+    references: Count,
     /// Its state.
     pub(super) state: SleepLock<SpaceState>,
 }
@@ -38,7 +37,7 @@ impl Space {
     /// A special space: one reference, never in use.
     const fn special() -> Self {
         Self {
-            references: AtomicU32::new(1),
+            references: Count::new(1),
             state: SleepLock::new(SpaceState {
                 active: false,
                 map: RadixTree::new(),
@@ -58,7 +57,7 @@ impl Space {
         map.insert(PortName::NULL.key(), NonNull::from(&ZERO_ENTRY))
             .map_err(|_| Error::ResourceShortage)?;
         CACHE.allocate(Self {
-            references: AtomicU32::new(2),
+            references: Count::new(2),
             state: SleepLock::new(SpaceState {
                 active: true,
                 map,
@@ -66,6 +65,22 @@ impl Space {
                 size: 1,
             }),
         })
+    }
+}
+
+// SAFETY: its count is its own, and it is never freed yet.
+unsafe impl Counted for Space {
+    fn references(&self) -> &Count {
+        &self.references
+    }
+
+    /// Frees `space`, as `ipc_space_release` does at zero.
+    ///
+    /// # Panics
+    ///
+    /// Always: not yet.
+    unsafe fn free(_space: NonNull<Self>) {
+        panic!("ipc_space_release: is_free, not yet");
     }
 }
 

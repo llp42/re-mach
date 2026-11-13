@@ -127,6 +127,15 @@ impl Port {
         object
     }
 
+    /// Runs `action` on what it stands for, while it is alive, under its
+    /// lock; gives what `action` gives.
+    pub fn with_kernel_object<R>(&self, action: impl FnOnce(Option<&KernelObject>) -> R) -> R {
+        let state = self.state.lock();
+        let result = action(state.kernel_object.as_ref().filter(|_| state.active));
+        drop(state);
+        result
+    }
+
     /// Takes a reference to it.
     pub(super) fn reference(&self) {
         self.references.fetch_add(1, Ordering::Relaxed);
@@ -276,7 +285,7 @@ pub enum KernelObject {
     /// A processor's name port.
     ProcessorName(#[expect(dead_code, reason = "processor_info reads it")] &'static Processor),
     /// A task's port.
-    Task(#[expect(dead_code, reason = "convert_port_to_task reads it")] NonNull<Task>),
+    Task(NonNull<Task>),
     /// A thread's port.
     Thread(#[expect(dead_code, reason = "convert_port_to_thread reads it")] NonNull<Thread>),
 }
