@@ -105,7 +105,10 @@ unsafe impl Element for i32 {
 macro_rules! subsystem {
     (
         base $base:literal;
-        $($offset:literal $name:ident ($($arguments:tt)*) $(-> ($($outs:tt)*))?;)*
+        $(
+            $offset:literal $name:ident ($port:ident = $intran:path $(, $($arguments:tt)+)?)
+            $(-> ($($outs:tt)+))?;
+        )*
     ) => {
         /// The routine serving a request of `id`, if one is written.
         pub(super) fn routine(
@@ -126,145 +129,51 @@ macro_rules! subsystem {
         mod stub {
             $(
                 $crate::ipc_kobject::mig::subsystem!(
-                    @stub $name ($($arguments)*) $(-> ($($outs)*))?
+                    @sort $name ($port = $intran) [] [] [$($($arguments)+)?] [$($($outs)+)?]
                 );
             )*
         }
     };
-    // No out-arguments: only a failure's code goes in the reply.
+    // Sorts the arguments, in order, into ins, the request's fields, and outs,
+    // the reply's, each `(name kind parameters)`.
+    // An in-argument.
     (
-        @stub $name:ident
-        ($port:ident = $intran:path $(, $argument:ident: $argument_type:ty)*)
+        @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*]
+        [$in:ident: $type:ty $(, $($rest:tt)*)?] $out_list:tt
     ) => {
-        /// The routine's stub.
-        pub(super) mod $name {
-            use core::ptr;
-
-            // The subsystem's names, for the declaration's types and intrans.
-            use super::super::*;
-            use $crate::ipc::kernel_message::{Header, KernelMessage};
-            use $crate::ipc::port::Port;
-            use $crate::ipc_kobject::mig;
-
-            /// The request, as MIG lays it out.
-            #[repr(C)]
-            struct Request {
-                header: Header,
-                $($argument: mig::Argument<$argument_type>,)*
-            }
-
-            /// The reply, as MIG lays it out.
-            #[repr(C)]
-            struct Reply {
-                head: mig::ReplyHeader,
-            }
-
-            /// Serves `request`, as MIG's stub does.
-            ///
-            /// # Panics
-            ///
-            /// On a request MIG refuses: not yet; as the routine.
-            pub fn serve(request: &KernelMessage, reply: &mut KernelMessage) {
-                // SAFETY: `Request` is `repr(C)`, a `Header`, then `Inline` data only.
-                let request = unsafe { request.layout::<Request>() };
-                assert!(
-                    usize::try_from(request.header.size) == Ok(size_of::<Request>())
-                        && !request.header.bits.is_complex()
-                        $(&& request.$argument.word == <$argument_type as mig::Inline>::WORD)*,
-                    concat!(stringify!($name), ": MIG_BAD_ARGUMENTS, not yet")
-                );
-                // SAFETY: copied in, the destination is a port's exposed address, and
-                // the request holds a reference to it.
-                let port =
-                    unsafe { &*ptr::with_exposed_provenance::<Port>(request.header.remote_port) };
-                // SAFETY: `Reply` is `repr(C)`, a `ReplyHeader`, then `Inline` data only.
-                let reply = unsafe { reply.layout_mut::<Reply>() };
-                let $port = $intran(port);
-                let result: Result<(), $crate::error::Error> =
-                    super::super::$name($port $(, request.$argument.data)*);
-                reply.head.return_code.data = result.map_or_else(u32::from, |()| 0);
-            }
-        }
+        $crate::ipc_kobject::mig::subsystem!(
+            @sort $name $head [$($ins)* ($in inline $type)] [$($outs)*] [$($($rest)*)?] $out_list
+        );
     };
-    // An inline variable out-array of at most the request's count.
+    // An inline variable out-array of at most the request's count: the count
+    // is also an in, after the others, as the array's buffer.
     (
-        @stub $name:ident
-        ($port:ident = $intran:path $(, $argument:ident: $argument_type:ty)*)
-        -> ($out:ident: [$element:ty; ..$max:literal], CountInOut)
+        @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*] []
+        [$out:ident: [$element:ty; ..$max:literal], CountInOut]
     ) => {
-        /// The routine's stub.
-        pub(super) mod $name {
-            use core::ptr;
-
-            // The subsystem's names, for the declaration's types and intrans.
-            use super::super::*;
-            use $crate::ipc::kernel_message::{Header, KernelMessage};
-            use $crate::ipc::port::Port;
-            use $crate::ipc_kobject::mig;
-
-            /// The request, as MIG lays it out.
-            #[repr(C)]
-            struct Request {
-                header: Header,
-                $($argument: mig::Argument<$argument_type>,)*
-                count: mig::Argument<u32>,
-            }
-
-            /// The reply, as MIG lays it out.
-            #[repr(C)]
-            struct Reply {
-                head: mig::ReplyHeader,
-                $out: mig::Argument<[$element; $max]>,
-            }
-
-            /// Serves `request`, as MIG's stub does.
-            ///
-            /// # Panics
-            ///
-            /// On a request MIG refuses: not yet; as the routine.
-            pub fn serve(request: &KernelMessage, reply: &mut KernelMessage) {
-                // SAFETY: `Request` is `repr(C)`, a `Header`, then `Inline` data only.
-                let request = unsafe { request.layout::<Request>() };
-                assert!(
-                    usize::try_from(request.header.size) == Ok(size_of::<Request>())
-                        && !request.header.bits.is_complex()
-                        $(&& request.$argument.word == <$argument_type as mig::Inline>::WORD)*
-                        && request.count.word == <u32 as mig::Inline>::WORD,
-                    concat!(stringify!($name), ": MIG_BAD_ARGUMENTS, not yet")
-                );
-                // SAFETY: copied in, the destination is a port's exposed address, and
-                // the request holds a reference to it.
-                let port =
-                    unsafe { &*ptr::with_exposed_provenance::<Port>(request.header.remote_port) };
-                // SAFETY: `Reply` is `repr(C)`, a `ReplyHeader`, then `Element` data only.
-                let reply = unsafe { reply.layout_mut::<Reply>() };
-                let count = usize::try_from(request.count.data).unwrap().min($max);
-                let $port = $intran(port);
-                let result: Result<usize, $crate::error::Error> = super::super::$name(
-                    $port,
-                    $(request.$argument.data,)*
-                    &mut reply.$out.data[..count],
-                );
-                match result {
-                    Err(error) => reply.head.return_code.data = u32::from(error),
-                    Ok(count) => {
-                        reply.head.return_code.data = 0;
-                        reply.$out.word =
-                            <$element as mig::Element>::word(u32::try_from(count).unwrap());
-                        // The elements used, padded to 8 bytes.
-                        let size = core::mem::offset_of!(Reply, $out.data)
-                            + (size_of::<$element>() * count).next_multiple_of(8);
-                        reply.head.header.size = u32::try_from(size).unwrap();
-                    }
-                }
-            }
-        }
+        $crate::ipc_kobject::mig::subsystem!(
+            @sort $name $head [$($ins)* ($out count $element, $max)]
+            [$($outs)* ($out count $element, $max)] [] []
+        );
     };
     // One fixed inline out-argument.
+    (@sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*] [] [$out:ident: $type:ty]) => {
+        $crate::ipc_kobject::mig::subsystem!(
+            @sort $name $head [$($ins)*] [$($outs)* ($out inline $type)] [] []
+        );
+    };
+    // Sorted: the stub, given the names of the locals the rules reach.
+    (@sort $name:ident ($port:ident = $intran:path) [$($ins:tt)*] [$($outs:tt)*] [] []) => {
+        $crate::ipc_kobject::mig::subsystem!(
+            @stub $name ($port = $intran) [$($ins)*] [$($outs)*] request reply
+        );
+    };
+    // The stub: one skeleton, each argument through its kind's rules.
     (
-        @stub $name:ident
-        ($port:ident = $intran:path $(, $argument:ident: $argument_type:ty)*)
-        -> ($out:ident: $out_type:ty)
+        @stub $name:ident ($port:ident = $intran:path)
+        [$(($in:ident $in_kind:ident $($in_parameter:tt)*))*]
+        [$(($out:ident $out_kind:ident $($out_parameter:tt)*))*]
+        $request:ident $reply:ident
     ) => {
         /// The routine's stub.
         pub(super) mod $name {
@@ -280,14 +189,14 @@ macro_rules! subsystem {
             #[repr(C)]
             struct Request {
                 header: Header,
-                $($argument: mig::Argument<$argument_type>,)*
+                $($in: mig::subsystem!(@field request $in_kind $($in_parameter)*),)*
             }
 
             /// The reply, as MIG lays it out.
             #[repr(C)]
             struct Reply {
                 head: mig::ReplyHeader,
-                $out: mig::Argument<$out_type>,
+                $($out: mig::subsystem!(@field reply $out_kind $($out_parameter)*),)*
             }
 
             /// Serves `request`, as MIG's stub does.
@@ -297,33 +206,89 @@ macro_rules! subsystem {
             /// On a request MIG refuses: not yet; as the routine.
             pub fn serve(request: &KernelMessage, reply: &mut KernelMessage) {
                 // SAFETY: `Request` is `repr(C)`, a `Header`, then `Inline` data only.
-                let request = unsafe { request.layout::<Request>() };
+                let $request = unsafe { request.layout::<Request>() };
                 assert!(
-                    usize::try_from(request.header.size) == Ok(size_of::<Request>())
-                        && !request.header.bits.is_complex()
-                        $(&& request.$argument.word == <$argument_type as mig::Inline>::WORD)*,
+                    usize::try_from($request.header.size) == Ok(size_of::<Request>())
+                        && !$request.header.bits.is_complex()
+                        $(&& mig::subsystem!(@check $request $in $in_kind $($in_parameter)*))*,
                     concat!(stringify!($name), ": MIG_BAD_ARGUMENTS, not yet")
                 );
                 // SAFETY: copied in, the destination is a port's exposed address, and
                 // the request holds a reference to it.
                 let port =
-                    unsafe { &*ptr::with_exposed_provenance::<Port>(request.header.remote_port) };
-                // SAFETY: `Reply` is `repr(C)`, a `ReplyHeader`, then `Inline` data only.
-                let reply = unsafe { reply.layout_mut::<Reply>() };
-                let $port = $intran(port);
-                let result: Result<$out_type, $crate::error::Error> =
-                    super::super::$name($port $(, request.$argument.data)*);
-                match result {
-                    Err(error) => reply.head.return_code.data = u32::from(error),
-                    Ok($out) => {
-                        reply.head.return_code.data = 0;
-                        reply.head.header.size = u32::try_from(size_of::<Reply>()).unwrap();
-                        reply.$out.word = <$out_type as mig::Inline>::WORD;
-                        reply.$out.data = $out;
-                    }
-                }
+                    unsafe { &*ptr::with_exposed_provenance::<Port>($request.header.remote_port) };
+                // SAFETY: `Reply` is `repr(C)`, a `ReplyHeader`, then `Inline` or
+                // `Element` data only.
+                let $reply = unsafe { reply.layout_mut::<Reply>() };
+                // The intran's value drops right after the call.
+                let result: Result<
+                    mig::subsystem!(
+                        @type $(mig::subsystem!(@value $out_kind $($out_parameter)*)),*
+                    ),
+                    $crate::error::Error,
+                > = {
+                    let $port = $intran(port);
+                    super::super::$name(
+                        $port.as_deref()
+                        $(, mig::subsystem!(@pass $request $reply $in $in_kind $($in_parameter)*))*
+                    )
+                };
+                mig::subsystem! { @reply $reply result $(($out $out_kind $($out_parameter)*))* }
             }
         }
+    };
+    // Each kind's field: in the request, then in the reply.
+    (@field request inline $type:ty) => { mig::Argument<$type> };
+    (@field request count $element:ty, $max:literal) => { mig::Argument<u32> };
+    (@field reply inline $type:ty) => { mig::Argument<$type> };
+    (@field reply count $element:ty, $max:literal) => { mig::Argument<[$element; $max]> };
+    // Its check: the word, whole.
+    (@check $request:ident $in:ident inline $type:ty) => {
+        $request.$in.word == <$type as mig::Inline>::WORD
+    };
+    (@check $request:ident $in:ident count $element:ty, $max:literal) => {
+        $request.$in.word == <u32 as mig::Inline>::WORD
+    };
+    // What the routine gets: the data; for a count, the reply's array, cut to it.
+    (@pass $request:ident $reply:ident $in:ident inline $type:ty) => { $request.$in.data };
+    (@pass $request:ident $reply:ident $in:ident count $element:ty, $max:literal) => {
+        &mut $reply.$in.data[..usize::try_from($request.$in.data).unwrap().min($max)]
+    };
+    // What the routine gives: the data; for a count array, how many it filled.
+    (@value inline $type:ty) => { $type };
+    (@value count $element:ty, $max:literal) => { usize };
+    // The routine's success: nothing, or its out.
+    (@type) => { () };
+    (@type $value:ty) => { $value };
+    // The reply with no outs: the code alone.
+    (@reply $reply:ident $result:ident) => {
+        $reply.head.return_code.data = $result.map_or_else(u32::from, |()| 0);
+    };
+    // With an out: a failure's code; else 0, the size, then the out.
+    (@reply $reply:ident $result:ident ($out:ident $kind:ident $($parameter:tt)*)) => {
+        match $result {
+            Err(error) => $reply.head.return_code.data = u32::from(error),
+            Ok($out) => {
+                $reply.head.return_code.data = 0;
+                $reply.head.header.size =
+                    u32::try_from(mig::subsystem!(@size $out $kind $($parameter)*)).unwrap();
+                mig::subsystem! { @pack $reply $out $kind $($parameter)* }
+            }
+        }
+    };
+    // Packing an out: the word, then the data.
+    (@pack $reply:ident $out:ident inline $type:ty) => {
+        $reply.$out.word = <$type as mig::Inline>::WORD;
+        $reply.$out.data = $out;
+    };
+    // A count array's word.
+    (@pack $reply:ident $out:ident count $element:ty, $max:literal) => {
+        $reply.$out.word = <$element as mig::Element>::word(u32::try_from($out).unwrap());
+    };
+    // The reply's size: whole; with a count array, the elements used, padded to 8 bytes.
+    (@size $out:ident inline $type:ty) => { size_of::<Reply>() };
+    (@size $out:ident count $element:ty, $max:literal) => {
+        core::mem::offset_of!(Reply, $out.data) + (size_of::<$element>() * $out).next_multiple_of(8)
     };
 }
 
