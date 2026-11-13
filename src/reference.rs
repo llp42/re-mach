@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! Counted references: handles that each hold one reference to an object.
 
+use core::mem::ManuallyDrop;
 use core::ops::Deref;
 use core::ptr::NonNull;
 use core::sync::atomic::{self, AtomicU32, Ordering};
@@ -45,6 +46,17 @@ impl<T: Counted> Reference<T> {
     /// The caller holds a reference to `object`, which the handle takes.
     pub const unsafe fn from_raw(object: NonNull<T>) -> Self {
         Self(object)
+    }
+
+    /// Gives up the handle, keeping its reference, which `from_raw` takes
+    /// back.
+    pub fn into_raw(this: Self) -> NonNull<T> {
+        ManuallyDrop::new(this).0
+    }
+
+    /// Its object's pointer; the handle keeps its reference.
+    pub const fn as_ptr(this: &Self) -> NonNull<T> {
+        this.0
     }
 }
 

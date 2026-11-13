@@ -72,21 +72,22 @@ pub(super) fn reverse<'a>(
 
 /// Puts the right `message_type` names, for `port`, of state `port_state`,
 /// in the entry of `name` in the space of state `state`: the entry takes the
-/// right and its reference, or a user reference for a right it holds; the
-/// port is unlocked.
+/// right, or a user reference for a right it holds; the port is unlocked.
+/// Gives the entry if it is to take the right's reference, none if it keeps
+/// its own and the caller drops the right's.
 ///
 /// # Panics
 ///
 /// If `name` has no entry. If its entry holds the receive right, if its
 /// user references would reach the maximum, or for a send-once right: not
 /// yet. For a type that is not a right.
-pub(super) fn copy_out(
-    state: &mut SpaceState,
+pub(super) fn copy_out<'a>(
+    state: &'a mut SpaceState,
     name: PortName,
     message_type: MessageType,
     port: &Port,
     mut port_state: SpinlockGuard<'_, PortState>,
-) {
+) -> Option<&'a mut Entry> {
     match message_type {
         MessageType::PortSend => {
             let SpaceState {
@@ -98,15 +99,15 @@ pub(super) fn copy_out(
                 panic!("ipc_right_copyout: no entry");
             };
             let bits = &entry.bits;
-            if bits.rights.contains(Rights::SEND) {
+            let takes = if bits.rights.contains(Rights::SEND) {
                 assert!(
                     bits.user_references + 1 != u16::MAX,
                     "ipc_right_copyout: MACH_PORT_UREFS_MAX, not yet"
                 );
                 // It merges into the entry's right, which holds a reference.
                 port_state.send_rights -= 1;
-                port.release();
                 drop(port_state);
+                false
             } else if bits.rights.contains(Rights::RECEIVE) {
                 panic!("ipc_right_copyout: a receive right's entry, not yet")
             } else {
@@ -114,9 +115,11 @@ pub(super) fn copy_out(
                 // As in GNU Mach, a failure leaves the entry out of the reverse map.
                 let _ = reverse_map.insert(key(port), pointer);
                 entry.name = name;
-            }
+                true
+            };
             entry.bits.rights |= Rights::SEND;
             entry.bits.user_references += 1;
+            takes.then_some(entry)
         }
         MessageType::PortSendOnce => {
             panic!("ipc_right_copyout: MACH_MSG_TYPE_PORT_SEND_ONCE, not yet")
@@ -135,12 +138,9 @@ pub(super) fn copy_out(
 /// yet.
 fn check<'a>(state: &SpaceState, entry: &'a Entry) -> SpinlockGuard<'a, PortState> {
     assert!(state.active, "ipc_right_check: a dead space");
-    let Some(Object::Port(port)) = entry.object else {
+    let Some(Object::Port(port)) = &entry.object else {
         panic!("ipc_right_check: a send right with no port");
     };
-    // SAFETY: the entry holds a reference to its port, and the space's lock
-    // keeps the entry.
-    let port = unsafe { port.as_ref() };
     let port_state = port.state.lock();
     assert!(
         port_state.active,
@@ -233,14 +233,14 @@ pub(super) fn rename(state: &mut SpaceState, old_name: PortName, new_name: PortN
         map, reverse_map, ..
     } = state;
     let old = map
-        .get(old_name.key())
+        .get_mut(old_name.key())
         .expect("ipc_right_rename: no old entry");
     let EntryBits {
         rights,
         user_references,
         message_accepted,
     } = old.bits;
-    let (request, object) = (old.request, old.object);
+    let (request, object) = (old.request, old.object.take());
     assert!(
         request == 0,
         "ipc_right_rename: ipc_right_check and ipc_port_dnrename, not yet"
@@ -266,12 +266,9 @@ pub(super) fn rename(state: &mut SpaceState, old_name: PortName, new_name: PortN
     new.request = request;
     new.object = object;
     if rights.bits() == Rights::SEND.bits() {
-        let Some(Object::Port(port)) = object else {
+        let Some(Object::Port(port)) = &new.object else {
             panic!("ipc_right_rename: a send right with no port");
         };
-        // SAFETY: the entry holds a reference to its port, and the space's
-        // lock keeps the entry.
-        let port = unsafe { port.as_ref() };
         reverse_map.remove(key(port));
         new.name = new_name;
         // As in GNU Mach, a failure leaves the entry out of the reverse map.
@@ -287,8 +284,5 @@ pub(super) fn rename(state: &mut SpaceState, old_name: PortName, new_name: PortN
     } else {
         panic!("ipc_right_rename: strange rights");
     }
-    map.get_mut(old_name.key())
-        .expect("ipc_right_rename: no old entry")
-        .object = None;
     state.deallocate(old_name);
 }

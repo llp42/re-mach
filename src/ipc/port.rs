@@ -15,6 +15,7 @@ use super::{MessageType, kernel_message, object};
 use crate::error::Error;
 use crate::host::Host;
 use crate::processor::{Processor, ProcessorSet};
+use crate::reference::{Count, Counted, Reference};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::Spinlock;
 use crate::task::Task;
@@ -24,7 +25,7 @@ use crate::vm::object::Object;
 /// A port: its reference count, and its state under its lock.
 pub struct Port {
     /// How many references it has.
-    references: AtomicU32,
+    references: Count,
     /// Its state.
     pub(super) state: Spinlock<PortState>,
 }
@@ -60,12 +61,17 @@ pub(super) struct PortState {
     pub(super) protected_payload: Option<u64>,
 }
 
+// SAFETY: its pointers are to spaces, sets, kernel objects, queued messages
+// and waiting threads, which any CPU may use; its lock serializes changes
+// to them.
+unsafe impl Send for PortState {}
+
 impl Port {
     /// A new live port that `receiver` receives on, with one reference and
     /// no rights out, as `ipc_port_init` sets it up.
     const fn new(receiver: NonNull<Space>) -> Self {
         Self {
-            references: AtomicU32::new(1),
+            references: Count::new(1),
             state: Spinlock::new(PortState {
                 active: true,
                 receiver,
@@ -113,7 +119,7 @@ impl Port {
             port,
             // As ipc_port_init: its name there.
             |port, name| port.state.get_mut().receiver_name = name,
-            object::Object::Port,
+            |port| object::Object::Port(Reference::from(port)),
         )
     }
 
@@ -132,7 +138,9 @@ impl Port {
         let mut port = CACHE.allocate(Self::new(NonNull::from(space)))?;
         // As ipc_port_init: its name there.
         port.state.get_mut().receiver_name = name;
-        object::allocate_name(space, port, name, object::Object::Port)
+        object::allocate_name(space, port, name, |port| {
+            object::Object::Port(Reference::from(port))
+        })
     }
 
     /// Makes it stand for `object`.
@@ -161,63 +169,42 @@ impl Port {
         result
     }
 
-    /// Takes a reference to it.
-    pub(super) fn reference(&self) {
-        self.references.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Drops a reference to it, which is not its last.
-    ///
-    /// # Panics
-    ///
-    /// On its last reference: not yet.
-    pub(super) fn release(&self) {
-        // Only the last reference's drop frees it.
-        assert!(
-            self.references
-                .try_update(Ordering::Release, Ordering::Relaxed, |references| {
-                    (references > 1).then(|| references - 1)
-                })
-                .is_ok(),
-            "ip_release: the last reference, not yet"
-        );
-    }
-
-    /// Makes a send right for it from its receive right, which holds a
-    /// reference.
-    pub fn make_send(&self) {
-        let mut state = self.state.lock();
+    /// Makes a send right for `port` from its receive right, whose
+    /// reference the caller lends; gives the right's reference.
+    pub fn make_send(port: &Reference<Self>) -> Reference<Self> {
+        let mut state = port.state.lock();
         state.make_send_count += 1;
         state.send_rights += 1;
         drop(state);
-        self.references.fetch_add(1, Ordering::Relaxed);
+        port.clone()
     }
 
-    /// Makes a send right for it from another, as `ipc_port_copy_send`
-    /// does.
+    /// Makes a send right for `port` from another, whose reference the
+    /// caller lends, as `ipc_port_copy_send` does; gives the new right's
+    /// reference.
     ///
     /// # Panics
     ///
-    /// If it has no send right. If it is dead: not yet.
-    pub fn copy_send(&self) {
-        let mut state = self.state.lock();
+    /// If `port` has no send right. If it is dead: not yet.
+    pub fn copy_send(port: &Reference<Self>) -> Reference<Self> {
+        let mut state = port.state.lock();
         assert!(state.active, "ipc_port_copy_send: a dead port, not yet");
         assert!(state.send_rights > 0, "ipc_port_copy_send: no send right");
-        self.reference();
+        let send = port.clone();
         state.send_rights += 1;
         drop(state);
+        send
     }
 
-    /// Releases a send right for it, which the caller holds, with its
+    /// Releases a send right for `port`, which the caller gives with its
     /// reference, as `ipc_port_release_send` does.
     ///
     /// # Panics
     ///
-    /// If it has no send right. If it is dead, or the right is its last
-    /// send right: not yet. As `release`.
-    pub fn release_send(&self) {
-        let mut state = self.state.lock();
-        self.release();
+    /// If `port` has no send right. If it is dead, or the right is its last
+    /// send right: not yet.
+    pub fn release_send(port: Reference<Self>) {
+        let mut state = port.state.lock();
         assert!(state.active, "ipc_port_release_send: a dead port, not yet");
         state.send_rights = state
             .send_rights
@@ -228,17 +215,44 @@ impl Port {
             "ipc_port_release_send: no senders left, not yet"
         );
         drop(state);
+        drop(port);
     }
 
-    /// Puts a send right for it, which the caller holds, in `space`, as
-    /// `ipc_port_copyout_send` does; gives its name there.
+    /// Puts a send right for `port`, which the caller gives with its
+    /// reference, in `space`, as `ipc_port_copyout_send` does; gives its
+    /// name there.
     ///
     /// # Panics
     ///
     /// If the copy-out fails: not yet; as `object::copy_out`.
-    pub fn copy_out_send(&self, space: &Space) -> PortName {
-        object::copy_out(space, self, MessageType::PortSend)
-            .expect("ipc_port_copyout_send: a failed copy-out, not yet")
+    pub fn copy_out_send(port: Reference<Self>, space: &Space) -> PortName {
+        object::copy_out(space, port, MessageType::PortSend).unwrap_or_else(|(error, _)| {
+            panic!("ipc_port_copyout_send: a failed copy-out, not yet: {error:?}")
+        })
+    }
+}
+
+// SAFETY: its count is its own, and it is never freed yet.
+unsafe impl Counted for Port {
+    fn references(&self) -> &Count {
+        &self.references
+    }
+
+    /// Frees `port`, as `ipc_port_release` does at zero.
+    ///
+    /// # Panics
+    ///
+    /// Always: not yet.
+    unsafe fn free(_port: NonNull<Self>) {
+        panic!("ipc_port_release: io_free, not yet");
+    }
+}
+
+impl From<CacheBox<Port>> for Reference<Port> {
+    /// The handle of the reference `port`'s box holds.
+    fn from(port: CacheBox<Port>) -> Self {
+        // SAFETY: a port's box holds its first reference, given up here.
+        unsafe { Self::from_raw(CacheBox::into_raw(port)) }
     }
 }
 

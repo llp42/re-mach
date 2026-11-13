@@ -14,6 +14,7 @@ use intrusive_collections::{
 use super::page::{Page, PageTreeAdapter};
 use crate::arch::{MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE};
 use crate::ipc::port::{KernelObject, Port};
+use crate::reference::Reference;
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{Token, TokenGuard};
 
@@ -229,9 +230,11 @@ pub fn init() {
     let port = Port::allocate_kernel()
         .unwrap_or_else(|error| panic!("vm_object_init: ipc_port_alloc_kernel failed: {error:?}"));
     port.set_kernel_object(KernelObject::PagerName(NonNull::from(&KERNEL_OBJECT)));
-    KERNEL_OBJECT
-        .pager_name
-        .store(CacheBox::into_raw(port).as_ptr(), Ordering::Release);
+    // The slot keeps its reference.
+    KERNEL_OBJECT.pager_name.store(
+        Reference::into_raw(Reference::from(port)).as_ptr(),
+        Ordering::Release,
+    );
 }
 
 /// A new internal, temporary object of `size` bytes, with one reference
@@ -250,9 +253,11 @@ pub fn allocate(size: usize) -> &'static Object {
     let port =
         Port::allocate_kernel().unwrap_or_else(|error| panic!("vm_object_allocate: {error:?}"));
     port.set_kernel_object(KernelObject::PagerName(NonNull::from(object)));
-    object
-        .pager_name
-        .store(CacheBox::into_raw(port).as_ptr(), Ordering::Release);
+    // The slot keeps its reference.
+    object.pager_name.store(
+        Reference::into_raw(Reference::from(port)).as_ptr(),
+        Ordering::Release,
+    );
     object
 }
 

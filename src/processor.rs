@@ -4,7 +4,7 @@
 //! Processors and processor sets.
 
 use core::ops::DerefMut;
-use core::ptr::{self, NonNull};
+use core::ptr;
 use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, Ordering,
 };
@@ -15,6 +15,7 @@ use crate::collections::ArrayVec;
 use crate::config::MAX_CPUS;
 use crate::error::Error;
 use crate::ipc::port::Port;
+use crate::reference::Reference;
 use crate::sched::{
     MAX_STUCK_THREADS, MIN_QUANTUM, Policies, Priority, RUN_QUEUES, RunQueue, SCHEDULER_SCALE,
     SYSTEM_PRIORITY,
@@ -286,14 +287,16 @@ impl Processor {
         self.idle_thread.set(thread)
     }
 
-    /// Sets its port, once, at boot.
-    pub(super) fn set_port(&self, port: NonNull<Port>) {
-        self.port.store(port.as_ptr(), Ordering::Release);
+    /// Sets its port, once, at boot; the slot keeps its reference.
+    pub(super) fn set_port(&self, port: Reference<Port>) {
+        self.port
+            .store(Reference::into_raw(port).as_ptr(), Ordering::Release);
     }
 
-    /// Sets its name port, once, at boot.
-    pub(super) fn set_name_port(&self, port: NonNull<Port>) {
-        self.name_port.store(port.as_ptr(), Ordering::Release);
+    /// Sets its name port, once, at boot; the slot keeps its reference.
+    pub(super) fn set_name_port(&self, port: Reference<Port>) {
+        self.name_port
+            .store(Reference::into_raw(port).as_ptr(), Ordering::Release);
     }
 }
 
@@ -470,14 +473,18 @@ impl ProcessorSet {
         self.load.store(old.midpoint(load), Ordering::Relaxed);
     }
 
-    /// Sets its port, once, before others reach it.
-    pub(super) fn set_port(&self, port: NonNull<Port>) {
-        self.port.store(port.as_ptr(), Ordering::Release);
+    /// Sets its port, once, before others reach it; the slot keeps its
+    /// reference.
+    pub(super) fn set_port(&self, port: Reference<Port>) {
+        self.port
+            .store(Reference::into_raw(port).as_ptr(), Ordering::Release);
     }
 
-    /// Sets its name port, once, before others reach it.
-    pub(super) fn set_name_port(&self, port: NonNull<Port>) {
-        self.name_port.store(port.as_ptr(), Ordering::Release);
+    /// Sets its name port, once, before others reach it; the slot keeps its
+    /// reference.
+    pub(super) fn set_name_port(&self, port: Reference<Port>) {
+        self.name_port
+            .store(Reference::into_raw(port).as_ptr(), Ordering::Release);
     }
 
     /// Takes its token.

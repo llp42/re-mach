@@ -10,7 +10,7 @@ use super::object::{self, Object};
 use super::port::PortName;
 use super::space::Space;
 use crate::error::Error;
-use crate::slab::Cache;
+use crate::slab::{Cache, CacheBox};
 use crate::sync::Spinlock;
 use crate::thread::IpcQueueAdapter;
 
@@ -71,7 +71,7 @@ impl PortSet {
             set,
             // As ipc_target_init: its name; `new` gave it an empty queue.
             |set, name| set.state.get_mut().local_name = name,
-            Object::PortSet,
+            |set| Object::PortSet(CacheBox::into_raw(set)),
         )
     }
 
@@ -90,7 +90,9 @@ impl PortSet {
         let mut set = CACHE.allocate(Self::new())?;
         // As ipc_target_init: its name; `new` gave it an empty queue.
         set.state.get_mut().local_name = name;
-        object::allocate_name(space, set, name, Object::PortSet)
+        object::allocate_name(space, set, name, |set| {
+            Object::PortSet(CacheBox::into_raw(set))
+        })
     }
 }
 

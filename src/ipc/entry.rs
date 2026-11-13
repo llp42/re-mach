@@ -20,8 +20,8 @@ pub struct Entry {
     pub(super) request: u32,
 }
 
-// SAFETY: an entry has no interior mutability, and its object's pointer is
-// followed only under `unsafe`.
+// SAFETY: an entry has no interior mutability, and its port set's pointer
+// is followed only under `unsafe`.
 unsafe impl Sync for Entry {}
 
 impl Entry {

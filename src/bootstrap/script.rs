@@ -5,13 +5,14 @@
 //! variables, the parse of its lines, their run and its cleanup.
 
 use core::fmt;
-use core::mem::MaybeUninit;
+use core::mem::{ManuallyDrop, MaybeUninit};
 use core::ops::Range;
 use core::ptr::NonNull;
 use core::slice;
 
 use crate::boot::BootModule;
 use crate::ipc::port::Port;
+use crate::reference::Reference;
 use crate::task::Task;
 use crate::{bootstrap, kalloc};
 
@@ -307,8 +308,10 @@ impl Script {
                 let Value::Port(port) = *value else {
                     panic!("boot_script_exec: a string argument, not yet");
                 };
-                // SAFETY: the script's ports are never freed.
-                let name = bootstrap::insert_right(task, unsafe { port.as_ref() });
+                // SAFETY: the slots the script's ports come from keep their
+                // references for good, which the handle borrows and never drops.
+                let port = ManuallyDrop::new(unsafe { Reference::from_raw(port) });
+                let name = bootstrap::insert_right(task, &port);
                 // Its name in decimal, written from the end.
                 let mut digits = [0; 10];
                 let (mut start, mut rest) = (digits.len(), u32::from(name));

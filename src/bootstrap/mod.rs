@@ -17,6 +17,7 @@ use crate::error::Error;
 use crate::host::HOST;
 use crate::ipc::port::{Port, PortName};
 use crate::ipc::{MessageType, mach_port};
+use crate::reference::Reference;
 use crate::sched::{self, Event, USER_PRIORITY};
 use crate::sync::Spinlock;
 use crate::task::{self, Task};
@@ -78,7 +79,12 @@ pub fn create() {
     };
     set("host-port", port(&HOST.privileged_port));
     set("device-port", port(&device::MASTER_PORT));
-    let kernel_task_port = kernel_task.ports.lock().self_port;
+    let kernel_task_port = kernel_task
+        .ports
+        .lock()
+        .self_port
+        .as_ref()
+        .map(Reference::as_ptr);
     set(
         "kernel-task",
         Value::Port(kernel_task_port.expect("bootstrap_create: no port")),
@@ -133,7 +139,7 @@ fn create_task(path: &str) -> &'static Task {
         panic!("boot_script_task_create failed with {error:?}, cleanup not yet")
     });
     task.members.lock().name.set(format_args!("{path}"));
-    // SAFETY: the host's ports are never freed.
+    // SAFETY: the host's slots keep their ports' references for good.
     let host = unsafe { HOST.port.load(Ordering::Acquire).as_ref() }
         .expect("boot_script_task_create: no host port");
     task.set_max_priority(host, USER_PRIORITY);
@@ -374,27 +380,30 @@ fn load_segment(map: &Map, bytes: &[u8], segment: &Segment) -> Result<(), elf_lo
 }
 
 /// The boot script's insert of a port argument: a send right made for
-/// `port` and given to `task`; the name it takes there.
-fn insert_right(task: &Task, port: &Port) -> PortName {
-    port.make_send();
-    insert_send_right(task, port)
+/// `port`, whose reference the caller lends, and given to `task`; the name
+/// it takes there.
+fn insert_right(task: &Task, port: &Reference<Port>) -> PortName {
+    insert_send_right(task, Port::make_send(port))
 }
 
-/// Gives `task` a send right for `port` under the first free name from 1;
-/// that name.
+/// Gives `task` a send right for `port`, with its reference, under the
+/// first free name from 1; that name.
 ///
 /// # Panics
 ///
 /// If an insert fails but for a name in use.
-fn insert_send_right(task: &Task, port: &Port) -> PortName {
+fn insert_send_right(task: &Task, mut port: Reference<Port>) -> PortName {
     let mut name = PortName::from(1);
     loop {
         match mach_port::insert_right(&task.space, name, port, MessageType::PortSend) {
             Ok(()) => return name,
-            Err(error) => assert!(
-                matches!(error, Error::NameExists),
-                "task_insert_send_right: {error:?}"
-            ),
+            Err((error, right)) => {
+                assert!(
+                    matches!(error, Error::NameExists),
+                    "task_insert_send_right: {error:?}"
+                );
+                port = right;
+            }
         }
         name = PortName::from(u32::from(name) + 1);
     }

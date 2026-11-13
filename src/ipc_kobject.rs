@@ -7,12 +7,13 @@ mod mach_host;
 mod mach_port;
 mod mig;
 
-use core::ptr;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
 
 use crate::ipc::MessageType;
 use crate::ipc::kernel_message::{Header, KernelMessage, MessageBits};
 use crate::ipc::port::Port;
+use crate::reference::Reference;
 use crate::task;
 
 /// The size of a reply's buffer.
@@ -61,11 +62,16 @@ pub fn server(mut request: KernelMessage) -> KernelMessage {
     // The destination's right is released: a send-once notification would
     // come back here.
     let header = request.header_mut();
-    // SAFETY: copied in, the destination is a port's exposed address, and
-    // the request holds a reference to it.
-    let destination = unsafe { &*ptr::with_exposed_provenance::<Port>(header.remote_port) };
+    // SAFETY: copied in, the destination is the exposed address of a
+    // reference to a port given up by `into_raw`, which the handle takes, as
+    // the slot is cleared below.
+    let destination = unsafe {
+        Reference::from_raw(
+            NonNull::new(ptr::with_exposed_provenance_mut(header.remote_port)).unwrap(),
+        )
+    };
     match header.bits.remote() {
-        Some(MessageType::PortSend) => destination.release_send(),
+        Some(MessageType::PortSend) => Port::release_send(destination),
         Some(MessageType::PortSendOnce) => {
             panic!("ipc_kobject_server: ipc_port_release_sonce, not yet")
         }

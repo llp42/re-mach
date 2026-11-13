@@ -12,7 +12,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::ipc::port::Port;
-use crate::slab::CacheBox;
+use crate::reference::Reference;
 
 /// The master device port, which devices are opened through; once
 /// `create_service` makes it.
@@ -28,7 +28,11 @@ pub static MASTER_PORT: AtomicPtr<Port> = AtomicPtr::new(ptr::null_mut());
 pub fn create_service() {
     let port = Port::allocate_kernel()
         .unwrap_or_else(|error| panic!("can't allocate master device port: {error:?}"));
-    MASTER_PORT.store(CacheBox::into_raw(port).as_ptr(), Ordering::Release);
+    // The slot keeps its reference.
+    MASTER_PORT.store(
+        Reference::into_raw(Reference::from(port)).as_ptr(),
+        Ordering::Release,
+    );
     lookup::init();
     terminal::init();
 }

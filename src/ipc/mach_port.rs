@@ -13,6 +13,7 @@ use super::space::Space;
 use super::{MessageType, right};
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
+use crate::reference::Reference;
 use crate::slab::CacheBox;
 use crate::vm::map::{MapCopy, Placement};
 use crate::vm::{self, Protection};
@@ -123,12 +124,9 @@ fn entry_type(entry: &Entry) -> PortType {
         .rights
         .intersects(Rights::SEND | Rights::SEND_ONCE)
     {
-        let Some(Object::Port(port)) = entry.object else {
+        let Some(Object::Port(port)) = &entry.object else {
             panic!("mach_port_names_helper: a send right with no port");
         };
-        // SAFETY: the entry holds a reference to its port, and the space's
-        // lock keeps the entry.
-        let port = unsafe { port.as_ref() };
         let active = port.state.lock().active;
         assert!(active, "mach_port_names_helper: a dead port, not yet");
     }
@@ -279,7 +277,7 @@ pub fn allocate_name(space: &Space, right: u32, name: PortName) -> Result<(), Er
 ///
 /// # Errors
 ///
-/// As `object::copy_out_name`.
+/// As `object::copy_out_name`, which gives the right back.
 ///
 /// # Panics
 ///
@@ -287,9 +285,9 @@ pub fn allocate_name(space: &Space, right: u32, name: PortName) -> Result<(), Er
 pub fn insert_right(
     space: &Space,
     name: PortName,
-    port: &Port,
+    port: Reference<Port>,
     message_type: MessageType,
-) -> Result<(), Error> {
+) -> Result<(), (Error, Reference<Port>)> {
     assert!(
         name.is_valid(),
         "mach_port_insert_right: an invalid name, not yet"

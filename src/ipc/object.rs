@@ -11,13 +11,13 @@ use super::port_set::PortSet;
 use super::space::Space;
 use super::{MessageType, right};
 use crate::error::Error;
+use crate::reference::Reference;
 use crate::slab::CacheBox;
 
 /// What an entry's rights are for.
-#[derive(Clone, Copy)]
 pub(super) enum Object {
-    /// A port.
-    Port(NonNull<Port>),
+    /// A port, by its reference.
+    Port(Reference<Port>),
     /// A port set.
     PortSet(#[expect(dead_code, reason = "ipc_right_destroy reads it")] NonNull<PortSet>),
 }
@@ -40,12 +40,12 @@ pub(super) fn allocate<T>(
     space: &Space,
     mut object: CacheBox<T>,
     set_name: fn(&mut T, PortName),
-    kind: fn(NonNull<T>) -> Object,
+    kind: fn(CacheBox<T>) -> Object,
 ) -> Result<PortName, Error> {
     let mut state = space.state.write();
     let (name, entry) = state.allocate()?;
     set_name(&mut object, name);
-    let object = kind(CacheBox::into_raw(object));
+    let object = kind(object);
     // The right, with no user references.
     entry.bits.rights |= match object {
         Object::Port(_) => Rights::RECEIVE,
@@ -73,7 +73,7 @@ pub(super) fn allocate_name<T>(
     space: &Space,
     object: CacheBox<T>,
     name: PortName,
-    kind: fn(NonNull<T>) -> Object,
+    kind: fn(CacheBox<T>) -> Object,
 ) -> Result<(), Error> {
     let mut state = space.state.write();
     let entry = state.allocate_name(name)?;
@@ -82,7 +82,7 @@ pub(super) fn allocate_name<T>(
         !entry.in_use(),
         "ipc_object_alloc_name: KERN_NAME_EXISTS, not yet"
     );
-    let object = kind(CacheBox::into_raw(object));
+    let object = kind(object);
     // The right, with no user references.
     entry.bits.rights |= match object {
         Object::Port(_) => Rights::RECEIVE,
@@ -153,7 +153,8 @@ pub(super) fn allocate_dead_name(space: &Space, name: PortName) -> Result<(), Er
 ///
 /// # Errors
 ///
-/// `ResourceShortage` if no entry or map node can be allocated.
+/// `ResourceShortage` if no entry or map node can be allocated; it gives
+/// the right back.
 ///
 /// # Panics
 ///
@@ -161,30 +162,37 @@ pub(super) fn allocate_dead_name(space: &Space, name: PortName) -> Result<(), Er
 /// `right::copy_out`.
 pub(super) fn copy_out(
     space: &Space,
-    port: &Port,
+    port: Reference<Port>,
     message_type: MessageType,
-) -> Result<PortName, Error> {
+) -> Result<PortName, (Error, Reference<Port>)> {
     let mut state = space.state.write();
     assert!(state.active, "ipc_object_copyout: a dead space, not yet");
     // A space holds each send-once right under a name of its own.
-    let found = if matches!(message_type, MessageType::PortSendOnce) {
-        None
-    } else {
-        right::reverse(space, &state, port)
-    };
-    let (name, port_state) = if let Some(found) = found {
+    let reverse = !matches!(message_type, MessageType::PortSendOnce);
+    let (name, port_state) = if let Some(found) = reverse
+        .then(|| right::reverse(space, &state, &port))
+        .flatten()
+    {
         found
     } else {
-        let (name, entry) = state.allocate()?;
+        let name = match state.allocate() {
+            Ok((name, _)) => name,
+            Err(error) => return Err((error, port)),
+        };
         let port_state = port.state.lock();
         assert!(
             port_state.active,
             "ipc_object_copyout: a dead port, not yet"
         );
-        entry.object = Some(Object::Port(NonNull::from(port)));
         (name, port_state)
     };
-    right::copy_out(&mut state, name, message_type, port, port_state);
+    // The entry takes the right's reference, unless the right merged into
+    // one it holds.
+    if let Some(entry) = right::copy_out(&mut state, name, message_type, &port, port_state) {
+        entry.object = Some(Object::Port(port));
+    } else {
+        drop(port);
+    }
     drop(state);
     Ok(name)
 }
@@ -195,7 +203,7 @@ pub(super) fn copy_out(
 /// # Errors
 ///
 /// `ResourceShortage` if no entry or map node can be allocated, and
-/// `NameExists` if `name` holds rights.
+/// `NameExists` if `name` holds rights; each gives the right back.
 ///
 /// # Panics
 ///
@@ -207,33 +215,37 @@ pub(super) fn copy_out(
 )]
 pub(super) fn copy_out_name(
     space: &Space,
-    port: &Port,
+    port: Reference<Port>,
     message_type: MessageType,
     name: PortName,
-) -> Result<(), Error> {
+) -> Result<(), (Error, Reference<Port>)> {
     let mut state = space.state.write();
-    let used = state.allocate_name(name)?.in_use();
+    let used = match state.allocate_name(name) {
+        Ok(entry) => entry.in_use(),
+        Err(error) => return Err((error, port)),
+    };
     if !matches!(message_type, MessageType::PortSendOnce) {
-        let found = right::reverse(space, &state, port);
+        let found = right::reverse(space, &state, &port);
         assert!(
             found.is_none(),
             "ipc_object_copyout_name: a right ipc_right_reverse found, not yet"
         );
     }
     if used {
-        return Err(Error::NameExists);
+        return Err((Error::NameExists, port));
     }
-    let entry = state
-        .map
-        .get_mut(name.key())
-        .expect("ipc_object_copyout_name: no entry");
     let port_state = port.state.lock();
     assert!(
         port_state.active,
         "ipc_object_copyout_name: a dead port, not yet"
     );
-    entry.object = Some(Object::Port(NonNull::from(port)));
-    right::copy_out(&mut state, name, message_type, port, port_state);
+    // The entry takes the right's reference, unless the right merged into
+    // one it holds.
+    if let Some(entry) = right::copy_out(&mut state, name, message_type, &port, port_state) {
+        entry.object = Some(Object::Port(port));
+    } else {
+        drop(port);
+    }
     drop(state);
     Ok(())
 }

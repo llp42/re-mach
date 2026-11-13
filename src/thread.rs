@@ -23,6 +23,7 @@ use crate::ipc::port::{KernelObject, Port};
 use crate::machine::Mode;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, Processor, ProcessorSet};
+use crate::reference::Reference;
 use crate::sched::{self, Event, Policy, Preemption, Priority, SCHEDULER_SCALE, WaitResult};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{CriticalSection, OnceLock};
@@ -337,7 +338,6 @@ impl Thread {
     pub fn create(task: &'static Task) -> Result<&'static Self, Error> {
         let mut machine_state = arch::MachineState::new()?;
         let port = Port::allocate_kernel()?;
-        port.make_send();
         // A full share of a processor.
         let sched_usage = TIMER_RATE * SCHEDULER_SCALE;
         let mut thread = CACHE.allocate(Self {
@@ -446,10 +446,16 @@ impl Thread {
         // SAFETY: a thread lives until the reaper frees it, which comes later.
         let thread = unsafe { CacheBox::into_raw(thread).as_ref() };
         thread.timer.set_argument(ptr::from_ref(thread).cast());
+        let port = Reference::from(port);
+        let send = Port::make_send(&port);
         port.set_kernel_object(KernelObject::Thread(NonNull::from(thread)));
-        let port = CacheBox::into_raw(port).as_ptr();
-        thread.self_port.store(port, Ordering::Release);
-        thread.self_send.store(port, Ordering::Release);
+        // Each slot keeps its reference.
+        thread
+            .self_port
+            .store(Reference::into_raw(port).as_ptr(), Ordering::Release);
+        thread
+            .self_send
+            .store(Reference::into_raw(send).as_ptr(), Ordering::Release);
         set.add_thread(&mut set_members, thread);
         task.add_thread(&mut members, thread);
         drop(members);

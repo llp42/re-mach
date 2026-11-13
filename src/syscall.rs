@@ -3,6 +3,8 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Mach traps: the table system calls index, and the traps written so far.
 
+use core::mem::ManuallyDrop;
+use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 
 use crate::arch::{self, Machine as _, PAGE_SIZE};
@@ -10,6 +12,7 @@ use crate::error::Error;
 use crate::host::HOST;
 use crate::ipc::mach_msg;
 use crate::ipc::port::{Port, PortName};
+use crate::reference::Reference;
 use crate::{print, smp};
 
 /// A Mach trap, as the table holds it.
@@ -147,7 +150,7 @@ fn task_self(_: &[usize; 7]) -> u32 {
         .active_thread()
         .expect("mach_task_self: no current thread");
     let task = thread.task();
-    task.retrieve_self().copy_out_send(&task.space).into()
+    Port::copy_out_send(task.retrieve_self(), &task.space).into()
 }
 
 /// Gives the caller a send right for the host's port, as `mach_host_self`:
@@ -158,14 +161,16 @@ fn task_self(_: &[usize; 7]) -> u32 {
 /// If the host has no port, or no thread runs on the CPU; as
 /// `Port::copy_out_send`.
 fn host_self(_: &[usize; 7]) -> u32 {
-    // SAFETY: the host's ports are never freed.
-    let port = unsafe { HOST.port.load(Ordering::Acquire).as_ref() }
-        .expect("mach_host_self: no host port");
-    port.make_send();
+    let port =
+        NonNull::new(HOST.port.load(Ordering::Acquire)).expect("mach_host_self: no host port");
+    // SAFETY: the host's slot keeps its port's reference for good, which
+    // the handle borrows and never drops.
+    let port = ManuallyDrop::new(unsafe { Reference::from_raw(port) });
+    let send = Port::make_send(&port);
     let thread = smp::current()
         .active_thread()
         .expect("mach_host_self: no current thread");
-    port.copy_out_send(&thread.task().space).into()
+    Port::copy_out_send(send, &thread.task().space).into()
 }
 
 /// How many bytes `print` copies in at a time, at most.

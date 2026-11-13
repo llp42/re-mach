@@ -9,7 +9,7 @@ use core::sync::atomic::Ordering;
 use crate::host::{HOST, Host};
 use crate::ipc::port::{KernelObject, Port};
 use crate::processor::{BOOT_PROCESSOR, DEFAULT_SET, Processor, ProcessorSet};
-use crate::slab::CacheBox;
+use crate::reference::Reference;
 
 /// Gives the host, the default set and the boot processor their ports, on
 /// the boot CPU.
@@ -18,12 +18,13 @@ use crate::slab::CacheBox;
 ///
 /// If a port can't be allocated, or before the boot processor is recorded.
 pub fn init() {
+    // Each slot keeps its port's reference.
     HOST.port.store(
-        allocate_port(Some(KernelObject::Host(&HOST))).as_ptr(),
+        Reference::into_raw(allocate_port(Some(KernelObject::Host(&HOST)))).as_ptr(),
         Ordering::Release,
     );
     HOST.privileged_port.store(
-        allocate_port(Some(KernelObject::HostPrivileged(&HOST))).as_ptr(),
+        Reference::into_raw(allocate_port(Some(KernelObject::HostPrivileged(&HOST)))).as_ptr(),
         Ordering::Release,
     );
     init_set(&DEFAULT_SET);
@@ -84,16 +85,17 @@ pub fn privileged_host(port: &Port) -> Option<&'static Host> {
     }
 }
 
-/// A new port the kernel receives on, standing for `object`.
+/// A new port the kernel receives on, standing for `object`; gives its
+/// reference.
 ///
 /// # Panics
 ///
 /// If the port can't be allocated.
-fn allocate_port(object: Option<KernelObject>) -> NonNull<Port> {
+fn allocate_port(object: Option<KernelObject>) -> Reference<Port> {
     let port = Port::allocate_kernel()
         .unwrap_or_else(|error| panic!("ipc_host_init: ipc_port_alloc_kernel failed: {error:?}"));
     if let Some(object) = object {
         port.set_kernel_object(object);
     }
-    CacheBox::into_raw(port)
+    Reference::from(port)
 }

@@ -71,14 +71,10 @@ intrusive_adapter!(
 /// A task's ports, under its lock; so far only its own.
 pub struct TaskPorts {
     /// Its port, which controls it.
-    pub(super) self_port: Option<NonNull<Port>>,
+    pub(super) self_port: Option<Reference<Port>>,
     /// The send right for its port it hands out.
-    self_send: Option<NonNull<Port>>,
+    self_send: Option<Reference<Port>>,
 }
-
-// SAFETY: a port is shared under its own lock, and each slot's right keeps
-// its port alive.
-unsafe impl Send for TaskPorts {}
 
 /// Whether a task is alive, its priorities and suspensions, its threads and
 /// its name.
@@ -139,28 +135,29 @@ impl Task {
             .push_back(unsafe { UnsafeRef::from_raw(thread) });
     }
 
-    /// Gives a new send right for its port, as `retrieve_task_self_fast`
-    /// does.
+    /// Gives a new send right for its port, with its reference, as
+    /// `retrieve_task_self_fast` does.
     ///
     /// # Panics
     ///
     /// If it has no port. If it hands out a right for another port: not
     /// yet. As `Port::copy_send`.
-    pub(super) fn retrieve_self(&self) -> &Port {
+    pub(super) fn retrieve_self(&self) -> Reference<Port> {
         let ports = self.ports.lock();
         let port = ports
             .self_port
+            .as_ref()
             .expect("retrieve_task_self_fast: no task port");
         assert!(
-            ports.self_send == Some(port),
+            ports
+                .self_send
+                .as_deref()
+                .is_some_and(|send| ptr::eq(send, ptr::from_ref::<Port>(port))),
             "retrieve_task_self_fast: an interposed port, not yet"
         );
-        // SAFETY: its slots' rights hold references to it, under the lock;
-        // then the new right's.
-        let port = unsafe { port.as_ref() };
-        port.copy_send();
+        let send = Port::copy_send(port);
         drop(ports);
-        port
+        send
     }
 
     /// Drops a reference on it, which is not its last.
@@ -358,7 +355,6 @@ pub fn init() {
 fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
     let mut space = Space::create()?;
     let port = Port::allocate_kernel()?;
-    port.make_send();
     let mut task = CACHE.allocate(Task {
         references: AtomicU32::new(2),
         // SAFETY: a task's map outlives it.
@@ -399,11 +395,12 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
     // SAFETY: a task lives until task_deallocate frees it, which comes
     // later.
     let task = unsafe { task.as_ref() };
+    let port = Reference::from(port);
+    let send = Port::make_send(&port);
     port.set_kernel_object(KernelObject::Task(NonNull::from(task)));
-    let port = CacheBox::into_raw(port);
     let mut ports = task.ports.lock();
     ports.self_port = Some(port);
-    ports.self_send = Some(port);
+    ports.self_send = Some(send);
     drop(ports);
     DEFAULT_SET.add_task(task);
     Ok(task)
