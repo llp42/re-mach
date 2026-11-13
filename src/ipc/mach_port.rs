@@ -3,7 +3,10 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Port calls: what tasks ask of a space's names.
 
-use super::port::{Port, PortName};
+use core::{ptr, slice};
+
+use super::entry::{Entry, Rights};
+use super::port::{self, Port, PortName, PortType};
 use super::space::Space;
 use super::{MessageType, object};
 use crate::arch::PAGE_SIZE;
@@ -18,9 +21,11 @@ use crate::vm::{self, Protection};
 ///
 /// # Panics
 ///
-/// If the space is dead, no room is left in the IPC map, or the space
-/// outgrew the arrays: not yet. As `vm::user::allocate` and
-/// `Map::pageable`. Always, at the space's walk: not yet.
+/// If the walk finds at least as many names as the space's size. If the
+/// space is dead, no room is left in the IPC map, the space outgrew the
+/// arrays or holds no names: not yet. As `vm::user::allocate`,
+/// `Map::pageable` and `entry_type`. Always, at the arrays' unwiring: not
+/// yet.
 pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
     let map = super::KERNEL_MAP
         .get()
@@ -29,14 +34,14 @@ pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
     let mut size = 0;
     let mut arrays = None;
     // Allocated with the space unlocked, until they hold all its names.
-    let _state = loop {
+    let (state, bound) = loop {
         let state = space.state.read();
         assert!(state.active, "mach_port_names: a dead space, not yet");
         // At most this many names.
         let bound = usize::try_from(state.size).unwrap();
         let size_needed = (bound * size_of::<PortName>()).next_multiple_of(PAGE_SIZE);
         if size_needed <= size {
-            break state;
+            break (state, bound);
         }
         drop(state);
         assert!(arrays.is_none(), "mach_port_names: kmem_free, not yet");
@@ -55,7 +60,73 @@ pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
         }
         arrays = Some((names, types));
     };
-    panic!("mach_port_names: ipc_port_timestamp and the space's walk, not yet");
+    // Name 0 is in every space, so the first pass allocated them.
+    let (names, types) = arrays.expect("mach_port_names: no arrays");
+    // SAFETY: the arrays are two of this call's allocations, apart and
+    // page-aligned, that nothing else reaches: `size` bytes each, readable
+    // and writable, wired and zero-filled.
+    let (names, types) = unsafe {
+        (
+            slice::from_raw_parts_mut(
+                ptr::with_exposed_provenance_mut::<PortName>(usize::from(names)),
+                size / size_of::<PortName>(),
+            ),
+            slice::from_raw_parts_mut(
+                ptr::with_exposed_provenance_mut::<PortType>(usize::from(types)),
+                size / size_of::<PortType>(),
+            ),
+        )
+    };
+    let mut actual = 0;
+    // Read by the died branch, not yet.
+    let _timestamp = port::timestamp();
+    for entry in state.map.iter().filter(|entry| entry.in_use()) {
+        let port_type = entry_type(entry);
+        names[actual] = entry.name;
+        types[actual] = port_type;
+        actual += 1;
+    }
+    assert!(
+        actual < bound,
+        "mach_port_names: at least as many names as the space's size"
+    );
+    drop(state);
+    assert!(actual != 0, "mach_port_names: no names, not yet");
+    panic!("mach_port_names: vm_map_pageable with VM_PROT_NONE, not yet");
+}
+
+/// The type of `entry`'s rights, its space locked, as
+/// `mach_port_names_helper` gives it.
+///
+/// # Panics
+///
+/// If its send right has no port. If that port is dead, or the entry has
+/// a dead-name or message-accepted request: not yet.
+fn entry_type(entry: &Entry) -> PortType {
+    if entry
+        .bits
+        .rights
+        .intersects(Rights::SEND | Rights::SEND_ONCE)
+    {
+        let port = entry
+            .object
+            .expect("mach_port_names_helper: a send right with no port");
+        // SAFETY: the entry holds a reference to its port, and the space's
+        // lock keeps the entry.
+        let port = unsafe { port.as_ref() };
+        let active = port.state.lock().active;
+        assert!(active, "mach_port_names_helper: a dead port, not yet");
+    }
+    let port_type = PortType::from(entry.bits.rights);
+    assert!(
+        entry.request == 0,
+        "mach_port_names_helper: MACH_PORT_TYPE_DNREQUEST, not yet"
+    );
+    assert!(
+        !entry.bits.message_accepted,
+        "mach_port_names_helper: MACH_PORT_TYPE_MAREQUEST, not yet"
+    );
+    port_type
 }
 
 /// Inserts the right `message_type` names, for `port`, in `space` as

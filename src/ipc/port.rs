@@ -8,6 +8,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use intrusive_collections::LinkedList;
 
+use super::entry::Rights;
 use super::port_set::PortSet;
 use super::space::{self, Space};
 use super::{MessageType, kernel_message, object};
@@ -259,6 +260,34 @@ impl From<PortName> for u32 {
     fn from(name: PortName) -> Self {
         name.0
     }
+}
+
+bitflags::bitflags! {
+    /// The rights a name holds, Mach's `mach_port_type_t`; its bits come
+    /// from `Rights`.
+    #[repr(transparent)]
+    #[derive(Clone, Copy)]
+    pub struct PortType: u32 {}
+}
+
+impl From<Rights> for PortType {
+    /// The type bits of `rights`, as `IE_BITS_TYPE` takes them.
+    fn from(rights: Rights) -> Self {
+        Self::from_bits_retain(u32::from(rights.bits()) << 16)
+    }
+}
+
+/// A logical time that orders port deaths, Mach's `ipc_port_timestamp_t`.
+pub(super) struct Timestamp(
+    #[expect(dead_code, reason = "mach_port_names' died branch reads it")] u32,
+);
+
+/// The next timestamp, in place of `ipc_port_timestamp_lock` and its data.
+static TIMESTAMP: AtomicU32 = AtomicU32::new(0);
+
+/// A new timestamp, as `ipc_port_timestamp` gives it.
+pub(super) fn timestamp() -> Timestamp {
+    Timestamp(TIMESTAMP.fetch_add(1, Ordering::Relaxed))
 }
 
 /// What a port the kernel receives on stands for; only the kinds used here.

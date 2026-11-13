@@ -2,9 +2,10 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Radix trees of pointers under 64-bit keys, after GNU Mach's rdxtree;
-//! so far insertion, under a key or the lowest free one, and lookup. A
-//! level takes six bits of the key, and a tree is only as tall as its
-//! largest key needs. A tree of owners lends what they point to.
+//! so far insertion, under a key or the lowest free one, lookup, and walks
+//! in key order. A level takes six bits of the key, and a tree is only as
+//! tall as its largest key needs. A tree of owners lends what they point
+//! to.
 
 use core::marker::PhantomData;
 use core::ptr::NonNull;
@@ -62,7 +63,6 @@ struct Node {
     /// Its entry in its parent.
     index: u16,
     /// How many levels lie below it.
-    #[expect(dead_code, reason = "rdxtree_walk reads it")]
     height: u16,
     /// How many of its entries are occupied.
     count: u16,
@@ -94,6 +94,17 @@ impl Node {
             })
             .map_err(|_| Error::ResourceShortage)?;
         Ok(CacheBox::into_raw(node))
+    }
+
+    /// Its first occupied entry from `index` on, and that entry's index, as
+    /// `rdxtree_node_find` finds it.
+    fn find(&self, index: usize) -> Option<(usize, Slot)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .skip(index)
+            .find(|(_, slot)| !slot.is_empty())
+            .map(|(found, &slot)| (found, slot))
     }
 }
 
@@ -520,6 +531,15 @@ impl<P: Owner> RadixTree<P> {
         (target != NonNull::from(P::SHARED)).then(|| self.lend(target))
     }
 
+    /// Its targets, in key order, as `rdxtree_walk` gives them.
+    pub const fn iter(&self) -> Iter<'_, P> {
+        Iter {
+            tree: self,
+            node: None,
+            key: None,
+        }
+    }
+
     /// Lends `target`, one of the tree's that is not `SHARED`, exclusively.
     #[expect(
         clippy::unused_self,
@@ -530,5 +550,84 @@ impl<P: Owner> RadixTree<P> {
         // SAFETY: `target` is stored in this tree and is not `SHARED`, so the
         // tree owns it, and `&mut self` makes this the only lend.
         unsafe { target.as_mut() }
+    }
+}
+
+/// A walk over a tree's targets, in key order; see `RadixTree::iter`.
+pub struct Iter<'a, P> {
+    /// The tree.
+    tree: &'a RadixTree<P>,
+    /// The node of the last target given, above the leaves; none at height
+    /// 0 and before the first.
+    node: Option<NonNull<Node>>,
+    /// The last target's key; none before the first.
+    key: Option<u64>,
+}
+
+impl<P: Pointer> Iter<'_, P> {
+    /// The next target in the last one's node, as `rdxtree_walk` looks
+    /// first.
+    fn next_in_node(&mut self) -> Option<NonNull<P::Target>> {
+        let (node, key) = (self.node?, self.key?);
+        let (index, slot) = self.tree.node(node).find(digit(key, 0) + 1)?;
+        self.key = Some(key >> RADIX << RADIX | u64::try_from(index).unwrap());
+        slot.pointer()
+    }
+
+    /// The first target past the last one's key, from the root, as
+    /// `rdxtree_walk_next` finds it.
+    fn next_from_root(&mut self) -> Option<NonNull<P::Target>> {
+        let tree = self.tree;
+        if tree.height == 0 {
+            // Key 0's target alone, in the root.
+            let target = tree.root.pointer().filter(|_| self.key.is_none())?;
+            self.key = Some(0);
+            return Some(target);
+        }
+        let root = tree.root.node()?;
+        // The key after the last target's; none after the largest.
+        let mut key = self.key.map_or(Some(0), |key| key.checked_add(1))?;
+        'restart: loop {
+            let top = tree.node(root).height;
+            if key > max_key(top + 1) {
+                return None;
+            }
+            let (mut node, mut level) = (root, top);
+            loop {
+                let index = digit(key, level);
+                let shift = u32::from(level) * RADIX;
+                let Some((found, slot)) = tree.node(node).find(index) else {
+                    // The first key past the node's; none past the last.
+                    let shift = shift + RADIX;
+                    key = key
+                        .checked_shr(shift)
+                        .and_then(|high| (high + 1).checked_shl(shift))
+                        .filter(|&next| next != 0)?;
+                    continue 'restart;
+                };
+                if found != index {
+                    // The first key under entry `found`.
+                    key = ((key >> shift) + u64::try_from(found - index).unwrap()) << shift;
+                }
+                if level == 0 {
+                    self.node = Some(node);
+                    self.key = Some(key);
+                    return slot.pointer();
+                }
+                node = slot.node()?;
+                level -= 1;
+            }
+        }
+    }
+}
+
+impl<'a, P: Owner> Iterator for Iter<'a, P> {
+    type Item = &'a P::Target;
+
+    fn next(&mut self) -> Option<&'a P::Target> {
+        let target = self.next_in_node().or_else(|| self.next_from_root())?;
+        // SAFETY: the target is the tree's own or `SHARED`, and the tree's
+        // borrow keeps any exclusive lend from being alive.
+        Some(unsafe { target.as_ref() })
     }
 }

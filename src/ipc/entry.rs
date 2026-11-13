@@ -18,7 +18,6 @@ pub struct Entry {
     /// The port its rights are for.
     pub(super) object: Option<NonNull<Port>>,
     /// Its dead-name request; 0 for none.
-    #[expect(dead_code, reason = "the dead-name calls read it")]
     pub(super) request: u32,
 }
 
@@ -34,6 +33,7 @@ impl Entry {
             bits: EntryBits {
                 rights: Rights::empty(),
                 user_references: 0,
+                message_accepted: false,
             },
             object: None,
             request: 0,
@@ -52,15 +52,20 @@ pub(super) struct EntryBits {
     pub(super) rights: Rights,
     /// How many user references they hold.
     pub(super) user_references: u16,
+    /// Whether it has a message-accepted request.
+    pub(super) message_accepted: bool,
 }
 
 bitflags::bitflags! {
     /// The rights a name holds: bit n stands for Mach's type bit 16 + n.
+    #[derive(Clone, Copy)]
     pub(super) struct Rights: u16 {
         /// A send right.
         const SEND = 1;
         /// The receive right.
         const RECEIVE = 1 << 1;
+        /// A send-once right.
+        const SEND_ONCE = 1 << 2;
     }
 }
 

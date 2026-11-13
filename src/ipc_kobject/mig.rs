@@ -7,7 +7,7 @@ use core::marker::PhantomData;
 
 use crate::ipc::MessageType;
 use crate::ipc::kernel_message::Header;
-use crate::ipc::port::PortName;
+use crate::ipc::port::{PortName, PortType};
 use crate::slab::CacheBox;
 use crate::vm::map::MapCopy;
 
@@ -158,15 +158,15 @@ unsafe impl Element for i32 {
     const SIZE: u16 = 32;
 }
 
-// SAFETY: a primitive.
-unsafe impl Element for u32 {
-    const NAME: MessageType = MessageType::Integer32;
+// SAFETY: `repr(transparent)` over a `u32`.
+unsafe impl Element for PortName {
+    const NAME: MessageType = MessageType::PortName;
     const SIZE: u16 = 32;
 }
 
 // SAFETY: `repr(transparent)` over a `u32`.
-unsafe impl Element for PortName {
-    const NAME: MessageType = MessageType::PortName;
+unsafe impl Element for PortType {
+    const NAME: MessageType = MessageType::Integer32;
     const SIZE: u16 = 32;
 }
 
