@@ -17,6 +17,7 @@ mig::subsystem! {
     2 mach_port_rename(task = task::space_of, old_name: PortName, new_name: PortName);
     3 mach_port_allocate_name(task = task::space_of, right: u32, name: PortName);
     4 mach_port_allocate(task = task::space_of, right: u32) -> (name: PortName);
+    5 mach_port_destroy(task = task::space_of, name: PortName);
 }
 
 /// Serves `mach_port_names`: the names `space` holds rights under, and
@@ -81,4 +82,16 @@ fn mach_port_allocate_name(space: Option<&Space>, right: u32, name: PortName) ->
 fn mach_port_allocate(space: Option<&Space>, right: u32) -> Result<PortName, Error> {
     let space = space.unwrap_or_else(|| panic!("mach_port_allocate: KERN_INVALID_TASK, not yet"));
     ipc::mach_port::allocate(space, right)
+}
+
+/// Serves `mach_port_destroy`: `name`'s rights in `space` are destroyed.
+///
+/// # Panics
+///
+/// With no space: not yet. As `ipc::mach_port::destroy`.
+#[expect(clippy::unnecessary_wraps, reason = "MIG's routines give a Result")]
+fn mach_port_destroy(space: Option<&Space>, name: PortName) -> Result<(), Error> {
+    let space = space.unwrap_or_else(|| panic!("mach_port_destroy: KERN_INVALID_TASK, not yet"));
+    ipc::mach_port::destroy(space, name);
+    Ok(())
 }

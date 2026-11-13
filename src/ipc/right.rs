@@ -11,12 +11,32 @@ use super::object::Object;
 use super::port::{Port, PortName, PortState, PortType};
 use super::space::{Space, SpaceState};
 use crate::arch::PhysAddr;
-use crate::sync::SpinlockGuard;
+use crate::sync::{SleepLockWriteGuard, SpinlockGuard};
 
 /// `port`'s key in a reverse map: its physical address over 8, as ports
 /// are in the direct map.
 fn key(port: &Port) -> u64 {
     u64::try_from(PhysAddr::from_direct_map(ptr::from_ref(port)).0 >> 3).unwrap()
+}
+
+/// Write-locks `space`, which must be alive and hold rights under `name`,
+/// as `ipc_right_lookup_write` does: gives the guard, whose state has the
+/// entry.
+///
+/// # Panics
+///
+/// If the space is dead, or `name` holds no rights: not yet.
+pub(super) fn lookup_write(space: &Space, name: PortName) -> SleepLockWriteGuard<'_, SpaceState> {
+    let state = space.state.write();
+    assert!(
+        state.active,
+        "ipc_right_lookup_write: KERN_INVALID_TASK, not yet"
+    );
+    assert!(
+        state.lookup(name).is_some(),
+        "ipc_right_lookup_write: KERN_INVALID_NAME, not yet"
+    );
+    state
 }
 
 /// Looks for a send or receive right for `port` in `space`, of state
@@ -127,6 +147,46 @@ fn check<'a>(state: &SpaceState, entry: &'a Entry) -> SpinlockGuard<'a, PortStat
         "ipc_right_check: the port died, its entry to a dead name, not yet"
     );
     port_state
+}
+
+/// Destroys the rights of `name`'s entry in the write-locked, alive space
+/// of state `state`, as `ipc_right_destroy` does; the space is unlocked.
+///
+/// # Panics
+///
+/// If the space is dead, `name` has no entry, a dead name has a request,
+/// an object or a message-accepted request, or for rights that are none of
+/// Mach's. For a port set's or a port's rights: not yet. As
+/// `SpaceState::deallocate`.
+pub(super) fn destroy(mut state: SleepLockWriteGuard<'_, SpaceState>, name: PortName) {
+    assert!(state.active, "ipc_right_destroy: a dead space");
+    let entry = state
+        .map
+        .get(name.key())
+        .expect("ipc_right_destroy: no entry");
+    let rights = entry.bits.rights.bits();
+    if rights == Rights::DEAD_NAME.bits() {
+        assert!(
+            entry.request == 0 && entry.object.is_none() && !entry.bits.message_accepted,
+            "ipc_right_destroy: a dead name with a request, an object or a message-accepted request"
+        );
+        state.deallocate(name);
+        drop(state);
+    } else if rights == Rights::PORT_SET.bits() {
+        panic!("ipc_right_destroy: MACH_PORT_TYPE_PORT_SET, not yet");
+    } else if [
+        Rights::SEND,
+        Rights::RECEIVE,
+        Rights::SEND | Rights::RECEIVE,
+        Rights::SEND_ONCE,
+    ]
+    .iter()
+    .any(|kind| rights == kind.bits())
+    {
+        panic!("ipc_right_destroy: a send, receive or send-once right, not yet");
+    } else {
+        panic!("ipc_right_destroy: strange type");
+    }
 }
 
 /// The type of `entry`'s rights, in the write-locked, alive space of state

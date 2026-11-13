@@ -148,21 +148,23 @@ fn entry_type(entry: &Entry) -> PortType {
 ///
 /// # Panics
 ///
-/// If the space is dead, or `name` holds no rights: not yet. As
-/// `right::info`.
+/// As `right::lookup_write` and `right::info`.
 pub fn type_of(space: &Space, name: PortName) -> PortType {
-    // As ipc_right_lookup_write: write-locked, alive, and the entry found.
-    let state = space.state.write();
-    assert!(
-        state.active,
-        "ipc_right_lookup_write: KERN_INVALID_TASK, not yet"
-    );
-    let entry = state
-        .lookup(name)
-        .unwrap_or_else(|| panic!("ipc_right_lookup_write: KERN_INVALID_NAME, not yet"));
+    let state = right::lookup_write(space, name);
+    let entry = state.lookup(name).expect("mach_port_type: no entry");
     let port_type = right::info(&state, entry);
     drop(state);
     port_type
+}
+
+/// Destroys `name`'s rights in `space`, as `mach_port_destroy` does.
+///
+/// # Panics
+///
+/// As `right::lookup_write` and `right::destroy`.
+pub fn destroy(space: &Space, name: PortName) {
+    let state = right::lookup_write(space, name);
+    right::destroy(state, name);
 }
 
 /// Moves the rights of `old_name` in `space` to `new_name`, as

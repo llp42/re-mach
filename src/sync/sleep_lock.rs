@@ -60,3 +60,6 @@ unsafe impl RawRwLock for RawSleepLock {
 
 /// A lock readers share and a writer holds alone, whose waiters sleep.
 pub type SleepLock<T> = lock_api::RwLock<RawSleepLock, T>;
+
+/// A sleep lock's writer's guard.
+pub type SleepLockWriteGuard<'a, T> = lock_api::RwLockWriteGuard<'a, RawSleepLock, T>;
