@@ -5,8 +5,9 @@
 
 use core::ptr::NonNull;
 
-use super::entry::{self, Entry};
+use super::entry::{self, Entry, EntryBits, Rights};
 use super::port::PortName;
+use crate::collections::ArrayVec;
 use crate::collections::radix_tree::RadixTree;
 use crate::error::Error;
 use crate::reference::{Count, Counted};
@@ -31,6 +32,9 @@ pub(super) struct SpaceState {
     pub(super) reverse_map: RadixTree<NonNull<Entry>>,
     /// How many names it holds.
     pub(super) size: u32,
+    /// Its free entries' names, the last freed on top, up to GNU Mach's
+    /// limit; the entries stay in the name map.
+    pub(super) free_names: ArrayVec<PortName, 64>,
 }
 
 impl Space {
@@ -43,6 +47,7 @@ impl Space {
                 map: RadixTree::new(),
                 reverse_map: RadixTree::new(),
                 size: 0,
+                free_names: ArrayVec::new(),
             }),
         }
     }
@@ -63,6 +68,7 @@ impl Space {
                 map,
                 reverse_map: RadixTree::new(),
                 size: 1,
+                free_names: ArrayVec::new(),
             }),
         })
     }
@@ -99,10 +105,10 @@ impl SpaceState {
     ///
     /// # Panics
     ///
-    /// If the space is dead: not yet.
+    /// If the space is dead, or a free entry waits: not yet.
     pub(super) fn allocate(&mut self) -> Result<(PortName, &mut Entry), Error> {
         assert!(self.active, "ipc_entry_alloc: a dead space, not yet");
-        // Entries are never freed yet, so there is no free list to take from.
+        assert!(self.free_names.is_empty(), "ipc_entry_get, not yet");
         let entry = entry::CACHE.allocate(Entry::new(PortName::NULL))?;
         let (key, entry) = self
             .map
@@ -140,6 +146,36 @@ impl SpaceState {
             .map_err(|_| Error::ResourceShortage)?;
         self.size += 1;
         Ok(entry)
+    }
+
+    /// Frees the entry of `name`, which holds no port, as `ipc_entry_dealloc`
+    /// does: it keeps its name, which goes on the free list.
+    ///
+    /// # Panics
+    ///
+    /// If the space is dead, `name` has no entry, or its entry holds a port
+    /// or a request. If the free list is full: not yet.
+    pub(super) fn deallocate(&mut self, name: PortName) {
+        assert!(self.active, "ipc_entry_dealloc: a dead space");
+        let entry = self
+            .map
+            .get_mut(name.key())
+            .expect("ipc_entry_dealloc: no entry");
+        assert!(
+            entry.object.is_none() && entry.request == 0,
+            "ipc_entry_dealloc: an entry with a port or a request"
+        );
+        assert!(
+            !self.free_names.is_full(),
+            "ipc_entry_dealloc: rdxtree_remove and ie_free, not yet"
+        );
+        entry.bits = EntryBits {
+            rights: Rights::empty(),
+            user_references: 0,
+            message_accepted: false,
+        };
+        self.free_names.push(name);
+        self.size -= 1;
     }
 }
 

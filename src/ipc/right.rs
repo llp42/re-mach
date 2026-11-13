@@ -6,7 +6,7 @@
 use core::ptr::{self, NonNull};
 
 use super::MessageType;
-use super::entry::{Entry, Rights};
+use super::entry::{Entry, EntryBits, Rights};
 use super::port::{Port, PortName, PortState, PortType};
 use super::space::{Space, SpaceState};
 use crate::arch::PhysAddr;
@@ -154,4 +154,74 @@ pub(super) fn info(state: &SpaceState, entry: &Entry) -> PortType {
         "ipc_right_info: MACH_PORT_TYPE_MAREQUEST, not yet"
     );
     port_type
+}
+
+/// Moves the rights of `old_name`'s entry to `new_name`'s, new and holding
+/// none, in the write-locked, alive space of state `state`, as
+/// `ipc_right_rename` does; the old entry is freed.
+///
+/// # Panics
+///
+/// If the space is dead, either name has no entry, or the new entry holds
+/// rights, or for rights that are none of Mach's. If the old entry has a
+/// dead-name or message-accepted request, or its rights are a receive or
+/// send-once right: not yet. As `SpaceState::deallocate`.
+pub(super) fn rename(state: &mut SpaceState, old_name: PortName, new_name: PortName) {
+    assert!(state.active, "ipc_right_rename: a dead space");
+    let SpaceState {
+        map, reverse_map, ..
+    } = state;
+    let old = map
+        .get(old_name.key())
+        .expect("ipc_right_rename: no old entry");
+    let EntryBits {
+        rights,
+        user_references,
+        message_accepted,
+    } = old.bits;
+    let (request, object) = (old.request, old.object);
+    assert!(
+        request == 0,
+        "ipc_right_rename: ipc_right_check and ipc_port_dnrename, not yet"
+    );
+    assert!(
+        !message_accepted,
+        "ipc_right_rename: ipc_marequest_rename, not yet"
+    );
+    // The name map's own pointer, for the reverse map, and its entry.
+    let (Some(pointer), Some(new)) = (map.lookup(new_name.key()), map.get_mut(new_name.key()))
+    else {
+        panic!("ipc_right_rename: no new entry");
+    };
+    assert!(
+        !new.in_use() && new.bits.user_references == 0 && !new.bits.message_accepted,
+        "ipc_right_rename: a new entry with rights"
+    );
+    new.bits = EntryBits {
+        rights,
+        user_references,
+        message_accepted,
+    };
+    new.request = request;
+    new.object = object;
+    if rights.bits() == Rights::SEND.bits() {
+        let port = object.expect("ipc_right_rename: a send right with no port");
+        // SAFETY: the entry holds a reference to its port, and the space's
+        // lock keeps the entry.
+        let port = unsafe { port.as_ref() };
+        reverse_map.remove(key(port));
+        new.name = new_name;
+        // As in GNU Mach, a failure leaves the entry out of the reverse map.
+        let _ = reverse_map.insert(key(port), pointer);
+    } else if rights.contains(Rights::RECEIVE) {
+        panic!("ipc_right_rename: MACH_PORT_TYPE_RECEIVE, not yet");
+    } else if rights.bits() == Rights::SEND_ONCE.bits() {
+        panic!("ipc_right_rename: MACH_PORT_TYPE_SEND_ONCE, not yet");
+    } else {
+        panic!("ipc_right_rename: strange rights");
+    }
+    map.get_mut(old_name.key())
+        .expect("ipc_right_rename: no old entry")
+        .object = None;
+    state.deallocate(old_name);
 }

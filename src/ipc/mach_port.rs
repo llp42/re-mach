@@ -163,6 +163,24 @@ pub fn type_of(space: &Space, name: PortName) -> PortType {
     port_type
 }
 
+/// Moves the rights of `old_name` in `space` to `new_name`, as
+/// `mach_port_rename` does.
+///
+/// # Errors
+///
+/// As `object::rename`.
+///
+/// # Panics
+///
+/// If `new_name` is null or dead: not yet; as `object::rename`.
+pub fn rename(space: &Space, old_name: PortName, new_name: PortName) -> Result<(), Error> {
+    assert!(
+        new_name.is_valid(),
+        "mach_port_rename: KERN_INVALID_VALUE, not yet"
+    );
+    object::rename(space, old_name, new_name)
+}
+
 /// Inserts the right `message_type` names, for `port`, in `space` as
 /// `name`; the space takes the right and its reference.
 ///

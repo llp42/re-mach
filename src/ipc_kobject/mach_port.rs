@@ -14,6 +14,7 @@ mig::subsystem! {
     base 3200;
     0 mach_port_names(task = task::space_of) -> (names: OutOfLine<PortName>, types: OutOfLine<PortType>);
     1 mach_port_type(task = task::space_of, name: PortName) -> (port_type: PortType);
+    2 mach_port_rename(task = task::space_of, old_name: PortName, new_name: PortName);
 }
 
 /// Serves `mach_port_names`: the names `space` holds rights under, and
@@ -40,4 +41,19 @@ fn mach_port_names(
 fn mach_port_type(space: Option<&Space>, name: PortName) -> Result<PortType, Error> {
     let space = space.unwrap_or_else(|| panic!("mach_port_type: KERN_INVALID_TASK, not yet"));
     Ok(ipc::mach_port::type_of(space, name))
+}
+
+/// Serves `mach_port_rename`: `old_name`'s rights in `space` move to
+/// `new_name`.
+///
+/// # Panics
+///
+/// With no space: not yet. As `ipc::mach_port::rename`.
+fn mach_port_rename(
+    space: Option<&Space>,
+    old_name: PortName,
+    new_name: PortName,
+) -> Result<(), Error> {
+    let space = space.unwrap_or_else(|| panic!("mach_port_rename: KERN_INVALID_TASK, not yet"));
+    ipc::mach_port::rename(space, old_name, new_name)
 }

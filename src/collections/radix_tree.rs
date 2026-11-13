@@ -2,10 +2,10 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Radix trees of pointers under 64-bit keys, after GNU Mach's rdxtree;
-//! so far insertion, under a key or the lowest free one, lookup, and walks
-//! in key order. A level takes six bits of the key, and a tree is only as
-//! tall as its largest key needs. A tree of owners lends what they point
-//! to.
+//! so far insertion, under a key or the lowest free one, lookup, removal
+//! of pointers that own nothing, and walks in key order. A level takes six
+//! bits of the key, and a tree is only as tall as its largest key needs. A
+//! tree of owners lends what they point to.
 
 use core::marker::PhantomData;
 use core::ptr::NonNull;
@@ -470,6 +470,42 @@ impl<T> RadixTree<NonNull<T>> {
         let place = self.place(key)?;
         self.fill(place, pointer);
         Ok(())
+    }
+
+    /// Takes out the pointer stored under `key`, if any, as `rdxtree_remove`
+    /// does: the nodes it leaves empty are freed, and the tree lowered.
+    pub fn remove(&mut self, key: u64) -> Option<NonNull<T>> {
+        if key > max_key(self.height) {
+            return None;
+        }
+        if self.height == 0 {
+            return core::mem::replace(&mut self.root, Slot::EMPTY).pointer();
+        }
+        let mut node = self.root.node()?;
+        for level in (1..self.height).rev() {
+            node = self.node(node).entries[digit(key, level)].node()?;
+        }
+        let mut index = digit(key, 0);
+        let leaf = self.node_mut(node);
+        let pointer = leaf.entries[index].pointer()?;
+        leaf.entries[index] = Slot::EMPTY;
+        leaf.count -= 1;
+        // Room below again, up to the first node that had it.
+        let mut current = node;
+        loop {
+            let below = self.node_mut(current);
+            below.bitmap |= 1 << index;
+            let Some(parent) = below.parent else {
+                break;
+            };
+            index = usize::from(below.index);
+            current = parent;
+            if self.node(current).bitmap & 1 << index != 0 {
+                break;
+            }
+        }
+        self.cleanup(node);
+        Some(pointer)
     }
 }
 
