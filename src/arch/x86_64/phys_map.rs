@@ -23,6 +23,7 @@ use super::memory_layout::{
 };
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
+use crate::smp::CpuMask;
 use crate::sync::{OnceLock, Spinlock};
 use crate::vm::Protection;
 use crate::vm::page::{self, Page};
@@ -116,8 +117,8 @@ pub struct PhysMap {
     pml4: PhysAddr,
     /// References held on it.
     references: AtomicUsize,
-    /// The CPUs it is active on, a bit each.
-    active_cpus: AtomicUsize,
+    /// The CPUs it is active on.
+    active_cpus: CpuMask,
     /// How many pages it maps.
     resident: AtomicUsize,
     /// Its lock: tables are linked into it only under it.
@@ -137,7 +138,7 @@ impl MachinePhysMap for PhysMap {
         let mut phys_map = CACHE.allocate(Self {
             pml4: PhysAddr(0),
             references: AtomicUsize::new(1),
-            active_cpus: AtomicUsize::new(0),
+            active_cpus: CpuMask::empty(),
             resident: AtomicUsize::new(0),
             lock: Spinlock::new(()),
         })?;
@@ -175,8 +176,7 @@ impl MachinePhysMap for PhysMap {
         // The kernel physical map stays active on every CPU; a user physical
         // map's bit goes before CR3, so a TLB shootdown finds this CPU.
         if !ptr::eq(self, Self::kernel()) {
-            self.active_cpus
-                .fetch_or(1 << smp::current().id(), Ordering::SeqCst);
+            self.active_cpus.insert(smp::current().id());
         }
         // SAFETY: every PML4 maps kernel space as the kernel's does.
         unsafe {
@@ -193,8 +193,7 @@ impl MachinePhysMap for PhysMap {
             return;
         }
         // After CR3, so a TLB shootdown finds this CPU until then.
-        self.active_cpus
-            .fetch_and(!(1 << smp::current().id()), Ordering::SeqCst);
+        self.active_cpus.remove(smp::current().id());
     }
 
     fn enter(&self, address: usize, physical: PhysAddr, protection: Protection, wiring: Wiring) {
@@ -279,13 +278,12 @@ impl MachinePhysMap for PhysMap {
                 frame(physical).as_u64() | flags.bits() | (value & PageTableFlags::DIRTY.bits())
             });
             // After the entry changes, as in `protect`.
-            let current = 1 << smp::current().id();
-            let active = self.active_cpus.load(Ordering::SeqCst);
+            let current = smp::current().id();
             assert!(
-                active & !current == 0,
+                !self.active_cpus.contains_other(current),
                 "PMAP_UPDATE_TLBS: signal_cpus, not yet"
             );
-            if active & current != 0 {
+            if self.active_cpus.contains(current) {
                 tlb::flush(VirtAddr::new(u64::try_from(address).unwrap()));
             }
         } else {
@@ -411,8 +409,8 @@ impl MachinePhysMap for PhysMap {
             no_execute
         };
         let tables = self.lock.lock();
-        let current = 1 << smp::current().id();
-        let active = self.active_cpus.load(Ordering::Relaxed) & current != 0;
+        let current = smp::current().id();
+        let active = self.active_cpus.contains(current);
         let mut address = range.start;
         while address < range.end {
             // The end of the page table's span, or of the range.
@@ -450,7 +448,7 @@ impl MachinePhysMap for PhysMap {
         // After the entries change, as `activate` sets its bit before CR3,
         // and `deactivate` clears it after.
         assert!(
-            self.active_cpus.load(Ordering::SeqCst) & !current == 0,
+            !self.active_cpus.contains_other(current),
             "PMAP_UPDATE_TLBS: signal_cpus, not yet"
         );
         drop(tables);
@@ -690,7 +688,7 @@ pub unsafe fn bootstrap() {
     let kernel_phys_map = PhysMap {
         pml4,
         references: AtomicUsize::new(1),
-        active_cpus: AtomicUsize::new(usize::MAX),
+        active_cpus: CpuMask::all(),
         resident: AtomicUsize::new(0),
         lock: Spinlock::new(()),
     };
