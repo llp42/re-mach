@@ -199,7 +199,7 @@ pub fn get_refs(space: &Space, name: PortName, right: u32) -> u32 {
 /// As `right::lookup_write` and `right::destroy`.
 pub fn destroy(space: &Space, name: PortName) {
     let state = right::lookup_write(space, name);
-    right::destroy(state, name);
+    right::destroy(space, state, name);
 }
 
 /// Moves the rights of `old_name` in `space` to `new_name`, as

@@ -8,7 +8,7 @@ use core::ptr::{self, NonNull};
 use super::MessageType;
 use super::entry::{Entry, EntryBits, Rights};
 use super::object::Object;
-use super::port::{Port, PortName, PortState, PortType};
+use super::port::{Port, PortName, PortState, PortType, Receiver};
 use super::space::{Space, SpaceState};
 use crate::arch::PhysAddr;
 use crate::sync::{SleepLockWriteGuard, SpinlockGuard};
@@ -55,7 +55,7 @@ pub(super) fn reverse<'a>(
     // A dead port has none.
     if port_state.active {
         assert!(
-            port_state.receiver != NonNull::from(space),
+            port_state.receiver != Receiver::Space(NonNull::from(space)),
             "ipc_right_reverse: the space's receive right, not yet"
         );
         if let Some(entry) = state.reverse_map.lookup(key(port)) {
@@ -149,16 +149,27 @@ fn check<'a>(state: &SpaceState, entry: &'a Entry) -> SpinlockGuard<'a, PortStat
     port_state
 }
 
-/// Destroys the rights of `name`'s entry in the write-locked, alive space
-/// of state `state`, as `ipc_right_destroy` does; the space is unlocked.
+/// Destroys the rights of `name`'s entry in `space`, write-locked as
+/// `state` and alive, as `ipc_right_destroy` does; the space is unlocked.
 ///
 /// # Panics
 ///
 /// If the space is dead, `name` has no entry, a dead name has a request,
-/// an object or a message-accepted request, or for rights that are none of
-/// Mach's. For a port set's or a port's rights: not yet. As
-/// `SpaceState::deallocate`.
-pub(super) fn destroy(mut state: SleepLockWriteGuard<'_, SpaceState>, name: PortName) {
+/// an object or a message-accepted request, a receive right has no port or
+/// a dead one or one another space receives on, or for rights that are
+/// none of Mach's. If a receive right has a message-accepted or dead-name
+/// request, for a port set's right, or for a send or send-once right: not
+/// yet. As `SpaceState::deallocate`, `PortState::clear_receiver` and
+/// `Port::destroy`.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the port's guard is moved into Port::destroy"
+)]
+pub(super) fn destroy(
+    space: &Space,
+    mut state: SleepLockWriteGuard<'_, SpaceState>,
+    name: PortName,
+) {
     assert!(state.active, "ipc_right_destroy: a dead space");
     let entry = state
         .map
@@ -174,16 +185,51 @@ pub(super) fn destroy(mut state: SleepLockWriteGuard<'_, SpaceState>, name: Port
         drop(state);
     } else if rights == Rights::PORT_SET.bits() {
         panic!("ipc_right_destroy: MACH_PORT_TYPE_PORT_SET, not yet");
+    } else if rights == Rights::RECEIVE.bits() {
+        assert!(
+            !entry.bits.message_accepted,
+            "ipc_right_destroy: ipc_marequest_cancel, not yet"
+        );
+        // Not a send right, so not in the reverse map.
+        let entry = state
+            .map
+            .get_mut(name.key())
+            .expect("ipc_right_destroy: no entry");
+        // The entry's reference, ours now: under the space's lock, no one
+        // sees the object clear before the port locks.
+        let Some(Object::Port(port)) = entry.object.take() else {
+            panic!("ipc_right_destroy: a receive right with no port");
+        };
+        let mut port_state = port.state.lock();
+        assert!(
+            port_state.active,
+            "ipc_right_destroy: a dead port's receive right"
+        );
+        // As ipc_right_dncancel_macro: no request, none to cancel.
+        assert!(
+            entry.request == 0,
+            "ipc_right_destroy: ipc_right_dncancel, not yet"
+        );
+        state.deallocate(name);
+        drop(state);
+        assert!(
+            port_state.receiver == Receiver::Space(NonNull::from(space)),
+            "ipc_right_destroy: another space's receive right"
+        );
+        port_state.clear_receiver();
+        port.destroy(port_state);
+        // As ipc_port_destroy's ipc_port_release, once nothing borrows the
+        // port: the entry's reference, which frees it at zero.
+        drop(port);
     } else if [
         Rights::SEND,
-        Rights::RECEIVE,
         Rights::SEND | Rights::RECEIVE,
         Rights::SEND_ONCE,
     ]
     .iter()
     .any(|kind| rights == kind.bits())
     {
-        panic!("ipc_right_destroy: a send, receive or send-once right, not yet");
+        panic!("ipc_right_destroy: a send or send-once right, not yet");
     } else {
         panic!("ipc_right_destroy: strange type");
     }

@@ -17,7 +17,7 @@ use crate::host::Host;
 use crate::processor::{Processor, ProcessorSet};
 use crate::reference::{Count, Counted, Reference};
 use crate::slab::{Cache, CacheBox};
-use crate::sync::Spinlock;
+use crate::sync::{Spinlock, SpinlockGuard};
 use crate::task::Task;
 use crate::thread::{IpcQueueAdapter, Thread};
 use crate::vm::object::Object;
@@ -37,8 +37,8 @@ pub struct Port {
 pub(super) struct PortState {
     /// Whether it is alive.
     pub(super) active: bool,
-    /// The space that holds its receive right.
-    pub(super) receiver: NonNull<Space>,
+    /// Who holds its receive right.
+    pub(super) receiver: Receiver,
     /// Its receive right's name in that space.
     pub(super) receiver_name: PortName,
     /// How many send rights for it there are.
@@ -74,7 +74,7 @@ impl Port {
             references: Count::new(1),
             state: Spinlock::new(PortState {
                 active: true,
-                receiver,
+                receiver: Receiver::Space(receiver),
                 receiver_name: PortName::NULL,
                 send_rights: 0,
                 send_once_rights: 0,
@@ -230,21 +230,84 @@ impl Port {
             panic!("ipc_port_copyout_send: a failed copy-out, not yet: {error:?}")
         })
     }
+
+    /// Destroys the port, alive, cleared of its receiver and of locked state
+    /// `state`, as `ipc_port_destroy` does: it is dead and unlocked. The
+    /// caller then drops the reference GNU Mach's call consumes.
+    ///
+    /// # Panics
+    ///
+    /// If it is dead, in a set, its make-send count or sequence number is
+    /// not 0, or a thread waits to receive from it. If it has queued
+    /// messages or a kernel object: not yet.
+    pub(super) fn destroy(&self, mut state: SpinlockGuard<'_, PortState>) {
+        assert!(state.active, "ipc_port_destroy: a dead port");
+        assert!(
+            state.set.is_none() && state.make_send_count == 0 && state.sequence_number == 0,
+            "ipc_port_destroy: a receiver not cleared"
+        );
+        // Port-destroyed, no-senders and dead-name requests and blocked
+        // senders come with the calls that make them, and their checks too.
+        state.active = false;
+        state.receiver = Receiver::Dead(timestamp());
+        drop(state);
+        // The queue's lock is the port's.
+        let state = self.state.lock();
+        assert!(
+            state.receivers.is_empty(),
+            "ipc_port_destroy: a thread receiving"
+        );
+        assert!(
+            state.messages.is_empty(),
+            "ipc_port_destroy: ipc_kmsg_destroy, not yet"
+        );
+        assert!(
+            state.kernel_object.is_none(),
+            "ipc_port_destroy: ipc_kobject_destroy, not yet"
+        );
+        drop(state);
+        // ipc_target_terminate does nothing.
+    }
 }
 
-// SAFETY: its count is its own, and it is never freed yet.
+impl PortState {
+    /// Readies its port's receive right to be destroyed, its port alive, as
+    /// `ipc_port_clear_receiver` does.
+    ///
+    /// # Panics
+    ///
+    /// If its port is dead. If it is in a set, or a thread waits to receive
+    /// from it: not yet.
+    pub(super) fn clear_receiver(&mut self) {
+        assert!(self.active, "ipc_port_clear_receiver: a dead port");
+        assert!(
+            self.set.is_none(),
+            "ipc_port_clear_receiver: ipc_pset_remove, not yet"
+        );
+        // As ipc_mqueue_changed, under the queue's lock, the port's.
+        assert!(
+            self.receivers.is_empty(),
+            "ipc_mqueue_changed: thread_go, not yet"
+        );
+        // As ipc_port_set_mscount.
+        self.make_send_count = 0;
+        self.sequence_number = 0;
+    }
+}
+
+// SAFETY: its count is its own, and every port is a box of `CACHE`, which
+// `free` takes back.
 unsafe impl Counted for Port {
     fn references(&self) -> &Count {
         &self.references
     }
 
-    /// Frees `port`, as `ipc_port_release` does at zero.
-    ///
-    /// # Panics
-    ///
-    /// Always: not yet.
-    unsafe fn free(_port: NonNull<Self>) {
-        panic!("ipc_port_release: io_free, not yet");
+    /// Frees `port`, as `ipc_port_release` does at zero: `io_check_unlock`
+    /// frees it to its cache.
+    unsafe fn free(port: NonNull<Self>) {
+        // SAFETY: every port is a `CACHE` box that `From<CacheBox<Port>>`
+        // gave up with `into_raw`, and nothing uses this one after.
+        drop(unsafe { CacheBox::from_raw(&CACHE, port) });
     }
 }
 
@@ -340,9 +403,18 @@ impl TryFrom<u32> for Right {
 }
 
 /// A logical time that orders port deaths, Mach's `ipc_port_timestamp_t`.
-pub(super) struct Timestamp(
-    #[expect(dead_code, reason = "mach_port_names' died branch reads it")] u32,
-);
+#[derive(Clone, Copy, PartialEq)]
+pub(super) struct Timestamp(u32);
+
+/// Who holds a port's receive right, Mach's `data` union (`ip_receiver`,
+/// `ip_timestamp`); only the kinds used here.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Receiver {
+    /// A space.
+    Space(NonNull<Space>),
+    /// No one: the port died at that time, Mach's `ip_timestamp`.
+    Dead(Timestamp),
+}
 
 /// The next timestamp, in place of `ipc_port_timestamp_lock` and its data.
 static TIMESTAMP: AtomicU32 = AtomicU32::new(0);

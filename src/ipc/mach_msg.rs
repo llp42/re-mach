@@ -11,7 +11,7 @@ use super::kernel_message::{
     self, EXPAND_FACTOR, Header, KernelMessage, MessageBits, SAVED_MESSAGE_SIZE,
 };
 use super::object::Object;
-use super::port::{Port, PortName};
+use super::port::{Port, PortName, Receiver};
 use super::space::KERNEL_SPACE;
 use crate::arch::PAGE_SIZE;
 use crate::reference::Reference;
@@ -117,7 +117,7 @@ pub fn trap(
     destination_state.send_rights += 1;
     reply_state.send_once_rights += 1;
     header.bits = MessageBits::new(Some(MessageType::PortSend), Some(MessageType::PortSendOnce));
-    let kernel = destination_state.receiver == NonNull::from(&KERNEL_SPACE);
+    let kernel = destination_state.receiver == Receiver::Space(NonNull::from(&KERNEL_SPACE));
     drop(reply_state);
     drop(destination_state);
     // The header's slots take the message's references.
@@ -144,7 +144,7 @@ pub fn trap(
     // `receive_name`, in no set, with no thread waiting and nothing queued.
     assert!(
         reply_state.active
-            && reply_state.receiver == NonNull::from(&**space)
+            && reply_state.receiver == Receiver::Space(NonNull::from(&**space))
             && reply_state.receiver_name == receive_name
             && reply_state.set.is_none(),
         "mach_msg_trap: ipc_mqueue_send_always, not yet"
@@ -178,7 +178,7 @@ pub fn trap(
     );
     let payload = reply_state.protected_payload;
     assert!(
-        reply_state.receiver == NonNull::from(&**space),
+        reply_state.receiver == Receiver::Space(NonNull::from(&**space)),
         "mach_msg_trap: ipc_notify_send_once, not yet"
     );
     reply_state.send_once_rights = reply_state
