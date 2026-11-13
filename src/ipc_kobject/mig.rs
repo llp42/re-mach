@@ -138,6 +138,16 @@ unsafe impl Inline for u32 {
     const WORD: u64 = type_word(MessageType::Integer32, 32, 1);
 }
 
+// SAFETY: `repr(transparent)` over a `u32`.
+unsafe impl Inline for PortName {
+    const WORD: u64 = type_word(MessageType::PortName, 32, 1);
+}
+
+// SAFETY: `repr(transparent)` over a `u32`.
+unsafe impl Inline for PortType {
+    const WORD: u64 = type_word(MessageType::Integer32, 32, 1);
+}
+
 // SAFETY: bytes only.
 unsafe impl<const N: usize> Inline for StringC<N> {
     const WORD: u64 = {

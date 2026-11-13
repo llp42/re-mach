@@ -8,7 +8,7 @@ use core::{ptr, slice};
 use super::entry::{Entry, Rights};
 use super::port::{self, Port, PortName, PortType};
 use super::space::Space;
-use super::{MessageType, object};
+use super::{MessageType, object, right};
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
 use crate::slab::CacheBox;
@@ -139,6 +139,27 @@ fn entry_type(entry: &Entry) -> PortType {
         !entry.bits.message_accepted,
         "mach_port_names_helper: MACH_PORT_TYPE_MAREQUEST, not yet"
     );
+    port_type
+}
+
+/// The type of `name`'s rights in `space`, as `mach_port_type` gives it.
+///
+/// # Panics
+///
+/// If the space is dead, or `name` holds no rights: not yet. As
+/// `right::info`.
+pub fn type_of(space: &Space, name: PortName) -> PortType {
+    // As ipc_right_lookup_write: write-locked, alive, and the entry found.
+    let state = space.state.write();
+    assert!(
+        state.active,
+        "ipc_right_lookup_write: KERN_INVALID_TASK, not yet"
+    );
+    let entry = state
+        .lookup(name)
+        .unwrap_or_else(|| panic!("ipc_right_lookup_write: KERN_INVALID_NAME, not yet"));
+    let port_type = right::info(&state, entry);
+    drop(state);
     port_type
 }
 

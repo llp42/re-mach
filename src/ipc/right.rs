@@ -6,8 +6,8 @@
 use core::ptr::{self, NonNull};
 
 use super::MessageType;
-use super::entry::Rights;
-use super::port::{Port, PortName, PortState};
+use super::entry::{Entry, Rights};
+use super::port::{Port, PortName, PortState, PortType};
 use super::space::{Space, SpaceState};
 use crate::arch::PhysAddr;
 use crate::sync::SpinlockGuard;
@@ -102,4 +102,56 @@ pub(super) fn copy_out(
         }
         _ => panic!("ipc_right_copyout: strange rights"),
     }
+}
+
+/// Checks whether the port of `entry`'s send or send-once right, in the
+/// write-locked space of state `state`, died, as `ipc_right_check` does:
+/// gives it locked and alive.
+///
+/// # Panics
+///
+/// If the space is dead, or the entry has no port. If the port died: not
+/// yet.
+fn check<'a>(state: &SpaceState, entry: &'a Entry) -> SpinlockGuard<'a, PortState> {
+    assert!(state.active, "ipc_right_check: a dead space");
+    let port = entry
+        .object
+        .expect("ipc_right_check: a send right with no port");
+    // SAFETY: the entry holds a reference to its port, and the space's lock
+    // keeps the entry.
+    let port = unsafe { port.as_ref() };
+    let port_state = port.state.lock();
+    assert!(
+        port_state.active,
+        "ipc_right_check: the port died, its entry to a dead name, not yet"
+    );
+    port_state
+}
+
+/// The type of `entry`'s rights, in the write-locked, alive space of state
+/// `state`, as `ipc_right_info` gives it.
+///
+/// # Panics
+///
+/// As `check`. If the entry has a dead-name or message-accepted request:
+/// not yet.
+pub(super) fn info(state: &SpaceState, entry: &Entry) -> PortType {
+    if entry
+        .bits
+        .rights
+        .intersects(Rights::SEND | Rights::SEND_ONCE)
+    {
+        // Alive, so it is unlocked again.
+        drop(check(state, entry));
+    }
+    let port_type = PortType::from(entry.bits.rights);
+    assert!(
+        entry.request == 0,
+        "ipc_right_info: MACH_PORT_TYPE_DNREQUEST, not yet"
+    );
+    assert!(
+        !entry.bits.message_accepted,
+        "ipc_right_info: MACH_PORT_TYPE_MAREQUEST, not yet"
+    );
+    port_type
 }
