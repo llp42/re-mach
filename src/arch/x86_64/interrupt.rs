@@ -167,7 +167,7 @@ pub fn handle(vector: usize, frame: Option<&TrapFrame>) {
     panic!("interrupt")
 }
 
-/// Points the boot CPU's interrupt vectors at their entries.
+/// Points the IDT's interrupt vectors at their entries.
 ///
 /// # Safety
 ///
