@@ -96,8 +96,8 @@ impl Port {
         Ok(port)
     }
 
-    /// A new port that `space` receives on, under the lowest free name there,
-    /// its one reference the receive right's; gives the name.
+    /// A new port that `space` receives on, under a free name there, its one
+    /// reference the receive right's; gives the name.
     ///
     /// # Errors
     ///

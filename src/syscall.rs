@@ -120,7 +120,7 @@ fn message(arguments: &[usize; 7]) -> u32 {
 }
 
 /// Gives the caller a reply port: a new port its task's space receives on,
-/// under the lowest free name there, which it returns.
+/// under a free name there, which it returns.
 ///
 /// # Panics
 ///

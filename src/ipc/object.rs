@@ -12,9 +12,9 @@ use super::{MessageType, right};
 use crate::error::Error;
 use crate::slab::CacheBox;
 
-/// Puts the receive right for `port`, new, in `space` under the lowest
-/// free name, and gives the name; the entry takes the right and the
-/// port's reference, linked only once the port knows the name.
+/// Puts the receive right for `port`, new, in `space` under a free name,
+/// and gives the name; the entry takes the right and the port's
+/// reference, linked only once the port knows the name.
 ///
 /// # Errors
 ///
@@ -36,9 +36,9 @@ pub(super) fn allocate(space: &Space, mut port: CacheBox<Port>) -> Result<PortNa
     Ok(name)
 }
 
-/// Puts the right `message_type` names, for `port`, in `space` under the
-/// lowest free name, as `ipc_object_copyout` does, and gives the name; the
-/// space takes the right and its reference.
+/// Puts the right `message_type` names, for `port`, in `space` under a
+/// free name, as `ipc_object_copyout` does, and gives the name; the space
+/// takes the right and its reference.
 ///
 /// # Errors
 ///

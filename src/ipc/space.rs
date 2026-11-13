@@ -97,7 +97,8 @@ impl SpaceState {
         self.map.get(name.key()).filter(|entry| entry.in_use())
     }
 
-    /// The lowest free name, and a new entry for it that holds no rights.
+    /// The last freed name, else the lowest free one, and its entry, which
+    /// holds no rights.
     ///
     /// # Errors
     ///
@@ -105,10 +106,29 @@ impl SpaceState {
     ///
     /// # Panics
     ///
-    /// If the space is dead, or a free entry waits: not yet.
+    /// If the space is dead: not yet. If a freed name has no entry, or its
+    /// entry is not free.
     pub(super) fn allocate(&mut self) -> Result<(PortName, &mut Entry), Error> {
         assert!(self.active, "ipc_entry_alloc: a dead space, not yet");
-        assert!(self.free_names.is_empty(), "ipc_entry_get, not yet");
+        // As ipc_entry_get, with no generations.
+        if let Some(name) = self.free_names.pop() {
+            let entry = self
+                .map
+                .get_mut(name.key())
+                .expect("ipc_entry_get: no free entry");
+            assert!(
+                !entry.in_use() && entry.bits.user_references == 0 && !entry.bits.message_accepted,
+                "ipc_entry_get: a free entry with rights"
+            );
+            entry.request = 0;
+            assert!(name.is_valid(), "ipc_entry_get: an invalid name");
+            assert!(
+                entry.object.is_none(),
+                "ipc_entry_get: a free entry with a port"
+            );
+            self.size += 1;
+            return Ok((name, entry));
+        }
         let entry = entry::CACHE.allocate(Entry::new(PortName::NULL))?;
         let (key, entry) = self
             .map
