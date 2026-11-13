@@ -111,6 +111,22 @@ impl Port {
         object::allocate(space, port)
     }
 
+    /// A new port that `space` receives on, under `name` there, its one
+    /// reference the receive right's, as `ipc_port_alloc_name` makes it.
+    ///
+    /// # Errors
+    ///
+    /// `ResourceShortage` if no port can be allocated; as
+    /// `object::allocate_name`.
+    ///
+    /// # Panics
+    ///
+    /// As `object::allocate_name`.
+    pub(super) fn allocate_name(space: &Space, name: PortName) -> Result<(), Error> {
+        let port = CACHE.allocate(Self::new(NonNull::from(space)))?;
+        object::allocate_name(space, port, name)
+    }
+
     /// Makes it stand for `object`.
     pub fn set_kernel_object(&self, object: KernelObject) {
         self.state.lock().kernel_object = Some(object);
@@ -274,6 +290,30 @@ impl From<Rights> for PortType {
     /// The type bits of `rights`, as `IE_BITS_TYPE` takes them.
     fn from(rights: Rights) -> Self {
         Self::from_bits_retain(u32::from(rights.bits()) << 16)
+    }
+}
+
+/// A kind of right, Mach's `mach_port_right_t`; only the kinds used here.
+pub(super) enum Right {
+    /// `MACH_PORT_RIGHT_RECEIVE`.
+    Receive,
+    /// `MACH_PORT_RIGHT_PORT_SET`.
+    PortSet,
+    /// `MACH_PORT_RIGHT_DEAD_NAME`.
+    DeadName,
+}
+
+impl TryFrom<u32> for Right {
+    type Error = u32;
+
+    /// The kind of Mach's number `number`, if it is one used here.
+    fn try_from(number: u32) -> Result<Self, u32> {
+        match number {
+            1 => Ok(Self::Receive),
+            3 => Ok(Self::PortSet),
+            4 => Ok(Self::DeadName),
+            _ => Err(number),
+        }
     }
 }
 

@@ -36,6 +36,39 @@ pub(super) fn allocate(space: &Space, mut port: CacheBox<Port>) -> Result<PortNa
     Ok(name)
 }
 
+/// Puts the receive right for `port`, new, in `space` as `name`, as
+/// `ipc_object_alloc_name` does; the entry takes the right and the port's
+/// reference, linked only once the port knows the name.
+///
+/// # Errors
+///
+/// `ResourceShortage` if no entry or map node can be allocated; the port
+/// is freed.
+///
+/// # Panics
+///
+/// If `name` holds rights: not yet. As `SpaceState::allocate_name`.
+pub(super) fn allocate_name(
+    space: &Space,
+    mut port: CacheBox<Port>,
+    name: PortName,
+) -> Result<(), Error> {
+    let mut state = space.state.write();
+    let entry = state.allocate_name(name)?;
+    // As ipc_right_inuse.
+    assert!(
+        !entry.in_use(),
+        "ipc_object_alloc_name: KERN_NAME_EXISTS, not yet"
+    );
+    port.state.get_mut().receiver_name = name;
+    let port = CacheBox::into_raw(port);
+    // The receive right, with no user references.
+    entry.bits.rights |= Rights::RECEIVE;
+    entry.object = Some(port);
+    drop(state);
+    Ok(())
+}
+
 /// Puts the right `message_type` names, for `port`, in `space` under a
 /// free name, as `ipc_object_copyout` does, and gives the name; the space
 /// takes the right and its reference.

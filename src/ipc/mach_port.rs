@@ -6,7 +6,7 @@
 use core::{ptr, slice};
 
 use super::entry::{Entry, Rights};
-use super::port::{self, Port, PortName, PortType};
+use super::port::{self, Port, PortName, PortType, Right};
 use super::space::Space;
 use super::{MessageType, object, right};
 use crate::arch::PAGE_SIZE;
@@ -179,6 +179,32 @@ pub fn rename(space: &Space, old_name: PortName, new_name: PortName) -> Result<(
         "mach_port_rename: KERN_INVALID_VALUE, not yet"
     );
     object::rename(space, old_name, new_name)
+}
+
+/// Puts a new right of the kind numbered `right` in `space` as `name`, as
+/// `mach_port_allocate_name` does; so far only receive rights.
+///
+/// # Errors
+///
+/// As `Port::allocate_name`.
+///
+/// # Panics
+///
+/// If `name` is null or dead, or `right` is not a receive right: not yet.
+/// As `Port::allocate_name`.
+pub fn allocate_name(space: &Space, right: u32, name: PortName) -> Result<(), Error> {
+    assert!(
+        name.is_valid(),
+        "mach_port_allocate_name: KERN_INVALID_VALUE, not yet"
+    );
+    let right = Right::try_from(right).unwrap_or_else(|right| {
+        panic!("mach_port_allocate_name: KERN_INVALID_VALUE for right {right}, not yet")
+    });
+    match right {
+        Right::Receive => Port::allocate_name(space, name),
+        Right::PortSet => panic!("mach_port_allocate_name: ipc_pset_alloc_name, not yet"),
+        Right::DeadName => panic!("mach_port_allocate_name: ipc_object_alloc_dead_name, not yet"),
+    }
 }
 
 /// Inserts the right `message_type` names, for `port`, in `space` as
