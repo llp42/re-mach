@@ -190,13 +190,13 @@ pub(super) fn destroy(mut state: SleepLockWriteGuard<'_, SpaceState>, name: Port
 }
 
 /// The type of `entry`'s rights, in the write-locked, alive space of state
-/// `state`, as `ipc_right_info` gives it.
+/// `state`, and its user references, as `ipc_right_info` gives them.
 ///
 /// # Panics
 ///
 /// As `check`. If the entry has a dead-name or message-accepted request:
 /// not yet.
-pub(super) fn info(state: &SpaceState, entry: &Entry) -> PortType {
+pub(super) fn info(state: &SpaceState, entry: &Entry) -> (PortType, u16) {
     if entry
         .bits
         .rights
@@ -214,7 +214,7 @@ pub(super) fn info(state: &SpaceState, entry: &Entry) -> PortType {
         !entry.bits.message_accepted,
         "ipc_right_info: MACH_PORT_TYPE_MAREQUEST, not yet"
     );
-    port_type
+    (port_type, entry.bits.user_references)
 }
 
 /// Moves the rights of `old_name`'s entry to `new_name`'s, new and holding

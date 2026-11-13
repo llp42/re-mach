@@ -152,9 +152,46 @@ fn entry_type(entry: &Entry) -> PortType {
 pub fn type_of(space: &Space, name: PortName) -> PortType {
     let state = right::lookup_write(space, name);
     let entry = state.lookup(name).expect("mach_port_type: no entry");
-    let port_type = right::info(&state, entry);
+    let (port_type, _) = right::info(&state, entry);
     drop(state);
     port_type
+}
+
+/// How many references `name` holds in `space` of the kind numbered
+/// `right`, as `mach_port_get_refs` counts them: one for a receive right
+/// or a port set, a dead name's user references.
+///
+/// # Panics
+///
+/// If a dead name holds no user references, or for a strange right. If
+/// `right` is no kind of right, a send or send-once right, or `name` holds
+/// no right of that kind: not yet. As `right::lookup_write` and
+/// `right::info`.
+pub fn get_refs(space: &Space, name: PortName, right: u32) -> u32 {
+    // Mach has `MACH_PORT_RIGHT_NUMBER` kinds, five.
+    assert!(right < 5, "mach_port_get_refs: KERN_INVALID_VALUE, not yet");
+    let state = right::lookup_write(space, name);
+    let entry = state.lookup(name).expect("mach_port_get_refs: no entry");
+    let (port_type, user_references) = right::info(&state, entry);
+    drop(state);
+    // `MACH_PORT_TYPE(right)`.
+    if port_type.contains(PortType::from(Rights::from_bits_retain(1 << right))) {
+        match Right::try_from(right) {
+            Ok(Right::PortSet | Right::Receive) => 1,
+            Ok(Right::DeadName) => {
+                assert!(
+                    user_references > 0,
+                    "mach_port_get_refs: no user references"
+                );
+                u32::from(user_references)
+            }
+            Err(0) => panic!("mach_port_get_refs: MACH_PORT_RIGHT_SEND, not yet"),
+            Err(2) => panic!("mach_port_get_refs: MACH_PORT_RIGHT_SEND_ONCE, not yet"),
+            Err(right) => panic!("mach_port_get_refs: strange rights {right}"),
+        }
+    } else {
+        panic!("mach_port_get_refs: no right of that kind, not yet");
+    }
 }
 
 /// Destroys `name`'s rights in `space`, as `mach_port_destroy` does.
