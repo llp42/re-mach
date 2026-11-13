@@ -33,6 +33,8 @@ pub struct Processor {
     state: AtomicU8,
     /// How many threads wait on its run queues.
     queued: AtomicU32,
+    /// How many of them are not bound to it; changed under their lock.
+    unbound: AtomicU32,
     /// The ticks left of its thread's quantum.
     quantum: AtomicI32,
     /// Whether its thread runs its first quantum in succession.
@@ -87,6 +89,7 @@ impl Processor {
         Self {
             state: AtomicU8::new(State::Offline.number()),
             queued: AtomicU32::new(0),
+            unbound: AtomicU32::new(0),
             quantum: AtomicI32::new(0),
             first_quantum: AtomicBool::new(false),
             last_quantum: AtomicU32::new(0),
@@ -194,6 +197,8 @@ impl Processor {
         queues.lists[priority].push_back(unsafe { UnsafeRef::from_raw(thread) });
         if thread.bound().is_some() {
             queues.bound += 1;
+        } else {
+            self.unbound.fetch_add(1, Ordering::Relaxed);
         }
         self.queued.fetch_add(1, Ordering::Relaxed);
     }
@@ -236,6 +241,8 @@ impl Processor {
         let thread = unsafe { &*UnsafeRef::into_raw(thread) };
         if bound_only {
             queues.bound -= 1;
+        } else {
+            self.unbound.fetch_sub(1, Ordering::Relaxed);
         }
         self.queued.fetch_sub(1, Ordering::Relaxed);
         Some(thread)
@@ -263,6 +270,8 @@ impl Processor {
                 let thread = unsafe { &*UnsafeRef::into_raw(cursor.remove().unwrap()) };
                 if thread.bound().is_some() {
                     *bound -= 1;
+                } else {
+                    self.unbound.fetch_sub(1, Ordering::Relaxed);
                 }
                 self.queued.fetch_sub(1, Ordering::Relaxed);
                 stuck.push(thread);
@@ -564,20 +573,12 @@ impl ProcessorSet {
     }
 
     /// How many threads wait on its run queue: those its processors' run
-    /// queues hold that are not bound to them.
-    ///
-    /// # Panics
-    ///
-    /// If one of its processors is another running CPU's: that comes with
-    /// SMP.
+    /// queues hold that are not bound to them, read without their locks.
     pub(super) fn queued(&self) -> u32 {
         (0..MAX_CPUS)
             .map(|cpu| smp::of(cpu).processor())
             .filter(|processor| processor.set().is_some_and(|set| ptr::eq(set, self)))
-            .map(|processor| {
-                let queues = processor.run_queues();
-                processor.queued.load(Ordering::Relaxed) - queues.bound
-            })
+            .map(|processor| processor.unbound.load(Ordering::Relaxed))
             .sum()
     }
 
