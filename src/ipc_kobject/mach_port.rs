@@ -18,6 +18,7 @@ mig::subsystem! {
     3 mach_port_allocate_name(task = task::space_of, right: u32, name: PortName);
     4 mach_port_allocate(task = task::space_of, right: u32) -> (name: PortName);
     5 mach_port_destroy(task = task::space_of, name: PortName);
+    6 mach_port_deallocate(task = task::space_of, name: PortName);
     7 mach_port_get_refs(task = task::space_of, name: PortName, right: u32) -> (refs: u32);
 }
 
@@ -94,6 +95,19 @@ fn mach_port_allocate(space: Option<&Space>, right: u32) -> Result<PortName, Err
 fn mach_port_destroy(space: Option<&Space>, name: PortName) -> Result<(), Error> {
     let space = space.unwrap_or_else(|| panic!("mach_port_destroy: KERN_INVALID_TASK, not yet"));
     ipc::mach_port::destroy(space, name);
+    Ok(())
+}
+
+/// Serves `mach_port_deallocate`: a user reference of `name`'s right in
+/// `space` is released.
+///
+/// # Panics
+///
+/// With no space: not yet. As `ipc::mach_port::deallocate`.
+#[expect(clippy::unnecessary_wraps, reason = "MIG's routines give a Result")]
+fn mach_port_deallocate(space: Option<&Space>, name: PortName) -> Result<(), Error> {
+    let space = space.unwrap_or_else(|| panic!("mach_port_deallocate: KERN_INVALID_TASK, not yet"));
+    ipc::mach_port::deallocate(space, name);
     Ok(())
 }
 

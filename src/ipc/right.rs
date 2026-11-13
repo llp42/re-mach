@@ -151,6 +151,48 @@ fn check<'a>(state: &SpaceState, entry: &'a Entry) -> SpinlockGuard<'a, PortStat
     port_state
 }
 
+/// Releases a user reference of `name`'s right in the write-locked, alive
+/// space of state `state`, as `ipc_right_dealloc` does; the space is
+/// unlocked.
+///
+/// # Panics
+///
+/// If the space is dead, `name` has no entry, or a dead name has no user
+/// references, a request, an object or a message-accepted request. If a
+/// dead name has more than one user reference, for a send or send-once
+/// right, or for any other right: not yet. As `SpaceState::deallocate`.
+pub(super) fn deallocate(mut state: SleepLockWriteGuard<'_, SpaceState>, name: PortName) {
+    assert!(state.active, "ipc_right_dealloc: a dead space");
+    let entry = state
+        .map
+        .get(name.key())
+        .expect("ipc_right_dealloc: no entry");
+    let rights = entry.bits.rights.bits();
+    if rights == Rights::DEAD_NAME.bits() {
+        assert!(
+            entry.bits.user_references > 0
+                && entry.request == 0
+                && entry.object.is_none()
+                && !entry.bits.message_accepted,
+            "ipc_right_dealloc: a dead name with no user references, a request, an object or a message-accepted request"
+        );
+        assert!(
+            entry.bits.user_references == 1,
+            "ipc_right_dealloc: a dead name's user references above 1, not yet"
+        );
+        state.deallocate(name);
+        drop(state);
+    } else if rights == Rights::SEND_ONCE.bits() {
+        panic!("ipc_right_dealloc: MACH_PORT_TYPE_SEND_ONCE, not yet");
+    } else if rights == Rights::SEND.bits() {
+        panic!("ipc_right_dealloc: MACH_PORT_TYPE_SEND, not yet");
+    } else if rights == (Rights::SEND | Rights::RECEIVE).bits() {
+        panic!("ipc_right_dealloc: MACH_PORT_TYPE_SEND_RECEIVE, not yet");
+    } else {
+        panic!("ipc_right_dealloc: KERN_INVALID_RIGHT, not yet");
+    }
+}
+
 /// Destroys the rights of `name`'s entry in `space`, write-locked as
 /// `state` and alive, as `ipc_right_destroy` does; the space is unlocked.
 ///

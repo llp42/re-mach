@@ -202,6 +202,17 @@ pub fn destroy(space: &Space, name: PortName) {
     right::destroy(space, state, name);
 }
 
+/// Releases a user reference of `name`'s right in `space`, as
+/// `mach_port_deallocate` does.
+///
+/// # Panics
+///
+/// As `right::lookup_write` and `right::deallocate`.
+pub fn deallocate(space: &Space, name: PortName) {
+    let state = right::lookup_write(space, name);
+    right::deallocate(state, name);
+}
+
 /// Moves the rights of `old_name` in `space` to `new_name`, as
 /// `mach_port_rename` does.
 ///
