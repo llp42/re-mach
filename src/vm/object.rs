@@ -69,7 +69,7 @@ pub struct ObjectState {
     /// The object behind it, whose pages show where it has none; none yet.
     pub(super) shadow: Option<&'static Object>,
     /// How many paging operations on it are under way.
-    paging_in_progress: u32,
+    pub(super) paging_in_progress: u32,
     /// Its `Flags`; no pager is made for it yet.
     pub(super) flags: Flags,
 }
@@ -129,6 +129,11 @@ impl Object {
     /// Takes a reference on it.
     pub fn reference(&self) {
         self.references.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// How many references it has.
+    pub(super) fn references(&self) -> u32 {
+        self.references.load(Ordering::Relaxed)
     }
 
     /// Drops a reference on it, which is not its last.

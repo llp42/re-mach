@@ -4,7 +4,7 @@
 //! Address maps.
 
 use core::ops::{DerefMut, Range};
-use core::ptr;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 use intrusive_collections::rbtree::Cursor;
@@ -13,7 +13,7 @@ use intrusive_collections::{
 };
 
 use super::fault;
-use super::object::{self, Object, ObjectState, Offset};
+use super::object::{self, Flags, Object, ObjectState, Offset};
 use super::page;
 use super::phys_map::MachinePhysMap as _;
 use super::{Inheritance, Protection, VirtualAddress};
@@ -618,6 +618,198 @@ impl Map {
         Ok(())
     }
 
+    /// Removes the entries of `range` from the map, `contents` its contents
+    /// under its write lock, and their pages from its physical map,
+    /// splitting an entry at the range's end with one from `reservation`.
+    ///
+    /// # Panics
+    ///
+    /// If the range starts inside an entry, or an entry there is in
+    /// transition, a submap, wired or the kernel object's, or holds the only
+    /// reference on an object with no pager and no paging under way: not
+    /// yet. As `Contents::clip_end` and `MachinePhysMap::remove`.
+    fn delete(
+        &self,
+        contents: &mut Contents,
+        range: Range<VirtualAddress>,
+        reservation: &mut EntryReservation,
+    ) {
+        if let Some(entry) = contents.find(range.start) {
+            assert!(
+                entry.start() == range.start,
+                "vm_map_clip_start: splitting an entry, not yet"
+            );
+        }
+        // The free space hint moves before the range.
+        let first = contents.entries.lower_bound(Bound::Included(&range.start));
+        if contents
+            .first_free
+            .as_ref()
+            .map_or(self.bounds.start, |entry| entry.start())
+            >= range.start
+        {
+            contents.first_free = first.peek_prev().clone_pointer();
+        }
+        let mut address = range.start;
+        while let Some(entry) = contents
+            .entries
+            .lower_bound(Bound::Included(&address))
+            .clone_pointer()
+            .filter(|entry| entry.start() < range.end)
+        {
+            if range.end < entry.end() {
+                contents.clip_end(&entry, range.end, reservation);
+            }
+            assert!(
+                !entry.in_transition.load(Ordering::Relaxed),
+                "vm_map_delete: vm_map_entry_wait, not yet"
+            );
+            address = entry.end();
+            // vm_map_entry_delete.
+            let Backing::Object { object, .. } = &entry.backing else {
+                panic!("vm_map_entry_delete: a submap, not yet");
+            };
+            // SAFETY: the entry holds a reference on its object, which lives
+            // until vm_object_deallocate frees it.
+            if let Some(object) = unsafe { object.load(Ordering::Relaxed).as_ref() } {
+                assert!(
+                    entry.wire_count() == 0,
+                    "vm_map_entry_delete: vm_fault_unwire, not yet"
+                );
+                assert!(
+                    !ptr::eq(object, &raw const object::KERNEL_OBJECT),
+                    "vm_map_entry_delete: the kernel object, not yet"
+                );
+                // Entries are shared only by vm_map_fork, not yet.
+                self.phys_map
+                    .remove(usize::from(entry.start())..usize::from(entry.end()));
+                // The object's pages could go now if nothing else used it.
+                let state = object.lock();
+                assert!(
+                    state.flags.contains(Flags::PAGER_CREATED)
+                        || object.references() != 1
+                        || state.paging_in_progress != 0,
+                    "vm_map_entry_delete: vm_object_page_remove, not yet"
+                );
+                drop(state);
+                object.deallocate();
+            }
+            contents.size -= entry.end() - entry.start();
+            // SAFETY: the hint moved off the range above, the entry is not in
+            // transition, and `entry` is not used again.
+            drop(unsafe { contents.unlink(&self.bounds, &entry) });
+        }
+    }
+
+    /// Moves `range` out of the map into a new copy, holding its entries,
+    /// which take their objects' references: `vm_map_copyin` destroying its
+    /// source.
+    ///
+    /// # Panics
+    ///
+    /// If the copy or an entry can't be allocated, or the range holds more
+    /// than three entries. If `range` is empty or wraps, starts inside an
+    /// entry or where none is, holds a hole, or an entry there doesn't allow
+    /// reading, is a submap or its object is not temporary: not yet. As
+    /// `Contents::clip_end` and `Map::delete`.
+    pub fn copy_in(&self, range: Range<VirtualAddress>) -> CacheBox<MapCopy> {
+        assert!(
+            range.start != range.end,
+            "vm_map_copyin: zero bytes, not yet"
+        );
+        let start = range.start.align_down(PAGE_SIZE);
+        let end = range.end.next_multiple_of(PAGE_SIZE);
+        assert!(
+            range.start < range.end && start < end,
+            "vm_map_copyin: KERN_INVALID_ADDRESS, not yet"
+        );
+        // The header, before the lock; it keeps the range unrounded.
+        let mut copy = COPY_CACHE
+            .allocate(MapCopy {
+                kind: CopyKind::Entries,
+                offset: range.start,
+                size: range.end - range.start,
+                entries: RBTree::new(EntryAdapter::NEW),
+            })
+            .unwrap_or_else(|error| panic!("vm_map_copyin: {error:?}"));
+        // Taken before the lock, for the copy's entries and the splits.
+        let mut reservation = EntryReservation::new();
+        let mut guard = self.lock();
+        let contents = &mut *guard;
+        let mut entry = contents
+            .entries
+            .upper_bound(Bound::Included(&start))
+            .clone_pointer()
+            .filter(|entry| start < entry.end())
+            .unwrap_or_else(|| panic!("vm_map_copyin: KERN_INVALID_ADDRESS, not yet"));
+        assert!(
+            entry.start() == start,
+            "vm_map_clip_start: splitting an entry, not yet"
+        );
+        loop {
+            assert!(
+                entry.protection().contains(Protection::READ),
+                "vm_map_copyin: KERN_PROTECTION_FAILURE, not yet"
+            );
+            if end < entry.end() {
+                contents.clip_end(&entry, end, &mut reservation);
+            }
+            let Backing::Object { object, offset } = &entry.backing else {
+                panic!("vm_map_copyin: a submap, not yet");
+            };
+            let object = object.load(Ordering::Relaxed);
+            // vm_map_entry_copy: unwired and out of transition.
+            let mut new = reservation.take();
+            *new = Entry {
+                tree_link: RBTreeAtomicLink::new(),
+                gap_link: RBTreeAtomicLink::new(),
+                start: AtomicUsize::new(usize::from(entry.start())),
+                end: AtomicUsize::new(usize::from(entry.end())),
+                gap: AtomicUsize::new(entry.gap.load(Ordering::Relaxed)),
+                protection: AtomicU32::new(entry.protection().bits()),
+                max_protection: entry.max_protection,
+                inheritance: entry.inheritance,
+                backing: Backing::Object {
+                    object: AtomicPtr::new(object),
+                    offset: AtomicUsize::new(offset.load(Ordering::Relaxed)),
+                },
+                wire_count: AtomicU32::new(0),
+                wired_access: AtomicU32::new(Protection::empty().bits()),
+                in_transition: AtomicBool::new(false),
+            };
+            // SAFETY: the entry holds a reference on its object, which lives
+            // until vm_object_deallocate frees it.
+            let object = unsafe { object.as_ref() };
+            // The source goes, so a temporary object's reference moves to the
+            // copy; GNU Mach's use_shared_copy is set only by vm_map_fork.
+            assert!(
+                object.is_none_or(|object| object.lock().flags.contains(Flags::TEMPORARY)),
+                "vm_map_copyin: vm_object_copy_temporary, not yet"
+            );
+            // Another reference, as deleting the source drops its own.
+            if let Some(object) = object {
+                object.reference();
+            }
+            let copied = new.end();
+            let new = CacheBox::into_raw(new).as_ptr();
+            // SAFETY: the copy's tree takes the entry, once, until a map takes
+            // it or the copy is discarded.
+            copy.entries.insert(unsafe { UnsafeRef::from_raw(new) });
+            if copied >= end {
+                break;
+            }
+            entry = contents
+                .entries
+                .lower_bound(Bound::Included(&copied))
+                .clone_pointer()
+                .filter(|next| next.start() == copied)
+                .unwrap_or_else(|| panic!("vm_map_copyin: a hole, KERN_INVALID_ADDRESS, not yet"));
+        }
+        self.delete(contents, start..end, &mut reservation);
+        drop(guard);
+        copy
+    }
+
     /// Finds what `address` maps for a fault asking for `access`: the object
     /// behind it, locked, made first if its entry has none, where `address`
     /// is in it, what the entry allows, whether it is wired, and the map's
@@ -800,15 +992,63 @@ impl Contents {
             None => self.leading_gap = range.start - start,
         }
         let entry = CacheBox::into_raw(entry).as_ptr();
-        // SAFETY: the trees take the entry for good, once each.
+        // SAFETY: the trees take the entry, once each, until `unlink` gives
+        // it back.
         self.entries.insert(unsafe { UnsafeRef::from_raw(entry) });
         if gap != 0 {
             // SAFETY: as above.
             self.gaps.insert(unsafe { UnsafeRef::from_raw(entry) });
         }
         self.size += range.end - range.start;
-        // SAFETY: as above; entries are never freed yet.
+        // SAFETY: as above; `Map::delete` moves the free space hint off an
+        // entry before it goes.
         unsafe { UnsafeRef::from_raw(entry) }
+    }
+
+    /// Unlinks `entry` from the map of `bounds`, its write lock held: the
+    /// free space after it joins the entry before's, or the leading gap.
+    /// Returns it, to go back to its cache.
+    ///
+    /// # Safety
+    ///
+    /// `entry` is not the free space hint and not in transition, and the
+    /// caller uses no pointer to it afterwards.
+    ///
+    /// # Panics
+    ///
+    /// If `entry` is not in the map.
+    unsafe fn unlink(&mut self, bounds: &Range<VirtualAddress>, entry: &Entry) -> CacheBox<Entry> {
+        let start = entry.start();
+        let mut cursor = self.entries.find_mut(&start);
+        let previous = cursor.peek_prev().clone_pointer();
+        let entry = cursor.remove().expect("vm_map_entry_unlink: no entry");
+        let next = cursor.get().map_or(bounds.end, Entry::start);
+        if entry.gap_link.is_linked() {
+            let key = (entry.gap.load(Ordering::Relaxed), start);
+            self.gaps.find_mut(&key).remove();
+        }
+        match previous {
+            Some(previous) => {
+                if previous.gap_link.is_linked() {
+                    let key = (previous.gap.load(Ordering::Relaxed), previous.start());
+                    self.gaps.find_mut(&key).remove();
+                }
+                let gap = next - previous.end();
+                previous.gap.store(gap, Ordering::Relaxed);
+                if gap != 0 {
+                    self.gaps.insert(previous);
+                }
+            }
+            None => self.leading_gap = next - bounds.start,
+        }
+        let entry = NonNull::new(UnsafeRef::into_raw(entry)).unwrap();
+        // SAFETY: a map's entries come from `CacheBox::into_raw` of
+        // `ENTRY_CACHE`'s boxes (`link`, `clip_end`). Besides its trees, the
+        // free space hint and the caller's pointer, an entry is reached only
+        // under the map's lock, which the caller holds for writing, or by
+        // `Map::pageable` while it is in transition; the caller's contract
+        // rules out the others, so out of the trees, it is the box's alone.
+        unsafe { CacheBox::from_raw(&ENTRY_CACHE, entry) }
     }
 
     /// Splits `entry` at `end`, inside it: an entry from `reservation`
@@ -850,7 +1090,8 @@ impl Contents {
         }
         entry.gap.store(0, Ordering::Relaxed);
         let new = CacheBox::into_raw(new).as_ptr();
-        // SAFETY: the trees take the entry for good, once each.
+        // SAFETY: the trees take the entry, once each, until `unlink` gives
+        // it back.
         self.entries.insert(unsafe { UnsafeRef::from_raw(new) });
         if gap != 0 {
             // SAFETY: as above.
@@ -1085,17 +1326,31 @@ impl<'a> KeyAdapter<'a> for GapAdapter {
 }
 
 /// Memory copied out of a map while in transit, such as out-of-line data; so
-/// far only its kind and size.
-#[expect(dead_code, reason = "vm_map_copyin and vm_map_copyout use them")]
+/// far only its kind, range and entries.
+#[expect(dead_code, reason = "vm_map_copyout reads them")]
 pub struct MapCopy {
     /// How it holds the memory.
     kind: CopyKind,
-    /// Its size, in bytes.
+    /// Where the memory was, unrounded.
+    offset: VirtualAddress,
+    /// Its size, in bytes, unrounded.
     size: usize,
+    /// For `CopyKind::Entries`, its entries, by their old address; their gap
+    /// links are unused.
+    entries: RBTree<EntryAdapter>,
+}
+
+impl Drop for MapCopy {
+    fn drop(&mut self) {
+        assert!(
+            self.entries.is_empty(),
+            "vm_map_copy_discard: a copy holding entries, not yet"
+        );
+    }
 }
 
 /// How a copy holds its memory.
-#[expect(dead_code, reason = "vm_map_copyin and vm_map_copyout use them")]
+#[expect(dead_code, reason = "vm_map_copyout and the pageout path use them")]
 enum CopyKind {
     /// As map entries, like a map.
     Entries,

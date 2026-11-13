@@ -23,11 +23,11 @@ use super::memory_layout::{
 };
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
-use crate::smp;
 use crate::sync::{OnceLock, Spinlock};
 use crate::vm::Protection;
 use crate::vm::page::{self, Page};
 use crate::vm::phys_map::{MachinePhysMap, Wiring};
+use crate::{machine, smp};
 
 /// Entries per table.
 const ENTRIES: usize = 512;
@@ -331,6 +331,55 @@ impl MachinePhysMap for PhysMap {
         // Atomic, as the CPU sets accessed and dirty bits; it ignores this
         // one, so no TLB needs flushing.
         window_entry(address, 0).fetch_and(!WIRED.bits(), Ordering::Relaxed);
+    }
+
+    fn remove(&self, range: Range<usize>) {
+        assert!(
+            ptr::eq(self, Self::kernel()),
+            "pmap_remove: a user pmap, not yet"
+        );
+        assert!(
+            range.start >= MIN_KERNEL_ADDRESS,
+            "pmap_remove_range: {:#x} is not a kernel address",
+            range.start
+        );
+        let mut address = range.start;
+        while address < range.end {
+            // The end of the page table's span, or of the range.
+            let next = address
+                .checked_add(LARGE_PAGE_SIZE)
+                .map_or(range.end, |next| {
+                    (next & !(LARGE_PAGE_SIZE - 1)).min(range.end)
+                });
+            // Kernel space's PML4 entries are always there; its directories
+            // and page tables may not be.
+            let table = [2, 1].into_iter().all(|level| {
+                let entry = PageTableFlags::from_bits_truncate(
+                    window_entry(address, level).load(Ordering::Relaxed),
+                );
+                assert!(
+                    !entry.contains(PageTableFlags::PRESENT | PageTableFlags::HUGE_PAGE),
+                    "pmap_remove: a large page, not yet"
+                );
+                entry.contains(PageTableFlags::PRESENT)
+            });
+            if table {
+                for page in (address..next).step_by(PAGE_SIZE) {
+                    // Atomic, as the CPU sets accessed and dirty bits; they
+                    // are kept nowhere yet.
+                    if window_entry(page, 0).swap(0, Ordering::SeqCst) != 0 {
+                        self.resident.fetch_sub(1, Ordering::Relaxed);
+                        tlb::flush(VirtAddr::new(u64::try_from(page).unwrap()));
+                    }
+                }
+            }
+            address = next;
+        }
+        // The kernel physical map is active on every running CPU.
+        assert!(
+            machine::available_cpus() <= 1,
+            "PMAP_UPDATE_TLBS: signal_cpus, not yet"
+        );
     }
 
     fn protect(&self, range: Range<usize>, protection: Protection) {

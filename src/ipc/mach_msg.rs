@@ -152,7 +152,7 @@ pub fn trap(
     // A reply, with the send-once right it carries.
     assert!(
         reply.header().bits == MessageBits::new(Some(MessageType::PortSendOnce), None),
-        "mach_msg_trap: copying out bits {:#x}, not yet",
+        "mach_msg_trap: fast_copyout, bits {:#x}, not yet",
         u32::from(reply.header().bits)
     );
     let mut reply_state = reply_port.state.lock();

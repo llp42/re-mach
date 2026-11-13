@@ -23,9 +23,9 @@ use crate::vm::{self, Protection};
 ///
 /// If the walk finds at least as many names as the space's size. If the
 /// space is dead, no room is left in the IPC map, the space outgrew the
-/// arrays or holds no names: not yet. As `vm::user::allocate`,
-/// `Map::pageable` and `entry_type`. Always, at the arrays' copy-in: not
-/// yet.
+/// arrays, holds no names or its names need less room than the arrays have:
+/// not yet. As `vm::user::allocate`, `Map::pageable`, `entry_type` and
+/// `Map::copy_in`.
 pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
     let map = super::KERNEL_MAP
         .get()
@@ -99,7 +99,13 @@ pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
             panic!("mach_port_names: vm_map_pageable failed: {error:?}");
         }
     }
-    panic!("mach_port_names: vm_map_copyin, not yet");
+    // Copied in, the arrays leave the IPC map.
+    let (names, types) = (
+        map.copy_in(names..names + size_used),
+        map.copy_in(types..types + size_used),
+    );
+    assert!(size_used == size, "mach_port_names: kmem_free, not yet");
+    (names, types, actual)
 }
 
 /// The type of `entry`'s rights, its space locked, as
