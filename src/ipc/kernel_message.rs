@@ -4,7 +4,7 @@
 //! Kernel messages: messages in kernel buffers.
 
 use core::mem::{ManuallyDrop, offset_of};
-use core::ptr::NonNull;
+use core::ptr::{self, NonNull};
 use core::slice;
 
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
@@ -13,7 +13,9 @@ use super::MessageType;
 use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::error::Error;
 use crate::kalloc;
+use crate::slab::CacheBox;
 use crate::sync::CpuLocal;
+use crate::vm::map::{COPY_CACHE, Map, MapCopy};
 
 /// A message's header, in Mach's layout. Its ports are names as the user
 /// sent them, then, once copied in, ports' exposed addresses.
@@ -297,6 +299,65 @@ impl KernelMessage {
         );
         // SAFETY: the header's place, within the buffer.
         unsafe { self.0.byte_add(OVERHEAD) }.cast()
+    }
+
+    /// Copies its body out to its receiver, as `ipc_kmsg_copyout_body`
+    /// does: out-of-line memory moves into `map`, and its address replaces
+    /// its copy.
+    ///
+    /// # Panics
+    ///
+    /// If an item carries rights, out-of-line data is empty, or its memory
+    /// can't be copied out: not yet. As `Map::copy_out`.
+    pub(super) fn copy_out_body(&mut self, map: &Map) {
+        let end = usize::try_from(self.header().size).unwrap();
+        let message = self.message_mut();
+        let mut offset = size_of::<Header>();
+        while offset < end {
+            // Short and long type words are both 8 bytes here.
+            let place = offset;
+            let mut word = u64::from_le_bytes(message[place..place + 8].try_into().unwrap());
+            offset += 8;
+            let [name, size_low, size_high, ..] = word.to_le_bytes();
+            let size = u16::from_le_bytes([size_low, size_high]);
+            let number = word >> 32;
+            let length = usize::try_from((number * u64::from(size)).div_ceil(8)).unwrap();
+            // MACH_MSG_TYPE_PORT_ANY: from MOVE_RECEIVE to MAKE_SEND_ONCE.
+            assert!(
+                !(16..=21).contains(&name),
+                "ipc_kmsg_copyout_body: port rights, not yet"
+            );
+            // msgt_inline, bit 29; msgt_deallocate, bit 31.
+            if word & (1 << 29) != 0 {
+                word &= !(1 << 31);
+                offset += length;
+            } else {
+                assert!(
+                    length != 0,
+                    "ipc_kmsg_copyout_body: empty out-of-line data, not yet"
+                );
+                let data = usize::from_le_bytes(message[offset..offset + 8].try_into().unwrap());
+                let copy = NonNull::new(ptr::with_exposed_provenance_mut::<MapCopy>(data))
+                    .expect("ipc_kmsg_copyout_body: VM_MAP_COPY_NULL, not yet");
+                // SAFETY: out-of-line data enters a message only through
+                // MIG's `OutOfLine::into_parts`: the exposed address of a
+                // `COPY_CACHE` box from `CacheBox::into_raw`, which the
+                // message alone holds; the slot is overwritten below, so it
+                // is taken back once.
+                let copy = unsafe { CacheBox::from_raw(&COPY_CACHE, copy) };
+                let address = match map.copy_out(copy) {
+                    Ok(address) => address,
+                    Err((_, error)) => panic!(
+                        "ipc_kmsg_copyout_body: vm_map_copyout: {error:?}, vm_copyout_failure, not yet"
+                    ),
+                };
+                word |= 1 << 31;
+                message[offset..offset + 8].copy_from_slice(&usize::from(address).to_le_bytes());
+                offset += 8;
+            }
+            message[place..place + 8].copy_from_slice(&word.to_le_bytes());
+            offset = offset.next_multiple_of(8);
+        }
     }
 
     /// Its message, header then body, to the buffer's end.

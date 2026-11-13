@@ -34,7 +34,8 @@ bitflags::bitflags! {
 ///
 /// If no thread runs on the CPU, or the reply port has no send-once right.
 /// On every other path: not yet; as `kernel_message::get`,
-/// `ipc_kobject::server`, `Port::release` and `kernel_message::put`.
+/// `ipc_kobject::server`, `Port::release`, `KernelMessage::copy_out_body`
+/// and `kernel_message::put`.
 #[expect(
     clippy::too_many_lines,
     reason = "mach_msg_trap's fast path, in GNU Mach's order"
@@ -149,9 +150,12 @@ pub fn trap(
         receive_size >= reply_size,
         "mach_msg_trap: slow_copyout, MACH_RCV_TOO_LARGE, not yet"
     );
-    // A reply, with the send-once right it carries.
+    // A reply, with the send-once right it carries; complex if its body
+    // carries out-of-line memory.
+    let complex = reply.header().bits.is_complex();
+    let bits = MessageBits::new(Some(MessageType::PortSendOnce), None);
     assert!(
-        reply.header().bits == MessageBits::new(Some(MessageType::PortSendOnce), None),
+        reply.header().bits == if complex { bits.with_complex() } else { bits },
         "mach_msg_trap: fast_copyout, bits {:#x}, not yet",
         u32::from(reply.header().bits)
     );
@@ -177,9 +181,13 @@ pub fn trap(
         "mach_msg_trap: a protected payload, not yet"
     );
     let header = reply.header_mut();
-    header.bits = MessageBits::new(None, Some(MessageType::PortSendOnce));
+    let bits = MessageBits::new(None, Some(MessageType::PortSendOnce));
+    header.bits = if complex { bits.with_complex() } else { bits };
     header.local_port = usize::try_from(u32::from(name)).unwrap();
     header.remote_port = usize::try_from(u32::from(PortName::NULL)).unwrap();
+    if complex {
+        reply.copy_out_body(&thread.task().map);
+    }
     // fast_put: only a saved buffer is copied out here.
     assert!(
         reply.size() != PAGE_SIZE,

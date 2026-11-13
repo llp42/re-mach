@@ -123,9 +123,9 @@ impl Map {
     /// # Panics
     ///
     /// If `max_protection` is none, the next entry could be extended over
-    /// the range, the entry grown over it could merge with the next, or for
-    /// `Placement::Anywhere` if the map is too small or the free space hint
-    /// can't hold them: not yet. As `object::coalesce`.
+    /// the range, or the entry grown over it could merge with the next: not
+    /// yet. As `object::coalesce`, and for `Placement::Anywhere` as
+    /// `Contents::find_anywhere`.
     #[expect(
         clippy::too_many_lines,
         reason = "vm_map_enter's steps, in GNU Mach's order"
@@ -810,6 +810,99 @@ impl Map {
         copy
     }
 
+    /// Moves `copy`'s unwired entries into the map wherever they fit,
+    /// allowing reading and writing, as `vm_map_copyout` does for an entry
+    /// list; returns where its memory starts.
+    ///
+    /// # Errors
+    ///
+    /// `NoSpace` if they take the map past its size limit, and
+    /// `InvalidArgument` if its size overflows; the copy comes back with
+    /// the error.
+    ///
+    /// # Panics
+    ///
+    /// If the copy holds an object or pages, or a wired entry: not yet. As
+    /// `Contents::find_anywhere`.
+    pub fn copy_out(
+        &self,
+        mut copy: CacheBox<MapCopy>,
+    ) -> Result<VirtualAddress, (CacheBox<MapCopy>, Error)> {
+        match copy.kind {
+            CopyKind::Entries => {}
+            CopyKind::Object => panic!("vm_map_copyout: VM_MAP_COPY_OBJECT, not yet"),
+            CopyKind::Pages => panic!("vm_map_copyout: vm_map_copyout_page_list, not yet"),
+        }
+        let copy_start = copy.offset.align_down(PAGE_SIZE);
+        let size = (copy.offset + copy.size).next_multiple_of(PAGE_SIZE) - copy_start;
+        let mut contents = self.lock();
+        let start = contents.find_anywhere(&self.bounds, size);
+        // vm_map_enforce_limit, which the kernel's maps always pass.
+        let Some(new_size) = contents.size.checked_add(size) else {
+            drop(contents);
+            return Err((copy, Error::InvalidArgument));
+        };
+        if new_size > self.size_limit {
+            drop(contents);
+            return Err((copy, Error::NoSpace));
+        }
+        let last = contents
+            .entries
+            .upper_bound(Bound::Included(&start))
+            .clone_pointer();
+        let next = last
+            .as_ref()
+            .map_or(self.bounds.start + contents.leading_gap, |entry| {
+                entry.end() + entry.gap.load(Ordering::Relaxed)
+            });
+        // The free space hint moves on to the last entry if it was the one
+        // before them.
+        let follows_first_free = contents
+            .first_free
+            .as_ref()
+            .map_or(self.bounds.start, |entry| entry.end())
+            == start;
+        // Each entry is moved and reset out of the copy's tree, as it is
+        // linked; GNU Mach does both before vm_map_copy_insert. `link` adds
+        // its size to the map's.
+        let mut previous = last;
+        while let Some(entry) = copy.entries.front_mut().remove() {
+            let entry = NonNull::new(UnsafeRef::into_raw(entry)).unwrap();
+            // SAFETY: a copy's entries come from `CacheBox::into_raw` of
+            // `ENTRY_CACHE`'s boxes (`Map::copy_in`), and its tree held the
+            // only pointer to each; the copy has one owner and its entries'
+            // gap links are unused, so out of the tree, it is the box's alone.
+            let mut entry = unsafe { CacheBox::from_raw(&ENTRY_CACHE, entry) };
+            assert!(
+                entry.wire_count() == 0,
+                "vm_map_copyout: a wired entry, PMAP_ENTER, not yet"
+            );
+            let range = start + (entry.start() - copy_start)..start + (entry.end() - copy_start);
+            entry
+                .start
+                .store(usize::from(range.start), Ordering::Relaxed);
+            entry.end.store(usize::from(range.end), Ordering::Relaxed);
+            entry.inheritance = Inheritance::Copy;
+            entry.protection.store(
+                (Protection::READ | Protection::WRITE).bits(),
+                Ordering::Relaxed,
+            );
+            entry.max_protection = Protection::all();
+            // The copy kept its source's gap; the free space after it now
+            // reaches the next entry.
+            entry.gap.store(next - range.end, Ordering::Relaxed);
+            previous = Some(contents.link(self.bounds.start, previous, entry));
+        }
+        if follows_first_free {
+            contents.first_free = previous;
+        }
+        let address = start + (copy.offset - copy_start);
+        // vm_map_copy_insert frees the header.
+        drop(copy);
+        drop(contents);
+        Ok(address)
+    }
+
     /// Finds what `address` maps for a fault asking for `access`: the object
     /// behind it, locked, made first if its entry has none, where `address`
     /// is in it, what the entry allows, whether it is wired, and the map's
@@ -941,12 +1034,13 @@ impl Contents {
     }
 
     /// Where `size` bytes fit anywhere in a map of `bounds`: at its start
-    /// while it is empty, else right after `first_free`.
+    /// while it is empty, else right after `first_free`, else after the
+    /// smallest gap that holds them.
     ///
     /// # Panics
     ///
-    /// If an empty map is too small for them, or `first_free` is none or
-    /// its gap too small: not yet.
+    /// If no free space holds them, or other gaps are as large as the one
+    /// found: not yet.
     fn find_anywhere(&self, bounds: &Range<VirtualAddress>, size: usize) -> VirtualAddress {
         if self.entries.is_empty() {
             assert!(
@@ -955,11 +1049,29 @@ impl Contents {
             );
             return bounds.start;
         }
-        self.first_free
+        if let Some(entry) = self
+            .first_free
             .as_ref()
             .filter(|entry| entry.gap.load(Ordering::Relaxed) >= size)
-            .expect("vm_map_find_entry_anywhere: the gap tree, not yet")
-            .end()
+        {
+            return entry.end();
+        }
+        let fit = self
+            .gaps
+            .lower_bound(Bound::Included(&(size, VirtualAddress::from(0))));
+        let entry = fit
+            .get()
+            .unwrap_or_else(|| panic!("vm_map_find_entry_anywhere: no more room, not yet"));
+        // GNU Mach takes the last inserted of equal gaps; this tree orders
+        // them by address.
+        let gap = entry.gap.load(Ordering::Relaxed);
+        assert!(
+            fit.peek_next()
+                .get()
+                .is_none_or(|next| next.gap.load(Ordering::Relaxed) != gap),
+            "vm_map_find_entry_anywhere: the gap list, not yet"
+        );
+        entry.end()
     }
 
     /// Links `entry` after `previous`, or first, keeping the gaps and size
@@ -1327,7 +1439,6 @@ impl<'a> KeyAdapter<'a> for GapAdapter {
 
 /// Memory copied out of a map while in transit, such as out-of-line data; so
 /// far only its kind, range and entries.
-#[expect(dead_code, reason = "vm_map_copyout reads them")]
 pub struct MapCopy {
     /// How it holds the memory.
     kind: CopyKind,
@@ -1350,7 +1461,10 @@ impl Drop for MapCopy {
 }
 
 /// How a copy holds its memory.
-#[expect(dead_code, reason = "vm_map_copyout and the pageout path use them")]
+#[expect(
+    dead_code,
+    reason = "vm_map_copyin_object and the page-list copy-in make them"
+)]
 enum CopyKind {
     /// As map entries, like a map.
     Entries,
@@ -1367,7 +1481,7 @@ static MAP_CACHE: Cache<Map> = Cache::new("vm_map");
 static ENTRY_CACHE: Cache<Entry> = Cache::new("vm_map_entry");
 
 /// The cache copies come from.
-static COPY_CACHE: Cache<MapCopy> = Cache::new("vm_map_copy");
+pub static COPY_CACHE: Cache<MapCopy> = Cache::new("vm_map_copy");
 
 /// Sets up address maps, on the boot CPU.
 pub fn init() {
