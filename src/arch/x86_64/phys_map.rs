@@ -79,6 +79,9 @@ const DIRECT_MAP_PAGE: PageTableFlags = LARGE_PAGE
 /// Kernel memory's page: writable.
 const KERNEL_PAGE: PageTableFlags = TABLE;
 
+/// A wired mapping's software bit.
+const WIRED: PageTableFlags = PageTableFlags::BIT_9;
+
 /// Entry of a lower table in a user physical map.
 const USER_TABLE: PageTableFlags = TABLE.union(PageTableFlags::USER_ACCESSIBLE);
 
@@ -195,10 +198,34 @@ impl MachinePhysMap for PhysMap {
     }
 
     fn enter(&self, address: usize, physical: PhysAddr, protection: Protection, wiring: Wiring) {
-        assert!(
-            !ptr::eq(self, Self::kernel()),
-            "pmap_enter: the kernel pmap, not yet"
-        );
+        if ptr::eq(self, Self::kernel()) {
+            assert!(
+                address >= MIN_KERNEL_ADDRESS,
+                "pmap_enter: {address:#x} is not a kernel address"
+            );
+            assert!(
+                page::lookup(physical).is_some(),
+                "pmap_enter: memory outside the page array, uncached, not yet"
+            );
+            assert!(
+                !protection.contains(Protection::EXECUTE),
+                "pmap_enter: executable kernel memory, not yet"
+            );
+            let mut flags = PageTableFlags::PRESENT;
+            if protection.contains(Protection::WRITE) {
+                flags |= PageTableFlags::WRITABLE;
+            }
+            if matches!(wiring, Wiring::Wired) {
+                flags |= WIRED;
+            }
+            assert!(
+                Self::extract_kernel(address).is_none(),
+                "pmap_enter: pmap_remove_range on the page mapped there, not yet"
+            );
+            self.resident.fetch_add(1, Ordering::Relaxed);
+            enter_kernel_page(address, physical, flags);
+            return;
+        }
         assert!(
             address < MAX_USER_ADDRESS,
             "pmap_enter: {address:#x} is not a user address"

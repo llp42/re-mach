@@ -9,8 +9,8 @@ use super::{MessageType, object};
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
 use crate::slab::CacheBox;
-use crate::vm;
 use crate::vm::map::{MapCopy, Placement};
+use crate::vm::{self, Protection};
 
 /// The names `space` holds rights under and their types, as
 /// `mach_port_names` lists them: each array moved into a copy, and how many
@@ -18,23 +18,44 @@ use crate::vm::map::{MapCopy, Placement};
 ///
 /// # Panics
 ///
-/// If the space is dead, or no room is left in the IPC map: not yet. As
-/// `vm::user::allocate`. Always, at wiring the arrays: not yet.
+/// If the space is dead, no room is left in the IPC map, or the space
+/// outgrew the arrays: not yet. As `vm::user::allocate` and
+/// `Map::pageable`. Always, at the space's walk: not yet.
 pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
-    let state = space.state.read();
-    assert!(state.active, "mach_port_names: a dead space, not yet");
-    // At most this many names.
-    let bound = usize::try_from(state.size).unwrap();
-    let size = (bound * size_of::<PortName>()).next_multiple_of(PAGE_SIZE);
-    drop(state);
     let map = super::KERNEL_MAP
         .get()
         .expect("mach_port_names: no IPC map");
-    let _names = vm::user::allocate(map, Placement::Anywhere, size)
-        .unwrap_or_else(|_| panic!("mach_port_names: no more room in ipc_kernel_map, not yet"));
-    let _types = vm::user::allocate(map, Placement::Anywhere, size)
-        .unwrap_or_else(|_| panic!("mach_port_names: no more room in ipc_kernel_map, not yet"));
-    panic!("mach_port_names: vm_map_pageable, not yet");
+    // The arrays' size, and where they are once allocated.
+    let mut size = 0;
+    let mut arrays = None;
+    // Allocated with the space unlocked, until they hold all its names.
+    let _state = loop {
+        let state = space.state.read();
+        assert!(state.active, "mach_port_names: a dead space, not yet");
+        // At most this many names.
+        let bound = usize::try_from(state.size).unwrap();
+        let size_needed = (bound * size_of::<PortName>()).next_multiple_of(PAGE_SIZE);
+        if size_needed <= size {
+            break state;
+        }
+        drop(state);
+        assert!(arrays.is_none(), "mach_port_names: kmem_free, not yet");
+        size = size_needed;
+        let names = vm::user::allocate(map, Placement::Anywhere, size)
+            .unwrap_or_else(|_| panic!("mach_port_names: no more room in ipc_kernel_map, not yet"));
+        let types = vm::user::allocate(map, Placement::Anywhere, size)
+            .unwrap_or_else(|_| panic!("mach_port_names: no more room in ipc_kernel_map, not yet"));
+        // Wired, so filling them can't fault while the space is locked.
+        for array in [names, types] {
+            if let Err(error) =
+                map.pageable(array..array + size, Protection::READ | Protection::WRITE)
+            {
+                panic!("mach_port_names: vm_map_pageable failed: {error:?}");
+            }
+        }
+        arrays = Some((names, types));
+    };
+    panic!("mach_port_names: ipc_port_timestamp and the space's walk, not yet");
 }
 
 /// Inserts the right `message_type` names, for `port`, in `space` as

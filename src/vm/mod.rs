@@ -84,7 +84,7 @@ impl Sub for VirtualAddress {
 }
 
 /// What a child task gets of memory; only the values used here.
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Inheritance {
     /// A copy of it.
     Copy,

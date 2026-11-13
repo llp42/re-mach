@@ -6,7 +6,7 @@
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use super::map::Map;
+use super::map::{Backing, Entry, Map};
 use super::object::{Flags, Object, ObjectState};
 use super::page::{self, Page};
 use super::phys_map::{MachinePhysMap as _, Wiring};
@@ -16,9 +16,18 @@ use crate::error::Error;
 use crate::smp;
 use crate::sync::TokenGuard;
 
+/// What a fault is for.
+#[derive(Clone, Copy)]
+pub enum Purpose {
+    /// An access to the page.
+    Access,
+    /// Giving the page its entry's wiring.
+    ChangeWiring,
+}
+
 /// Resolves a fault on the page at `address` in `map`, which asked for
-/// `access`: looks the address up, finds the page, checks the map's
-/// version, maps the page and activates it.
+/// `access`, for `purpose`: looks the address up, finds the page, checks
+/// the map's version, maps the page, then wires it or activates it.
 ///
 /// # Errors
 ///
@@ -26,16 +35,27 @@ use crate::sync::TokenGuard;
 ///
 /// # Panics
 ///
-/// As `Map::lookup`, `fault_page`, `MachinePhysMap::enter`, `Page::activate`
-/// and `Object::deallocate`. If a lookup after a change to the map fails or
-/// finds another page, the object's copy changed, or a wired page lost the
-/// access it asked for: not yet.
+/// As `Map::lookup`, `fault_page`, `MachinePhysMap::enter`, `Page::wire`,
+/// `Page::activate` and `Object::deallocate`. If a lookup after a change to
+/// the map fails or finds another page, the object's copy changed, a wired
+/// page lost the access it asked for, or for `Purpose::ChangeWiring` if
+/// the entry is not wired: not yet.
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the lookups' and vm_fault_page's guards are moved out and dropped first"
 )]
-pub fn fault(map: &Map, address: usize, access: Protection) -> Result<(), Error> {
+pub fn fault(map: &Map, address: usize, access: Protection, purpose: Purpose) -> Result<(), Error> {
     let mut lookup = map.lookup(VirtualAddress::from(address), access)?;
+    // A wired page is faulted in for all its entry allows.
+    let access = if lookup.wired {
+        lookup.protection
+    } else {
+        access
+    };
+    assert!(
+        lookup.wired || matches!(purpose, Purpose::Access),
+        "vm_fault: unwiring through vm_fault_page's must_be_resident, not yet"
+    );
     // A reference of its own keeps the object while the map changes.
     lookup.object.reference();
     lookup.state.begin_paging();
@@ -83,17 +103,83 @@ pub fn fault(map: &Map, address: usize, access: Protection) -> Result<(), Error>
     map.phys_map()
         .enter(address, found.page.address(), protection, wiring);
     let mut state = lookup.object.lock();
-    // Reference bits are kept in software: a page on a paging queue stays.
-    if !found.page.is_on_paging_queue() {
-        found.page.activate();
+    match purpose {
+        Purpose::ChangeWiring if wired => found.page.wire(),
+        Purpose::ChangeWiring => panic!("vm_fault: vm_page_unwire, not yet"),
+        Purpose::Access => {
+            // Reference bits are kept in software: a page on a paging queue
+            // stays.
+            if !found.page.is_on_paging_queue() {
+                found.page.activate();
+            }
+            found.page.set_referenced();
+        }
     }
-    found.page.set_referenced();
     drop(verified);
     found.page.clear_busy();
     state.end_paging();
     drop(state);
     lookup.object.deallocate();
     Ok(())
+}
+
+/// Wires the pages of `entry` in `map`, while the map is unlocked and the
+/// entry in transition: each through `wire_fast`, else by a fault changing
+/// its wiring.
+///
+/// # Panics
+///
+/// As `wire_fast` and `fault`.
+pub(super) fn wire(map: &Map, entry: &Entry) {
+    // pmap_pageable has no counterpart: the machine's does nothing.
+    let range = usize::from(entry.start())..usize::from(entry.end());
+    for address in range.step_by(PAGE_SIZE) {
+        if wire_fast(address, entry).is_err() {
+            // Assumed to succeed, as in GNU Mach.
+            let _ = fault(map, address, Protection::empty(), Purpose::ChangeWiring);
+        }
+    }
+}
+
+/// Wires the page at `address` in `entry` if it is resident and nothing
+/// else goes on there, as `fault` would with no lookup; counts a fault.
+///
+/// # Errors
+///
+/// `Failure` for a submap or a page not resident, to be faulted in.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU, or the entry has no object. If the page
+/// is resident: not yet.
+fn wire_fast(address: usize, entry: &Entry) -> Result<(), Error> {
+    let task = smp::current()
+        .active_thread()
+        .expect("vm_fault_wire_fast: no current thread")
+        .task();
+    STATISTICS.faults.fetch_add(1, Ordering::Relaxed);
+    task.faults.fetch_add(1, Ordering::Relaxed);
+    let Backing::Object { object, offset } = &entry.backing else {
+        return Err(Error::Failure);
+    };
+    // SAFETY: the entry holds a reference on its object, which lives until
+    // vm_object_deallocate frees it.
+    let object =
+        unsafe { object.load(Ordering::Relaxed).as_ref() }.expect("vm_fault_wire_fast: no object");
+    let offset = offset.load(Ordering::Relaxed) + (address - usize::from(entry.start()));
+    let mut state = object.lock();
+    // A reference of its own keeps the object meanwhile.
+    object.reference();
+    state.begin_paging();
+    assert!(
+        state.lookup(offset).is_none(),
+        "vm_fault_wire_fast: a resident page, not yet"
+    );
+    // Given up: the slow way finds the page.
+    state.end_paging();
+    drop(state);
+    object.deallocate();
+    Err(Error::Failure)
 }
 
 /// What `fault_page` finds.

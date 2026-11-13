@@ -5,18 +5,20 @@
 
 use core::ops::{DerefMut, Range};
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 use intrusive_collections::rbtree::Cursor;
 use intrusive_collections::{
     Bound, KeyAdapter, RBTree, RBTreeAtomicLink, UnsafeRef, intrusive_adapter,
 };
 
+use super::fault;
 use super::object::{self, Object, ObjectState, Offset};
 use super::page;
 use super::phys_map::MachinePhysMap as _;
 use super::{Inheritance, Protection, VirtualAddress};
 use crate::arch::{PAGE_SIZE, PhysMap};
+use crate::collections::ArrayVec;
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{OnceLock, SleepLock, TokenGuard};
@@ -54,6 +56,8 @@ struct Contents {
     first_free: Option<UnsafeRef<Entry>>,
     /// How much it maps, in bytes.
     size: usize,
+    /// How much of it is wired, in bytes.
+    size_wired: usize,
     /// Its version, moved on by every write lock.
     timestamp: u32,
 }
@@ -75,6 +79,7 @@ impl Map {
                 leading_gap,
                 first_free: None,
                 size: 0,
+                size_wired: 0,
                 timestamp: 0,
             }),
         }
@@ -153,6 +158,7 @@ impl Map {
             },
             wire_count: AtomicU32::new(0),
             wired_access: AtomicU32::new(Protection::empty().bits()),
+            in_transition: AtomicBool::new(false),
         })?;
         let mut contents = self.lock();
         let range = match placement {
@@ -189,6 +195,7 @@ impl Map {
         }
         let extends = |neighbour: &Entry| {
             !matches!(neighbour.backing, Backing::Submap(_))
+                && !neighbour.in_transition.load(Ordering::Relaxed)
                 && neighbour.inheritance == entry.inheritance
                 && neighbour.protection() == entry.protection()
                 && neighbour.max_protection == entry.max_protection
@@ -304,6 +311,7 @@ impl Map {
             backing: Backing::Submap(submap.get().unwrap()),
             wire_count: AtomicU32::new(0),
             wired_access: AtomicU32::new(Protection::empty().bits()),
+            in_transition: AtomicBool::new(false),
         })?;
         let entry = contents.link(self.bounds.start, previous, entry);
         if follows_first_free {
@@ -355,6 +363,7 @@ impl Map {
             },
             wire_count: AtomicU32::new(1),
             wired_access: AtomicU32::new((Protection::READ | Protection::WRITE).bits()),
+            in_transition: AtomicBool::new(false),
         })?;
         // The free space hint moves on to it.
         contents.first_free = Some(contents.link(self.bounds.start, previous, entry));
@@ -445,6 +454,160 @@ impl Map {
         Ok(())
     }
 
+    /// Sets what the entries of `range`, cut to the map's bounds, allow
+    /// while wired to `access`, splitting them at its end, then wires those
+    /// newly given access; the range holds no hole, and each entry allows
+    /// `access`.
+    ///
+    /// # Errors
+    ///
+    /// `NoSpace` if no entry holds the range's start, a hole lies in the
+    /// range, or an entry there doesn't allow `access`; an entry split before
+    /// that stays split.
+    ///
+    /// # Panics
+    ///
+    /// If no entry can be allocated. If the range starts inside an entry,
+    /// an entry is to be unwired or is a submap, or the map is not over the
+    /// kernel's physical map: not yet. As `Contents::clip_end`,
+    /// `object::allocate` and `fault::wire`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "vm_map_pageable's and vm_map_pageable_scan's steps, in GNU Mach's order"
+    )]
+    pub fn pageable(&self, range: Range<VirtualAddress>, access: Protection) -> Result<(), Error> {
+        // Taken before the lock, for the splits to use.
+        let mut reservation = EntryReservation::new();
+        let mut guard = self.lock();
+        let contents = &mut *guard;
+        let end = range.end.min(self.bounds.end);
+        let start = range.start.max(self.bounds.start).min(end);
+        let Some(first) = contents.find(start).map(Entry::start) else {
+            return Err(Error::NoSpace);
+        };
+        assert!(
+            first == start,
+            "vm_map_clip_start: splitting an entry, not yet"
+        );
+        // Pass 1: the last entry is split at the end; no hole, and every
+        // entry allows `access`.
+        let mut address = start;
+        while let Some(entry) = contents
+            .entries
+            .lower_bound(Bound::Included(&address))
+            .clone_pointer()
+            .filter(|entry| entry.start() < end)
+        {
+            if end < entry.end() {
+                contents.clip_end(&entry, end, &mut reservation);
+            }
+            let next = contents
+                .entries
+                .lower_bound(Bound::Included(&entry.end()))
+                .get()
+                .map(Entry::start);
+            if (entry.end() < end && next.is_none_or(|next| next > entry.end()))
+                || !entry.protection().contains(access)
+            {
+                return Err(Error::NoSpace);
+            }
+            address = entry.end();
+        }
+        // Pass 2: the wired access.
+        let mut cursor = contents.entries.lower_bound(Bound::Included(&start));
+        while let Some(entry) = cursor.get().filter(|entry| entry.start() < end) {
+            entry.wired_access.store(access.bits(), Ordering::Relaxed);
+            cursor.move_next();
+        }
+        // vm_map_pageable_scan, pass 1: the counts, and whether any entry
+        // needs wiring faults.
+        let mut wire_faults = false;
+        let mut cursor = contents.entries.lower_bound(Bound::Included(&start));
+        while let Some(entry) = cursor.get().filter(|entry| entry.start() < end) {
+            cursor.move_next();
+            if entry.wired_access().is_empty() || entry.protection().is_empty() {
+                assert!(
+                    entry.wire_count() == 0,
+                    "vm_map_pageable_scan: vm_fault_unwire, not yet"
+                );
+                continue;
+            }
+            if entry.wire_count() == 0 {
+                // No entry needs a copy yet; one with no object gets one.
+                let Backing::Object { object, offset } = &entry.backing else {
+                    panic!("vm_map_lookup: a submap, not yet");
+                };
+                if object.load(Ordering::Relaxed).is_null() {
+                    let new = object::allocate(entry.end() - entry.start());
+                    object.store(ptr::from_ref(new).cast_mut(), Ordering::Relaxed);
+                    offset.store(0, Ordering::Relaxed);
+                }
+            }
+            // vm_map_entry_inc_wired: only a first wiring faults, so the
+            // count stops at 2.
+            let count = entry.wire_count();
+            if count <= 1 {
+                if count == 0 {
+                    contents.size_wired += entry.end() - entry.start();
+                }
+                entry.wire_count.store(count + 1, Ordering::Relaxed);
+            }
+            wire_faults |= entry.wire_count() == 1;
+        }
+        if !wire_faults {
+            drop(guard);
+            return Ok(());
+        }
+        // Pass 2: faults lock the map, so it is unlocked meanwhile, its
+        // entries in transition.
+        assert!(
+            ptr::eq(self.phys_map, PhysMap::kernel()),
+            "vm_map_pageable_scan: vm_map_lock_set_recursive, not yet"
+        );
+        let mut cursor = contents.entries.lower_bound(Bound::Included(&start));
+        while let Some(entry) = cursor.get().filter(|entry| entry.end() <= end) {
+            assert!(
+                !entry.in_transition.load(Ordering::Relaxed),
+                "vm_map_pageable_scan: an entry in transition"
+            );
+            // Nothing waits for an entry in transition yet.
+            entry.in_transition.store(true, Ordering::Relaxed);
+            cursor.move_next();
+        }
+        drop(guard);
+        // Entries in transition stay put; each is found by address.
+        let mut address = start;
+        loop {
+            let contents = self.contents.read();
+            let entry = contents
+                .entries
+                .lower_bound(Bound::Included(&address))
+                .clone_pointer()
+                .filter(|entry| entry.end() <= end);
+            drop(contents);
+            let Some(entry) = entry else {
+                break;
+            };
+            // Only this call left a count at 1.
+            if entry.wire_count() == 1 {
+                fault::wire(self, &entry);
+            }
+            address = entry.end();
+        }
+        let contents = self.lock();
+        let mut cursor = contents.entries.lower_bound(Bound::Included(&start));
+        while let Some(entry) = cursor.get().filter(|entry| entry.end() <= end) {
+            assert!(
+                entry.in_transition.load(Ordering::Relaxed),
+                "vm_map_pageable_scan: an entry out of transition"
+            );
+            entry.in_transition.store(false, Ordering::Relaxed);
+            cursor.move_next();
+        }
+        drop(contents);
+        Ok(())
+    }
+
     /// Finds what `address` maps for a fault asking for `access`: the object
     /// behind it, locked, made first if its entry has none, where `address`
     /// is in it, what the entry allows, whether it is wired, and the map's
@@ -456,8 +619,8 @@ impl Map {
     ///
     /// # Panics
     ///
-    /// If its object can't be made. For a submap, an entry that doesn't
-    /// allow `access` or a wired one: not yet.
+    /// If its object can't be made. For a submap or an entry that doesn't
+    /// allow `access`: not yet.
     pub fn lookup(&self, address: VirtualAddress, access: Protection) -> Result<Lookup, Error> {
         let contents = self.contents.read();
         let entry = contents.find(address).ok_or(Error::InvalidAddress)?;
@@ -637,6 +800,108 @@ impl Contents {
         // SAFETY: as above; entries are never freed yet.
         unsafe { UnsafeRef::from_raw(entry) }
     }
+
+    /// Splits `entry` at `end`, inside it: an entry from `reservation`
+    /// takes the part from `end` on, with the free space after it and a
+    /// reference on its object.
+    ///
+    /// # Panics
+    ///
+    /// If `reservation` is used up, or for a submap: not yet.
+    fn clip_end(&mut self, entry: &Entry, end: VirtualAddress, reservation: &mut EntryReservation) {
+        let Backing::Object { object, offset } = &entry.backing else {
+            panic!("_vm_map_clip_end: a submap, not yet");
+        };
+        let gap = entry.gap.load(Ordering::Relaxed);
+        // A full copy of it, from `end` on.
+        let mut new = reservation.take();
+        *new = Entry {
+            tree_link: RBTreeAtomicLink::new(),
+            gap_link: RBTreeAtomicLink::new(),
+            start: AtomicUsize::new(usize::from(end)),
+            end: AtomicUsize::new(usize::from(entry.end())),
+            gap: AtomicUsize::new(gap),
+            protection: AtomicU32::new(entry.protection().bits()),
+            max_protection: entry.max_protection,
+            inheritance: entry.inheritance,
+            backing: Backing::Object {
+                object: AtomicPtr::new(object.load(Ordering::Relaxed)),
+                offset: AtomicUsize::new(offset.load(Ordering::Relaxed) + (end - entry.start())),
+            },
+            wire_count: AtomicU32::new(entry.wire_count()),
+            wired_access: AtomicU32::new(entry.wired_access().bits()),
+            in_transition: AtomicBool::new(entry.in_transition.load(Ordering::Relaxed)),
+        };
+        entry.end.store(usize::from(end), Ordering::Relaxed);
+        // Linked after it: the free space after it moves to the new entry.
+        if entry.gap_link.is_linked() {
+            let key = (gap, entry.start());
+            self.gaps.find_mut(&key).remove();
+        }
+        entry.gap.store(0, Ordering::Relaxed);
+        let new = CacheBox::into_raw(new).as_ptr();
+        // SAFETY: the trees take the entry for good, once each.
+        self.entries.insert(unsafe { UnsafeRef::from_raw(new) });
+        if gap != 0 {
+            // SAFETY: as above.
+            self.gaps.insert(unsafe { UnsafeRef::from_raw(new) });
+        }
+        // SAFETY: the entry holds a reference on its object, which lives
+        // until vm_object_deallocate frees it.
+        if let Some(object) = unsafe { object.load(Ordering::Relaxed).as_ref() } {
+            object.reference();
+        }
+    }
+}
+
+/// Entries allocated before a map's lock, for one operation to take under
+/// it, so none is allocated there; those left go back to their cache when
+/// it drops.
+struct EntryReservation(ArrayVec<CacheBox<Entry>, 4>);
+
+impl EntryReservation {
+    /// A full one.
+    ///
+    /// # Panics
+    ///
+    /// If an entry can't be allocated.
+    fn new() -> Self {
+        let mut entries = ArrayVec::new();
+        while !entries.is_full() {
+            let entry = ENTRY_CACHE
+                .allocate(Entry {
+                    tree_link: RBTreeAtomicLink::new(),
+                    gap_link: RBTreeAtomicLink::new(),
+                    start: AtomicUsize::new(0),
+                    end: AtomicUsize::new(0),
+                    gap: AtomicUsize::new(0),
+                    protection: AtomicU32::new(Protection::empty().bits()),
+                    max_protection: Protection::empty(),
+                    inheritance: Inheritance::Copy,
+                    backing: Backing::Object {
+                        object: AtomicPtr::new(ptr::null_mut()),
+                        offset: AtomicUsize::new(0),
+                    },
+                    wire_count: AtomicU32::new(0),
+                    wired_access: AtomicU32::new(Protection::empty().bits()),
+                    in_transition: AtomicBool::new(false),
+                })
+                .unwrap_or_else(|error| panic!("vm_map_entry_create: {error:?}"));
+            entries.push(entry);
+        }
+        Self(entries)
+    }
+
+    /// One of its entries, to be filled in.
+    ///
+    /// # Panics
+    ///
+    /// If none is left: more than 4 entries in one operation, not yet.
+    fn take(&mut self) -> CacheBox<Entry> {
+        self.0
+            .pop()
+            .expect("vm_map: more than 4 entries in one operation, not yet")
+    }
 }
 
 /// A range of a map and what it maps; so far only what an entry of an
@@ -663,23 +928,26 @@ pub struct Entry {
     /// What a child task gets of it.
     inheritance: Inheritance,
     /// What backs it.
-    backing: Backing,
+    pub(super) backing: Backing,
     /// How many times it is wired: its pages stay resident and mapped;
     /// changed only under the map's write lock.
     wire_count: AtomicU32,
     /// What it allows while wired, as `Protection`'s bits; changed only
     /// under the map's write lock.
     wired_access: AtomicU32,
+    /// Whether a wiring has it while the map is unlocked, which keeps it
+    /// from merging or going; changed only under the map's write lock.
+    in_transition: AtomicBool,
 }
 
 impl Entry {
     /// Where it starts.
-    fn start(&self) -> VirtualAddress {
+    pub(super) fn start(&self) -> VirtualAddress {
         VirtualAddress::from(self.start.load(Ordering::Relaxed))
     }
 
     /// Where it ends, past its last address.
-    fn end(&self) -> VirtualAddress {
+    pub(super) fn end(&self) -> VirtualAddress {
         VirtualAddress::from(self.end.load(Ordering::Relaxed))
     }
 
@@ -703,7 +971,7 @@ impl Entry {
     ///
     /// # Panics
     ///
-    /// If it is a submap, doesn't allow `access` or is wired: not yet.
+    /// If it is a submap or doesn't allow `access`: not yet.
     fn checked_backing(&self, access: Protection) -> (&AtomicPtr<Object>, &AtomicUsize) {
         let Backing::Object { object, offset } = &self.backing else {
             panic!("vm_map_lookup: a submap, not yet");
@@ -711,10 +979,6 @@ impl Entry {
         assert!(
             self.protection().contains(access),
             "vm_map_lookup: KERN_PROTECTION_FAILURE, not yet"
-        );
-        assert!(
-            self.wire_count() == 0,
-            "vm_map_lookup: a wired entry, not yet"
         );
         (object, offset)
     }
@@ -753,6 +1017,8 @@ fn coalesce(cursor: &Cursor<'_, EntryAdapter>) {
     if previous.end() != entry.start()
         || matches!(previous.backing, Backing::Submap(_))
         || matches!(entry.backing, Backing::Submap(_))
+        || previous.in_transition.load(Ordering::Relaxed)
+        || entry.in_transition.load(Ordering::Relaxed)
         || previous.inheritance != entry.inheritance
         || previous.protection() != entry.protection()
         || previous.max_protection != entry.max_protection

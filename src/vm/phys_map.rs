@@ -44,15 +44,19 @@ pub trait MachinePhysMap {
     /// CPU's tables are another physical map's.
     fn deactivate(&self);
 
-    /// Maps user `address` to the page at `physical`, allowing `protection`
-    /// and wired as `wiring` says, adding the tables it lacks.
+    /// Maps `address`, a kernel address in the kernel's physical map and a
+    /// user one in another, to the page at `physical`, allowing `protection`
+    /// and wired as `wiring` says, adding the tables a user one lacks.
     ///
     /// # Panics
     ///
-    /// If `address` is not a user address. If it is the kernel's, no page
-    /// is free for a table, `address` maps another page already, `physical`
-    /// is outside the page array, for `Wiring::Wired`, or if `address` maps
-    /// `physical` already and it is active on another CPU: not yet.
+    /// If `address` is not a kernel address in the kernel's, or not a user
+    /// address in another. If `physical` is outside the page array: not
+    /// yet. In the kernel's, if no table maps `address` or it maps a page
+    /// already; for `protection` allowing running: not yet. In another, if
+    /// no page is free for a table, `address` maps another page already,
+    /// for `Wiring::Wired`, or if `address` maps `physical` already and it
+    /// is active on another CPU: not yet.
     fn enter(&self, address: usize, physical: PhysAddr, protection: Protection, wiring: Wiring);
 
     /// Cuts the mappings of user `range` down to `protection`, skipping the

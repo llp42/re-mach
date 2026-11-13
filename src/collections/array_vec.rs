@@ -36,6 +36,14 @@ impl<T, const N: usize> ArrayVec<T, N> {
         self.len += 1;
     }
 
+    /// Removes its last item and returns it; `None` if it is empty.
+    pub fn pop(&mut self) -> Option<T> {
+        self.len = self.len.checked_sub(1)?;
+        // SAFETY: the item past the new length was written, and is no
+        // longer reachable.
+        Some(unsafe { self.items[self.len].assume_init_read() })
+    }
+
     /// Inserts `item` at `index`, moving the items after it up.
     ///
     /// # Panics

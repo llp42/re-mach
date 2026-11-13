@@ -21,6 +21,7 @@ use super::serial::Serial;
 use super::{MachineState, fpu, gdt};
 use crate::smp;
 use crate::thread::MachineThread as _;
+use crate::vm::fault::Purpose;
 use crate::vm::kernel::KERNEL_MAP;
 use crate::vm::{self, Protection};
 
@@ -276,10 +277,15 @@ extern "sysv64" fn user_trap(frame: &TrapFrame) -> ! {
             } else {
                 Protection::READ
             };
-            vm::fault::fault(&thread.task().map, address & !(PAGE_SIZE - 1), access)
-                .unwrap_or_else(|error| {
-                    panic!("user_page_fault_continue: i386_exception {error:?}, not yet")
-                });
+            vm::fault::fault(
+                &thread.task().map,
+                address & !(PAGE_SIZE - 1),
+                access,
+                Purpose::Access,
+            )
+            .unwrap_or_else(|error| {
+                panic!("user_page_fault_continue: i386_exception {error:?}, not yet")
+            });
         }
         Some(ExceptionVector::DeviceNotAvailable) => fpu::no_extension_fault(),
         _ => {
@@ -353,7 +359,14 @@ extern "sysv64" fn kernel_trap(frame: &mut TrapFrame) {
         } else {
             Protection::READ
         };
-        if vm::fault::fault(&thread.task().map, address & !(PAGE_SIZE - 1), access).is_ok() {
+        if vm::fault::fault(
+            &thread.task().map,
+            address & !(PAGE_SIZE - 1),
+            access,
+            Purpose::Access,
+        )
+        .is_ok()
+        {
             return;
         }
         // A copy's recovery point, for a fault at its stack pointer.
