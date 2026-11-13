@@ -192,8 +192,15 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     unsafe { gdt::store_user_segments(PerCpu::current().gdt()) };
     // SAFETY: the boot CPU, once, after the user segments.
     unsafe { syscall::init() };
-    // SAFETY: the boot CPU, once, after the GDT and its per-CPU data.
-    unsafe { tss::init() };
+    // SAFETY: the boot CPU, once, after its GDT; the boot CPU's trap
+    // stacks are static, so valid while it runs, and only it uses them.
+    unsafe {
+        tss::init(
+            PerCpu::current(),
+            tss::DOUBLE_FAULT_STACK.top(),
+            tss::DEBUG_STACK.top(),
+        );
+    }
     PerCpu::store_apic_id();
     machine::store_slot(0, Slot::new(CpuType::X86_64, CpuSubtype::AT386));
     startup::start()
