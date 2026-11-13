@@ -132,10 +132,11 @@ impl Map {
         }
         // Allocated before the lock, its range set once placed; a failed
         // check frees it after.
-        let mut entry = ENTRY_CACHE.allocate(Entry {
+        let entry = ENTRY_CACHE.allocate(Entry {
             tree_link: RBTreeAtomicLink::new(),
             gap_link: RBTreeAtomicLink::new(),
-            range: self.bounds.start..self.bounds.start,
+            start: AtomicUsize::new(usize::from(self.bounds.start)),
+            end: AtomicUsize::new(usize::from(self.bounds.start)),
             gap: AtomicUsize::new(0),
             protection: AtomicU32::new(protection.bits()),
             max_protection,
@@ -144,8 +145,8 @@ impl Map {
                 object: AtomicPtr::new(ptr::null_mut()),
                 offset: AtomicUsize::new(0),
             },
-            wire_count: 0,
-            wired_access: Protection::empty(),
+            wire_count: AtomicU32::new(0),
+            wired_access: AtomicU32::new(Protection::empty().bits()),
         })?;
         let mut contents = self.lock();
         let range = match placement {
@@ -163,12 +164,8 @@ impl Map {
         let above = contents.entries.lower_bound(Bound::Excluded(&range.start));
         // Free space found anywhere overlaps nothing.
         if matches!(placement, Placement::Fixed(_))
-            && (below
-                .get()
-                .is_some_and(|entry| entry.range.end > range.start)
-                || above
-                    .get()
-                    .is_some_and(|entry| entry.range.start < range.end))
+            && (below.get().is_some_and(|entry| entry.end() > range.start)
+                || above.get().is_some_and(|entry| entry.start() < range.end))
         {
             return Err(Error::NoSpace);
         }
@@ -189,31 +186,32 @@ impl Map {
                 && neighbour.inheritance == entry.inheritance
                 && neighbour.protection() == entry.protection()
                 && neighbour.max_protection == entry.max_protection
-                && neighbour.wire_count == 0
+                && neighbour.wire_count() == 0
         };
         assert!(
             !below
                 .get()
-                .is_some_and(|previous| previous.range.end == range.start && extends(previous)),
+                .is_some_and(|previous| previous.end() == range.start && extends(previous)),
             "vm_map_enter: vm_object_coalesce with the previous entry, not yet"
         );
         assert!(
             !above
                 .get()
-                .is_some_and(|next| next.range.start == range.end && extends(next)),
+                .is_some_and(|next| next.start() == range.end && extends(next)),
             "vm_map_enter: vm_object_coalesce with the next entry, not yet"
         );
         let previous = below.clone_pointer();
-        let next = above
-            .get()
-            .map_or(self.bounds.end, |entry| entry.range.start);
-        entry.range = range.clone();
+        let next = above.get().map_or(self.bounds.end, Entry::start);
+        entry
+            .start
+            .store(usize::from(range.start), Ordering::Relaxed);
+        entry.end.store(usize::from(range.end), Ordering::Relaxed);
         entry.gap.store(next - range.end, Ordering::Relaxed);
         // The free space hint moves on to an entry right at its end.
         let follows_first_free = contents
             .first_free
             .as_ref()
-            .map_or(self.bounds.start, |entry| entry.range.end)
+            .map_or(self.bounds.start, |entry| entry.end())
             == range.start;
         let entry = contents.link(self.bounds.start, previous, entry);
         if follows_first_free {
@@ -240,14 +238,14 @@ impl Map {
         let next = previous
             .as_ref()
             .map_or(self.bounds.start + contents.leading_gap, |entry| {
-                entry.range.end + entry.gap.load(Ordering::Relaxed)
+                entry.end() + entry.gap.load(Ordering::Relaxed)
             });
         let range = start..start + size;
         // The free space hint moves on to an entry right at its end.
         let follows_first_free = contents
             .first_free
             .as_ref()
-            .map_or(self.bounds.start, |entry| entry.range.end)
+            .map_or(self.bounds.start, |entry| entry.end())
             == range.start;
         self.phys_map.reference();
         assert!(
@@ -257,14 +255,15 @@ impl Map {
         let entry = ENTRY_CACHE.allocate(Entry {
             tree_link: RBTreeAtomicLink::new(),
             gap_link: RBTreeAtomicLink::new(),
+            start: AtomicUsize::new(usize::from(range.start)),
+            end: AtomicUsize::new(usize::from(range.end)),
             gap: AtomicUsize::new(next - range.end),
-            range,
             protection: AtomicU32::new((Protection::READ | Protection::WRITE).bits()),
             max_protection: Protection::all(),
             inheritance: Inheritance::Copy,
             backing: Backing::Submap(submap.get().unwrap()),
-            wire_count: 0,
-            wired_access: Protection::empty(),
+            wire_count: AtomicU32::new(0),
+            wired_access: AtomicU32::new(Protection::empty().bits()),
         })?;
         let entry = contents.link(self.bounds.start, previous, entry);
         if follows_first_free {
@@ -296,14 +295,15 @@ impl Map {
         let next = previous
             .as_ref()
             .map_or(self.bounds.start + contents.leading_gap, |entry| {
-                entry.range.end + entry.gap.load(Ordering::Relaxed)
+                entry.end() + entry.gap.load(Ordering::Relaxed)
             });
         let range = start..start + size;
         let entry = ENTRY_CACHE.allocate(Entry {
             tree_link: RBTreeAtomicLink::new(),
             gap_link: RBTreeAtomicLink::new(),
+            start: AtomicUsize::new(usize::from(range.start)),
+            end: AtomicUsize::new(usize::from(range.end)),
             gap: AtomicUsize::new(next - range.end),
-            range: range.clone(),
             protection: AtomicU32::new(protection.bits()),
             max_protection,
             inheritance: Inheritance::Copy,
@@ -313,8 +313,8 @@ impl Map {
                 ),
                 offset: AtomicUsize::new(object.map_or(0, |_| start - self.bounds.start)),
             },
-            wire_count: 1,
-            wired_access: Protection::READ | Protection::WRITE,
+            wire_count: AtomicU32::new(1),
+            wired_access: AtomicU32::new((Protection::READ | Protection::WRITE).bits()),
         })?;
         // The free space hint moves on to it.
         contents.first_free = Some(contents.link(self.bounds.start, previous, entry));
@@ -347,15 +347,15 @@ impl Map {
         // The entry holding `start`, else the next.
         let mut first = contents.entries.upper_bound(Bound::Included(&start));
         match first.get() {
-            Some(entry) if start < entry.range.end => assert!(
-                start == entry.range.start,
+            Some(entry) if start < entry.end() => assert!(
+                start == entry.start(),
                 "vm_map_clip_start: splitting an entry, not yet"
             ),
             _ => first.move_next(),
         }
         // Every entry is checked before any changes.
         let mut current = first.clone();
-        while let Some(entry) = current.get().filter(|entry| entry.range.start < end) {
+        while let Some(entry) = current.get().filter(|entry| entry.start() < end) {
             if matches!(entry.backing, Backing::Submap(_)) {
                 return Err(Error::InvalidArgument);
             }
@@ -365,9 +365,9 @@ impl Map {
             current.move_next();
         }
         let mut current = first.clone();
-        while let Some(entry) = current.get().filter(|entry| entry.range.start < end) {
+        while let Some(entry) = current.get().filter(|entry| entry.start() < end) {
             assert!(
-                end >= entry.range.end,
+                end >= entry.end(),
                 "vm_map_clip_end: splitting an entry, not yet"
             );
             let old = entry.protection();
@@ -377,14 +377,12 @@ impl Map {
             }
             let new = entry.protection();
             assert!(
-                new.is_empty() || entry.wired_access.is_empty(),
+                new.is_empty() || entry.wired_access().is_empty(),
                 "vm_map_protect: an entry with wired access, not yet"
             );
             if new != old {
-                self.phys_map.protect(
-                    usize::from(entry.range.start)..usize::from(entry.range.end),
-                    new,
-                );
+                self.phys_map
+                    .protect(usize::from(entry.start())..usize::from(entry.end()), new);
             }
             coalesce(&current);
             current.move_next();
@@ -392,13 +390,13 @@ impl Map {
         // The entry after the range, with the last in it.
         coalesce(&current);
         // vm_map_pageable_scan; no entry merged, so the range starts at `first`.
-        while let Some(entry) = first.get().filter(|entry| entry.range.start < end) {
+        while let Some(entry) = first.get().filter(|entry| entry.start() < end) {
             assert!(
-                entry.wired_access.is_empty(),
+                entry.wired_access().is_empty(),
                 "vm_map_pageable_scan: an entry with wired access, not yet"
             );
             assert!(
-                entry.wire_count == 0,
+                entry.wire_count() == 0,
                 "vm_map_pageable_scan: vm_fault_unwire, not yet"
             );
             first.move_next();
@@ -442,7 +440,7 @@ impl Map {
         let (slot, offset) = entry.checked_backing(access);
         // SAFETY: as above.
         let object = unsafe { slot.load(Ordering::Relaxed).as_ref() }.unwrap_or_else(|| {
-            let object = object::allocate(entry.range.end - entry.range.start);
+            let object = object::allocate(entry.end() - entry.start());
             slot.store(ptr::from_ref(object).cast_mut(), Ordering::Relaxed);
             offset.store(0, Ordering::Relaxed);
             object
@@ -511,7 +509,7 @@ impl Contents {
         self.entries
             .upper_bound(Bound::Included(&address))
             .get()
-            .filter(|entry| address < entry.range.end)
+            .filter(|entry| address < entry.end())
     }
 
     /// Where `size` bytes fit at a multiple of `align`, a multiple of the
@@ -531,7 +529,7 @@ impl Contents {
         )));
         let aligned = start.next_multiple_of(align);
         match fit.get() {
-            Some(entry) => Ok((fit.clone_pointer(), entry.range.end.next_multiple_of(align))),
+            Some(entry) => Ok((fit.clone_pointer(), entry.end().next_multiple_of(align))),
             None if self.leading_gap >= aligned - start + size => Ok((None, aligned)),
             None => Err(Error::NoSpace),
         }
@@ -556,8 +554,7 @@ impl Contents {
             .as_ref()
             .filter(|entry| entry.gap.load(Ordering::Relaxed) >= size)
             .expect("vm_map_find_entry_anywhere: the gap tree, not yet")
-            .range
-            .end
+            .end()
     }
 
     /// Links `entry` after `previous`, or first, keeping the gaps and size
@@ -569,16 +566,19 @@ impl Contents {
         previous: Option<UnsafeRef<Entry>>,
         entry: CacheBox<Entry>,
     ) -> UnsafeRef<Entry> {
-        let (range, gap) = (entry.range.clone(), entry.gap.load(Ordering::Relaxed));
+        let (range, gap) = (
+            entry.start()..entry.end(),
+            entry.gap.load(Ordering::Relaxed),
+        );
         // The entry now ends the gap after the one before it, or the leading
         // gap.
         match previous {
             Some(previous) => {
                 if previous.gap_link.is_linked() {
-                    let key = (previous.gap.load(Ordering::Relaxed), previous.range.start);
+                    let key = (previous.gap.load(Ordering::Relaxed), previous.start());
                     self.gaps.find_mut(&key).remove();
                 }
-                let previous_gap = range.start - previous.range.end;
+                let previous_gap = range.start - previous.end();
                 previous.gap.store(previous_gap, Ordering::Relaxed);
                 if previous_gap != 0 {
                     self.gaps.insert(previous);
@@ -606,8 +606,12 @@ pub struct Entry {
     tree_link: RBTreeAtomicLink,
     /// Its place in its map's gap tree, while free space follows it.
     gap_link: RBTreeAtomicLink,
-    /// The addresses it covers.
-    range: Range<VirtualAddress>,
+    /// Where it starts, as a `VirtualAddress`; changed only under the map's
+    /// write lock.
+    start: AtomicUsize,
+    /// Where it ends, past its last address, as a `VirtualAddress`; changed
+    /// only under the map's write lock.
+    end: AtomicUsize,
     /// The free space after it, up to the next entry or the map's end;
     /// changed only under the map's write lock.
     gap: AtomicUsize,
@@ -620,13 +624,35 @@ pub struct Entry {
     inheritance: Inheritance,
     /// What backs it.
     backing: Backing,
-    /// How many times it is wired: its pages stay resident and mapped.
-    wire_count: u32,
-    /// What it allows while wired.
-    wired_access: Protection,
+    /// How many times it is wired: its pages stay resident and mapped;
+    /// changed only under the map's write lock.
+    wire_count: AtomicU32,
+    /// What it allows while wired, as `Protection`'s bits; changed only
+    /// under the map's write lock.
+    wired_access: AtomicU32,
 }
 
 impl Entry {
+    /// Where it starts.
+    fn start(&self) -> VirtualAddress {
+        VirtualAddress::from(self.start.load(Ordering::Relaxed))
+    }
+
+    /// Where it ends, past its last address.
+    fn end(&self) -> VirtualAddress {
+        VirtualAddress::from(self.end.load(Ordering::Relaxed))
+    }
+
+    /// How many times it is wired.
+    fn wire_count(&self) -> u32 {
+        self.wire_count.load(Ordering::Relaxed)
+    }
+
+    /// What it allows while wired.
+    fn wired_access(&self) -> Protection {
+        Protection::from_bits_retain(self.wired_access.load(Ordering::Relaxed))
+    }
+
     /// What it allows now.
     fn protection(&self) -> Protection {
         Protection::from_bits_retain(self.protection.load(Ordering::Relaxed))
@@ -647,7 +673,7 @@ impl Entry {
             "vm_map_lookup: KERN_PROTECTION_FAILURE, not yet"
         );
         assert!(
-            self.wire_count == 0,
+            self.wire_count() == 0,
             "vm_map_lookup: a wired entry, not yet"
         );
         (object, offset)
@@ -666,9 +692,9 @@ impl Entry {
         Lookup {
             object,
             state,
-            offset: offset + (address - self.range.start),
+            offset: offset + (address - self.start()),
             protection: self.protection(),
-            wired: self.wire_count != 0,
+            wired: self.wire_count() != 0,
             version,
         }
     }
@@ -684,13 +710,13 @@ fn coalesce(cursor: &Cursor<'_, EntryAdapter>) {
     let (Some(entry), Some(previous)) = (cursor.get(), cursor.peek_prev().get()) else {
         return;
     };
-    if previous.range.end != entry.range.start
+    if previous.end() != entry.start()
         || matches!(previous.backing, Backing::Submap(_))
         || matches!(entry.backing, Backing::Submap(_))
         || previous.inheritance != entry.inheritance
         || previous.protection() != entry.protection()
         || previous.max_protection != entry.max_protection
-        || previous.wire_count != entry.wire_count
+        || previous.wire_count() != entry.wire_count()
     {
         return;
     }
@@ -722,7 +748,7 @@ impl<'a> KeyAdapter<'a> for EntryAdapter {
     type Key = VirtualAddress;
 
     fn get_key(&self, entry: &'a Entry) -> VirtualAddress {
-        entry.range.start
+        entry.start()
     }
 }
 
@@ -738,7 +764,7 @@ impl<'a> KeyAdapter<'a> for GapAdapter {
     type Key = (usize, VirtualAddress);
 
     fn get_key(&self, entry: &'a Entry) -> (usize, VirtualAddress) {
-        (entry.gap.load(Ordering::Relaxed), entry.range.start)
+        (entry.gap.load(Ordering::Relaxed), entry.start())
     }
 }
 
