@@ -67,6 +67,8 @@ bitflags::bitflags! {
         const SEND_ONCE = 1 << 2;
         /// A port set's right.
         const PORT_SET = 1 << 3;
+        /// A dead name.
+        const DEAD_NAME = 1 << 4;
     }
 }
 

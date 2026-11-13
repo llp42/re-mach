@@ -166,7 +166,7 @@ pub(super) fn info(state: &SpaceState, entry: &Entry) -> PortType {
 /// If the space is dead, either name has no entry, or the new entry holds
 /// rights, or for rights that are none of Mach's. If the old entry has a
 /// dead-name or message-accepted request, or its rights are a receive,
-/// send-once or port set right: not yet. As `SpaceState::deallocate`.
+/// send-once, port set or dead name right: not yet. As `SpaceState::deallocate`.
 pub(super) fn rename(state: &mut SpaceState, old_name: PortName, new_name: PortName) {
     assert!(state.active, "ipc_right_rename: a dead space");
     let SpaceState {
@@ -222,6 +222,8 @@ pub(super) fn rename(state: &mut SpaceState, old_name: PortName, new_name: PortN
         panic!("ipc_right_rename: MACH_PORT_TYPE_SEND_ONCE, not yet");
     } else if rights.bits() == Rights::PORT_SET.bits() {
         panic!("ipc_right_rename: MACH_PORT_TYPE_PORT_SET, not yet");
+    } else if rights.bits() == Rights::DEAD_NAME.bits() {
+        panic!("ipc_right_rename: MACH_PORT_TYPE_DEAD_NAME, not yet");
     } else {
         panic!("ipc_right_rename: strange rights");
     }

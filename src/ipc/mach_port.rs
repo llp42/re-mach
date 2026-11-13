@@ -184,17 +184,19 @@ pub fn rename(space: &Space, old_name: PortName, new_name: PortName) -> Result<(
 }
 
 /// Puts a new right of the kind numbered `right` in `space` as `name`, as
-/// `mach_port_allocate_name` does; so far receive rights and port sets.
+/// `mach_port_allocate_name` does: a receive right, a port set or a dead
+/// name.
 ///
 /// # Errors
 ///
-/// As `Port::allocate_name` and `PortSet::allocate_name`.
+/// As `Port::allocate_name`, `PortSet::allocate_name` and
+/// `object::allocate_dead_name`.
 ///
 /// # Panics
 ///
-/// If `name` is null or dead, or `right` is neither a receive right nor a
-/// port set: not yet. As `Port::allocate_name` and
-/// `PortSet::allocate_name`.
+/// If `name` is null or dead, or `right` is none of those kinds: not yet.
+/// As `Port::allocate_name`, `PortSet::allocate_name` and
+/// `object::allocate_dead_name`.
 pub fn allocate_name(space: &Space, right: u32, name: PortName) -> Result<(), Error> {
     assert!(
         name.is_valid(),
@@ -206,7 +208,7 @@ pub fn allocate_name(space: &Space, right: u32, name: PortName) -> Result<(), Er
     match right {
         Right::Receive => Port::allocate_name(space, name),
         Right::PortSet => PortSet::allocate_name(space, name),
-        Right::DeadName => panic!("mach_port_allocate_name: ipc_object_alloc_dead_name, not yet"),
+        Right::DeadName => object::allocate_dead_name(space, name),
     }
 }
 

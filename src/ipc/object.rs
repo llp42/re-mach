@@ -83,6 +83,36 @@ pub(super) fn allocate_name<T>(
     Ok(())
 }
 
+/// Puts a dead name, new, in `space` as `name`, as
+/// `ipc_object_alloc_dead_name` does.
+///
+/// # Errors
+///
+/// `ResourceShortage` if no entry or map node can be allocated.
+///
+/// # Panics
+///
+/// If the entry has an object. If `name` holds rights: not yet. As
+/// `SpaceState::allocate_name`.
+pub(super) fn allocate_dead_name(space: &Space, name: PortName) -> Result<(), Error> {
+    let mut state = space.state.write();
+    let entry = state.allocate_name(name)?;
+    // As ipc_right_inuse.
+    assert!(
+        !entry.in_use(),
+        "ipc_object_alloc_dead_name: KERN_NAME_EXISTS, not yet"
+    );
+    assert!(
+        entry.object.is_none(),
+        "ipc_object_alloc_dead_name: an entry with an object"
+    );
+    // No object, and one user reference.
+    entry.bits.rights |= Rights::DEAD_NAME;
+    entry.bits.user_references = 1;
+    drop(state);
+    Ok(())
+}
+
 /// Puts the right `message_type` names, for `port`, in `space` under a
 /// free name, as `ipc_object_copyout` does, and gives the name; the space
 /// takes the right and its reference.
