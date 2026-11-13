@@ -108,7 +108,13 @@ impl Port {
     /// As `object::allocate`.
     pub fn allocate(space: &Space) -> Result<PortName, Error> {
         let port = CACHE.allocate(Self::new(NonNull::from(space)))?;
-        object::allocate(space, port)
+        object::allocate(
+            space,
+            port,
+            // As ipc_port_init: its name there.
+            |port, name| port.state.get_mut().receiver_name = name,
+            object::Object::Port,
+        )
     }
 
     /// A new port that `space` receives on, under `name` there, its one

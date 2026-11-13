@@ -22,26 +22,36 @@ pub(super) enum Object {
     PortSet(#[expect(dead_code, reason = "ipc_right_destroy reads it")] NonNull<PortSet>),
 }
 
-/// Puts the receive right for `port`, new, in `space` under a free name,
-/// and gives the name; the entry takes the right and the port's
-/// reference, linked only once the port knows the name.
+/// Puts the right for `object`, new, in `space` under a free name, as
+/// `ipc_object_alloc` does, and gives the name: the receive right for a
+/// port, the port set right for a set, `kind` telling which. `set_name`
+/// gives the object its name; the entry takes the right and the object's
+/// reference, linked only once the object knows the name.
 ///
 /// # Errors
 ///
-/// `ResourceShortage` if no entry or map node can be allocated; the port
+/// `ResourceShortage` if no entry or map node can be allocated; the object
 /// is freed.
 ///
 /// # Panics
 ///
 /// As `SpaceState::allocate`.
-pub(super) fn allocate(space: &Space, mut port: CacheBox<Port>) -> Result<PortName, Error> {
+pub(super) fn allocate<T>(
+    space: &Space,
+    mut object: CacheBox<T>,
+    set_name: fn(&mut T, PortName),
+    kind: fn(NonNull<T>) -> Object,
+) -> Result<PortName, Error> {
     let mut state = space.state.write();
     let (name, entry) = state.allocate()?;
-    port.state.get_mut().receiver_name = name;
-    let port = CacheBox::into_raw(port);
-    // The receive right, with no user references.
-    entry.bits.rights |= Rights::RECEIVE;
-    entry.object = Some(Object::Port(port));
+    set_name(&mut object, name);
+    let object = kind(CacheBox::into_raw(object));
+    // The right, with no user references.
+    entry.bits.rights |= match object {
+        Object::Port(_) => Rights::RECEIVE,
+        Object::PortSet(_) => Rights::PORT_SET,
+    };
+    entry.object = Some(object);
     drop(state);
     Ok(name)
 }
@@ -81,6 +91,30 @@ pub(super) fn allocate_name<T>(
     entry.object = Some(object);
     drop(state);
     Ok(())
+}
+
+/// Puts a dead name, new, in `space` under a free name, as
+/// `ipc_object_alloc_dead` does, and gives the name.
+///
+/// # Errors
+///
+/// `ResourceShortage` if no entry or map node can be allocated.
+///
+/// # Panics
+///
+/// If the entry has an object. As `SpaceState::allocate`.
+pub(super) fn allocate_dead(space: &Space) -> Result<PortName, Error> {
+    let mut state = space.state.write();
+    let (name, entry) = state.allocate()?;
+    assert!(
+        entry.object.is_none(),
+        "ipc_object_alloc_dead: an entry with an object"
+    );
+    // No object, and one user reference.
+    entry.bits.rights |= Rights::DEAD_NAME;
+    entry.bits.user_references = 1;
+    drop(state);
+    Ok(name)
 }
 
 /// Puts a dead name, new, in `space` as `name`, as

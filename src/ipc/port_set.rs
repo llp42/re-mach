@@ -53,6 +53,28 @@ impl PortSet {
         }
     }
 
+    /// A new port set in `space` under a free name, its one reference the
+    /// entry's, as `ipc_pset_alloc` makes it; gives the name.
+    ///
+    /// # Errors
+    ///
+    /// `ResourceShortage` if no port set can be allocated; as
+    /// `object::allocate`.
+    ///
+    /// # Panics
+    ///
+    /// As `object::allocate`.
+    pub(super) fn allocate(space: &Space) -> Result<PortName, Error> {
+        let set = CACHE.allocate(Self::new())?;
+        object::allocate(
+            space,
+            set,
+            // As ipc_target_init: its name; `new` gave it an empty queue.
+            |set, name| set.state.get_mut().local_name = name,
+            Object::PortSet,
+        )
+    }
+
     /// A new port set in `space` as `name`, its one reference the entry's,
     /// as `ipc_pset_alloc_name` makes it.
     ///

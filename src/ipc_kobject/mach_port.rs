@@ -16,6 +16,7 @@ mig::subsystem! {
     1 mach_port_type(task = task::space_of, name: PortName) -> (port_type: PortType);
     2 mach_port_rename(task = task::space_of, old_name: PortName, new_name: PortName);
     3 mach_port_allocate_name(task = task::space_of, right: u32, name: PortName);
+    4 mach_port_allocate(task = task::space_of, right: u32) -> (name: PortName);
 }
 
 /// Serves `mach_port_names`: the names `space` holds rights under, and
@@ -69,4 +70,15 @@ fn mach_port_allocate_name(space: Option<&Space>, right: u32, name: PortName) ->
     let space =
         space.unwrap_or_else(|| panic!("mach_port_allocate_name: KERN_INVALID_TASK, not yet"));
     ipc::mach_port::allocate_name(space, right, name)
+}
+
+/// Serves `mach_port_allocate`: a new right of the kind numbered `right` in
+/// `space`, under a free name, which it gives.
+///
+/// # Panics
+///
+/// With no space: not yet. As `ipc::mach_port::allocate`.
+fn mach_port_allocate(space: Option<&Space>, right: u32) -> Result<PortName, Error> {
+    let space = space.unwrap_or_else(|| panic!("mach_port_allocate: KERN_INVALID_TASK, not yet"));
+    ipc::mach_port::allocate(space, right)
 }

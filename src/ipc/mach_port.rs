@@ -183,6 +183,29 @@ pub fn rename(space: &Space, old_name: PortName, new_name: PortName) -> Result<(
     object::rename(space, old_name, new_name)
 }
 
+/// Puts a new right of the kind numbered `right` in `space` under a free
+/// name, as `mach_port_allocate` does, and gives the name: a receive right,
+/// a port set or a dead name.
+///
+/// # Errors
+///
+/// As `Port::allocate`, `PortSet::allocate` and `object::allocate_dead`.
+///
+/// # Panics
+///
+/// If `right` is none of those kinds: not yet. As `Port::allocate`,
+/// `PortSet::allocate` and `object::allocate_dead`.
+pub fn allocate(space: &Space, right: u32) -> Result<PortName, Error> {
+    let right = Right::try_from(right).unwrap_or_else(|right| {
+        panic!("mach_port_allocate: KERN_INVALID_VALUE for right {right}, not yet")
+    });
+    match right {
+        Right::Receive => Port::allocate(space),
+        Right::PortSet => PortSet::allocate(space),
+        Right::DeadName => object::allocate_dead(space),
+    }
+}
+
 /// Puts a new right of the kind numbered `right` in `space` as `name`, as
 /// `mach_port_allocate_name` does: a receive right, a port set or a dead
 /// name.
