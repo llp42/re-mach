@@ -21,9 +21,8 @@ use crate::sched::{self, Event, USER_PRIORITY};
 use crate::sync::Spinlock;
 use crate::task::{self, Task};
 use crate::thread::{MachineThread as _, Thread};
-use crate::vm::map::{Change, Map};
-use crate::vm::user::Placement;
-use crate::vm::{Inheritance, Protection};
+use crate::vm::map::{Change, Map, Placement};
+use crate::vm::{Inheritance, Protection, VirtualAddress};
 use crate::{device, print, println, smp, vm};
 use elf_load::{Image, SectionType, Segment};
 use script::{Script, Value};
@@ -288,10 +287,9 @@ fn build_arguments_and_stack<'a>(
     // Here and below, results go unchecked, as GNU Mach's do.
     let _ = vm::user::map(
         map,
-        stack_base,
+        Placement::Fixed(VirtualAddress::from(stack_base)),
         stack_size,
         0,
-        Placement::Fixed,
         None,
         image.stack_protection,
         Protection::all(),
@@ -349,9 +347,13 @@ fn load_segment(map: &Map, bytes: &[u8], segment: &Segment) -> Result<(), elf_lo
         .and_then(|end| end.checked_next_multiple_of(PAGE_SIZE))
         .expect("read_exec: a segment past the address space's end");
     let pages = segment.address & !(PAGE_SIZE - 1)..end;
-    let start = vm::user::allocate(map, pages.start, pages.end - pages.start, Placement::Fixed)
-        .unwrap_or_else(|error| panic!("read_exec: vm_allocate: {error:?}"));
-    assert_eq!(start, pages.start);
+    let start = vm::user::allocate(
+        map,
+        Placement::Fixed(VirtualAddress::from(pages.start)),
+        pages.end - pages.start,
+    )
+    .unwrap_or_else(|error| panic!("read_exec: vm_allocate: {error:?}"));
+    assert_eq!(usize::from(start), pages.start);
     if segment.file_size > 0 {
         let file = &bytes[segment.offset..segment.offset + segment.file_size];
         arch::Current::copy_out(file, segment.address)
@@ -361,7 +363,7 @@ fn load_segment(map: &Map, bytes: &[u8], segment: &Segment) -> Result<(), elf_lo
     if protection != Protection::all() {
         vm::user::protect(
             map,
-            pages.start,
+            VirtualAddress::from(pages.start),
             pages.end - pages.start,
             Change::Current,
             protection,

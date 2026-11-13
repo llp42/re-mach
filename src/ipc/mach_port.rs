@@ -10,8 +10,7 @@ use crate::arch::PAGE_SIZE;
 use crate::error::Error;
 use crate::slab::CacheBox;
 use crate::vm;
-use crate::vm::map::MapCopy;
-use crate::vm::user::Placement;
+use crate::vm::map::{MapCopy, Placement};
 
 /// The names `space` holds rights under and their types, as
 /// `mach_port_names` lists them: each array moved into a copy, and how many
@@ -31,11 +30,15 @@ pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
     let map = super::KERNEL_MAP
         .get()
         .expect("mach_port_names: no IPC map");
-    let names = vm::user::allocate(map, 0, size, Placement::Anywhere)
+    let names = vm::user::allocate(map, Placement::Anywhere, size)
         .unwrap_or_else(|_| panic!("mach_port_names: no more room in ipc_kernel_map, not yet"));
-    let types = vm::user::allocate(map, 0, size, Placement::Anywhere)
+    let types = vm::user::allocate(map, Placement::Anywhere, size)
         .unwrap_or_else(|_| panic!("mach_port_names: no more room in ipc_kernel_map, not yet"));
-    panic!("mach_port_names: vm_map_pageable of {names:#x} and {types:#x}, not yet");
+    panic!(
+        "mach_port_names: vm_map_pageable of {:#x} and {:#x}, not yet",
+        usize::from(names),
+        usize::from(types)
+    );
 }
 
 /// Inserts the right `message_type` names, for `port`, in `space` as

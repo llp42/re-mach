@@ -23,6 +23,7 @@ use crate::slab::{Cache, CacheBox};
 use crate::smp;
 use crate::sync::{CriticalSection, OnceLock, Spinlock, Token};
 use crate::thread::{TaskThreadAdapter, Thread};
+use crate::vm::VirtualAddress;
 use crate::vm::kernel::KERNEL_MAP;
 use crate::vm::map::Map;
 use crate::vm::phys_map::MachinePhysMap as _;
@@ -115,8 +116,11 @@ impl Task {
     pub fn create(parent: Option<&Self>) -> Result<&'static Self, Error> {
         assert!(parent.is_none(), "task_create_kernel: a parent, not yet");
         let phys_map = arch::PhysMap::create()?;
-        let map = Map::create(phys_map, MIN_USER_ADDRESS..MAX_USER_ADDRESS)
-            .unwrap_or_else(|error| panic!("task_create_kernel: {error:?}, pmap_destroy not yet"));
+        let map = Map::create(
+            phys_map,
+            VirtualAddress::from(MIN_USER_ADDRESS)..VirtualAddress::from(MAX_USER_ADDRESS),
+        )
+        .unwrap_or_else(|error| panic!("task_create_kernel: {error:?}, pmap_destroy not yet"));
         // SAFETY: a task's map lives until vm_map_deallocate frees it, which
         // comes later.
         let map = unsafe { CacheBox::into_raw(map).as_ref() };

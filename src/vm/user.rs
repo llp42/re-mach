@@ -3,51 +3,33 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The virtual memory calls of Mach's interface.
 
-use super::map::{Change, Map};
-use super::{Inheritance, Protection};
+use super::map::{Change, Map, Placement};
+use super::{Inheritance, Protection, VirtualAddress};
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
 use crate::ipc::port::Port;
 
-/// Where a call puts the memory it maps.
-#[derive(Clone, Copy)]
-pub enum Placement {
-    /// At the address given.
-    Fixed,
-    /// Wherever it fits.
-    Anywhere,
-}
-
 /// Maps `size` bytes of zero-filled memory into `map`, as `placement`
-/// says, from `address` rounded down to a page, `size` rounded up to
+/// says, a fixed address rounded down to a page, `size` rounded up to
 /// pages; returns where they start, or 0 for no bytes. They may be read
 /// and written, at most anything, and child tasks get a copy.
 ///
 /// # Errors
 ///
-/// `InvalidArgument` if `size` rounds up past the last address,
-/// `InvalidAddress` if the pages would end past it, and as `Map::enter`.
+/// `InvalidArgument` if `size` rounds up past the last address, and as
+/// `Map::enter`.
 ///
 /// # Panics
 ///
-/// For `Placement::Anywhere`: not yet. As `Map::enter`.
-pub fn allocate(
-    map: &Map,
-    address: usize,
-    size: usize,
-    placement: Placement,
-) -> Result<usize, Error> {
+/// As `Map::enter`.
+pub fn allocate(map: &Map, placement: Placement, size: usize) -> Result<VirtualAddress, Error> {
     if size == 0 {
-        return Ok(0);
+        return Ok(VirtualAddress::from(0));
     }
-    assert!(
-        matches!(placement, Placement::Fixed),
-        "vm_allocate: anywhere, not yet"
-    );
     // No mask; VM_PROT_DEFAULT, VM_PROT_ALL and VM_INHERIT_DEFAULT.
     enter(
         map,
-        address,
+        placement,
         size,
         0,
         Protection::READ | Protection::WRITE,
@@ -58,7 +40,7 @@ pub fn allocate(
 
 /// Maps `size` bytes of `memory_object`, or of zero-filled memory for none,
 /// into `map`, as `placement` says, at an address with no bit of `mask`
-/// set, from `address` rounded down to a page, `size` rounded up to pages;
+/// set, a fixed one rounded down to a page, `size` rounded up to pages;
 /// returns where they start. They allow `protection`, at most
 /// `max_protection`, and child tasks get `inheritance` of them.
 ///
@@ -66,8 +48,7 @@ pub fn allocate(
 ///
 /// `InvalidArgument` if a protection holds more than reading, writing and
 /// running, or `size` is 0 or rounds up past the last address, `NoSpace`
-/// if the start has a bit of `mask` set, `InvalidAddress` if the pages
-/// would end past the last address, and as `Map::enter`.
+/// if the start has a bit of `mask` set, and as `Map::enter`.
 ///
 /// # Panics
 ///
@@ -75,15 +56,14 @@ pub fn allocate(
 #[expect(clippy::too_many_arguments, reason = "vm_map's parameters")]
 pub fn map(
     map: &Map,
-    address: usize,
+    placement: Placement,
     size: usize,
     mask: usize,
-    placement: Placement,
     memory_object: Option<&Port>,
     protection: Protection,
     max_protection: Protection,
     inheritance: Inheritance,
-) -> Result<usize, Error> {
+) -> Result<VirtualAddress, Error> {
     // `inheritance` needs no check: its type holds only valid values.
     if !Protection::all().contains(protection) || !Protection::all().contains(max_protection) {
         return Err(Error::InvalidArgument);
@@ -94,12 +74,12 @@ pub fn map(
     // IP_NULL: no object, so no offset or copy.
     assert!(memory_object.is_none(), "vm_map: a memory object, not yet");
     assert!(
-        matches!(placement, Placement::Fixed),
+        matches!(placement, Placement::Fixed(_)),
         "vm_map: anywhere, not yet"
     );
     enter(
         map,
-        address,
+        placement,
         size,
         mask,
         protection,
@@ -108,39 +88,43 @@ pub fn map(
     )
 }
 
-/// Maps `size` bytes with nothing behind them yet into `map`, from
-/// `address` rounded down to a page, at a start with no bit of `mask` set,
-/// `size` rounded up to pages, as `Map::enter`; returns where they start.
+/// Maps `size` bytes with nothing behind them yet into `map`, as
+/// `placement` says, a fixed address rounded down to a page and with no bit
+/// of `mask` set, `size` rounded up to pages, as `Map::enter`; returns
+/// where they start.
 ///
 /// # Errors
 ///
 /// `InvalidArgument` if `size` rounds up past the last address, `NoSpace`
-/// if the start has a bit of `mask` set, `InvalidAddress` if the pages
-/// would end past the last address, and as `Map::enter`.
+/// if a fixed start has a bit of `mask` set, and as `Map::enter`.
 ///
 /// # Panics
 ///
 /// As `Map::enter`.
 fn enter(
     map: &Map,
-    address: usize,
+    placement: Placement,
     size: usize,
     mask: usize,
     protection: Protection,
     max_protection: Protection,
     inheritance: Inheritance,
-) -> Result<usize, Error> {
-    let start = address & !(PAGE_SIZE - 1);
+) -> Result<VirtualAddress, Error> {
+    let placement = match placement {
+        Placement::Fixed(address) => Placement::Fixed(address.align_down(PAGE_SIZE)),
+        Placement::Anywhere => Placement::Anywhere,
+    };
     // Past the top, GNU Mach's rounding wraps to 0, which vm_map_enter refuses.
     let size = size
         .checked_next_multiple_of(PAGE_SIZE)
         .ok_or(Error::InvalidArgument)?;
-    if start & mask != 0 {
+    if let Placement::Fixed(start) = placement
+        && usize::from(start) & mask != 0
+    {
         return Err(Error::NoSpace);
     }
-    let end = start.checked_add(size).ok_or(Error::InvalidAddress)?;
-    map.enter(start..end, protection, max_protection, inheritance)?;
-    Ok(start)
+    let range = map.enter(placement, size, protection, max_protection, inheritance)?;
+    Ok(range.start)
 }
 
 /// Sets what `size` bytes of `map` from `address`, rounded out to pages,
@@ -156,7 +140,7 @@ fn enter(
 /// If `protection` holds `VM_PROT_NOTIFY`: not yet. As `Map::protect`.
 pub fn protect(
     map: &Map,
-    address: usize,
+    address: VirtualAddress,
     size: usize,
     change: Change,
     protection: Protection,
@@ -171,7 +155,13 @@ pub fn protect(
         "vm_protect: VM_PROT_NOTIFY, not yet"
     );
     // GNU Mach's rounding, which wraps past the top.
-    let start = address & !(PAGE_SIZE - 1);
-    let end = address.wrapping_add(size).wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    map.protect(start..end, protection, change)
+    let end = usize::from(address)
+        .wrapping_add(size)
+        .wrapping_add(PAGE_SIZE - 1)
+        & !(PAGE_SIZE - 1);
+    map.protect(
+        address.align_down(PAGE_SIZE)..VirtualAddress::from(end),
+        protection,
+        change,
+    )
 }

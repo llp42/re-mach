@@ -12,10 +12,10 @@ use intrusive_collections::{
     Bound, KeyAdapter, RBTree, RBTreeAtomicLink, UnsafeRef, intrusive_adapter,
 };
 
-use super::object::{self, Object, ObjectState};
+use super::object::{self, Object, ObjectState, Offset};
 use super::page;
 use super::phys_map::MachinePhysMap as _;
-use super::{Inheritance, Protection};
+use super::{Inheritance, Protection, VirtualAddress};
 use crate::arch::{PAGE_SIZE, PhysMap};
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
@@ -26,7 +26,7 @@ use crate::sync::{OnceLock, SleepLock, TokenGuard};
 #[expect(dead_code, reason = "vm_map_reference and vm_set_size_limit read them")]
 pub struct Map {
     /// The addresses it may map.
-    bounds: Range<usize>,
+    bounds: Range<VirtualAddress>,
     /// The physical map its mappings go into.
     #[expect(clippy::struct_field_names, reason = "named for its type, PhysMap")]
     phys_map: &'static PhysMap,
@@ -49,6 +49,9 @@ struct Contents {
     /// The free space before the first entry; all of the map while it is
     /// empty.
     leading_gap: usize,
+    /// The entry whose gap a search for free space anywhere tries first;
+    /// none to skip it.
+    first_free: Option<UnsafeRef<Entry>>,
     /// How much it maps, in bytes.
     size: usize,
     /// Its version, moved on by every write lock.
@@ -58,7 +61,7 @@ struct Contents {
 impl Map {
     /// An empty map of `bounds` over `phys_map`, with one reference and no
     /// size limit.
-    pub const fn new(phys_map: &'static PhysMap, bounds: Range<usize>) -> Self {
+    pub fn new(phys_map: &'static PhysMap, bounds: Range<VirtualAddress>) -> Self {
         let leading_gap = bounds.end - bounds.start;
         Self {
             bounds,
@@ -70,6 +73,7 @@ impl Map {
                 entries: RBTree::new(EntryAdapter::NEW),
                 gaps: RBTree::new(GapAdapter::NEW),
                 leading_gap,
+                first_free: None,
                 size: 0,
                 timestamp: 0,
             }),
@@ -89,7 +93,7 @@ impl Map {
     /// `ResourceShortage` if it can't be allocated.
     pub fn create(
         phys_map: &'static PhysMap,
-        bounds: Range<usize>,
+        bounds: Range<VirtualAddress>,
     ) -> Result<CacheBox<Self>, Error> {
         let size = page::memory_size();
         MAP_CACHE.allocate(Self {
@@ -99,35 +103,39 @@ impl Map {
         })
     }
 
-    /// Maps `range` with nothing behind it yet, allowing `protection` now
-    /// and at most `max_protection`, and giving child tasks `inheritance`.
+    /// Maps `size` bytes with nothing behind them yet, placed as `placement`
+    /// says, allowing `protection` now and at most `max_protection`, and
+    /// giving child tasks `inheritance`; returns where.
     ///
     /// # Errors
     ///
-    /// `InvalidArgument` if `range` is empty, `InvalidAddress` if it is not
-    /// inside the map, `NoSpace` if it overlaps an entry or takes the map
-    /// past its size limit, and `ResourceShortage` if no entry can be
-    /// allocated.
+    /// `InvalidArgument` if `size` is 0; for `Placement::Fixed`,
+    /// `InvalidAddress` if the range is not inside the map and `NoSpace` if
+    /// it overlaps an entry; `NoSpace` if it takes the map past its size
+    /// limit, and `ResourceShortage` if no entry can be allocated.
     ///
     /// # Panics
     ///
-    /// If `max_protection` is none, or a neighbouring entry could be
-    /// extended over `range`: not yet.
+    /// If `max_protection` is none, a neighbouring entry could be extended
+    /// over the range, or for `Placement::Anywhere` if the map is too small
+    /// or the free space hint can't hold them: not yet.
     pub fn enter(
         &self,
-        range: Range<usize>,
+        placement: Placement,
+        size: usize,
         protection: Protection,
         max_protection: Protection,
         inheritance: Inheritance,
-    ) -> Result<(), Error> {
-        if range.is_empty() {
+    ) -> Result<Range<VirtualAddress>, Error> {
+        if size == 0 {
             return Err(Error::InvalidArgument);
         }
-        // Allocated before the lock; a failed check frees it after.
-        let entry = ENTRY_CACHE.allocate(Entry {
+        // Allocated before the lock, its range set once placed; a failed
+        // check frees it after.
+        let mut entry = ENTRY_CACHE.allocate(Entry {
             tree_link: RBTreeAtomicLink::new(),
             gap_link: RBTreeAtomicLink::new(),
-            range: range.clone(),
+            range: self.bounds.start..self.bounds.start,
             gap: AtomicUsize::new(0),
             protection: AtomicU32::new(protection.bits()),
             max_protection,
@@ -140,17 +148,27 @@ impl Map {
             wired_access: Protection::empty(),
         })?;
         let mut contents = self.lock();
-        if range.start < self.bounds.start || range.end > self.bounds.end {
-            return Err(Error::InvalidAddress);
-        }
+        let range = match placement {
+            Placement::Fixed(start) => start
+                .checked_add(size)
+                .filter(|&end| start >= self.bounds.start && end <= self.bounds.end)
+                .map(|end| start..end)
+                .ok_or(Error::InvalidAddress)?,
+            Placement::Anywhere => {
+                let start = contents.find_anywhere(&self.bounds, size);
+                start..start + size
+            }
+        };
         let below = contents.entries.upper_bound(Bound::Included(&range.start));
         let above = contents.entries.lower_bound(Bound::Excluded(&range.start));
-        if below
-            .get()
-            .is_some_and(|entry| entry.range.end > range.start)
-            || above
+        // Free space found anywhere overlaps nothing.
+        if matches!(placement, Placement::Fixed(_))
+            && (below
                 .get()
-                .is_some_and(|entry| entry.range.start < range.end)
+                .is_some_and(|entry| entry.range.end > range.start)
+                || above
+                    .get()
+                    .is_some_and(|entry| entry.range.start < range.end))
         {
             return Err(Error::NoSpace);
         }
@@ -189,10 +207,20 @@ impl Map {
         let next = above
             .get()
             .map_or(self.bounds.end, |entry| entry.range.start);
+        entry.range = range.clone();
         entry.gap.store(next - range.end, Ordering::Relaxed);
-        contents.link(self.bounds.start, previous, entry);
+        // The free space hint moves on to an entry right at its end.
+        let follows_first_free = contents
+            .first_free
+            .as_ref()
+            .map_or(self.bounds.start, |entry| entry.range.end)
+            == range.start;
+        let entry = contents.link(self.bounds.start, previous, entry);
+        if follows_first_free {
+            contents.first_free = Some(entry);
+        }
         drop(contents);
-        Ok(())
+        Ok(range)
     }
 
     /// Maps a new submap of `size` bytes wherever it fits, over this map's
@@ -215,6 +243,12 @@ impl Map {
                 entry.range.end + entry.gap.load(Ordering::Relaxed)
             });
         let range = start..start + size;
+        // The free space hint moves on to an entry right at its end.
+        let follows_first_free = contents
+            .first_free
+            .as_ref()
+            .map_or(self.bounds.start, |entry| entry.range.end)
+            == range.start;
         self.phys_map.reference();
         assert!(
             submap.set(Self::new(self.phys_map, range.clone())).is_ok(),
@@ -232,7 +266,10 @@ impl Map {
             wire_count: 0,
             wired_access: Protection::empty(),
         })?;
-        contents.link(self.bounds.start, previous, entry);
+        let entry = contents.link(self.bounds.start, previous, entry);
+        if follows_first_free {
+            contents.first_free = Some(entry);
+        }
         drop(contents);
         Ok(())
     }
@@ -253,7 +290,7 @@ impl Map {
         protection: Protection,
         max_protection: Protection,
         object: Option<&'static Object>,
-    ) -> Result<Range<usize>, Error> {
+    ) -> Result<Range<VirtualAddress>, Error> {
         let mut contents = self.lock();
         let (previous, start) = contents.find_space(self.bounds.start, size, align)?;
         let next = previous
@@ -279,7 +316,8 @@ impl Map {
             wire_count: 1,
             wired_access: Protection::READ | Protection::WRITE,
         })?;
-        contents.link(self.bounds.start, previous, entry);
+        // The free space hint moves on to it.
+        contents.first_free = Some(contents.link(self.bounds.start, previous, entry));
         drop(contents);
         Ok(range)
     }
@@ -299,7 +337,7 @@ impl Map {
     /// yet. As `MachinePhysMap::protect`.
     pub fn protect(
         &self,
-        range: Range<usize>,
+        range: Range<VirtualAddress>,
         protection: Protection,
         change: Change,
     ) -> Result<(), Error> {
@@ -343,7 +381,10 @@ impl Map {
                 "vm_map_protect: an entry with wired access, not yet"
             );
             if new != old {
-                self.phys_map.protect(entry.range.clone(), new);
+                self.phys_map.protect(
+                    usize::from(entry.range.start)..usize::from(entry.range.end),
+                    new,
+                );
             }
             coalesce(&current);
             current.move_next();
@@ -379,7 +420,7 @@ impl Map {
     ///
     /// If its object can't be made. For a submap, an entry that doesn't
     /// allow `access` or a wired one: not yet.
-    pub fn lookup(&self, address: usize, access: Protection) -> Result<Lookup, Error> {
+    pub fn lookup(&self, address: VirtualAddress, access: Protection) -> Result<Lookup, Error> {
         let contents = self.contents.read();
         let entry = contents.find(address).ok_or(Error::InvalidAddress)?;
         let (object, offset) = entry.checked_backing(access);
@@ -388,7 +429,7 @@ impl Map {
         if let Some(object) = unsafe { object.load(Ordering::Relaxed).as_ref() } {
             // The object's token, under the map's lock.
             let state = object.lock();
-            let offset = offset.load(Ordering::Relaxed);
+            let offset = Offset::from(offset.load(Ordering::Relaxed));
             let lookup = entry.found(address, object, state, offset, contents.timestamp);
             drop(contents);
             return Ok(lookup);
@@ -408,7 +449,7 @@ impl Map {
         });
         // The object's token, under the map's lock.
         let state = object.lock();
-        let offset = offset.load(Ordering::Relaxed);
+        let offset = Offset::from(offset.load(Ordering::Relaxed));
         let lookup = entry.found(address, object, state, offset, contents.timestamp);
         drop(contents);
         Ok(lookup)
@@ -439,6 +480,15 @@ pub enum Change {
     Maximum,
 }
 
+/// Where `Map::enter` puts what it maps.
+#[derive(Clone, Copy)]
+pub enum Placement {
+    /// From the address given.
+    Fixed(VirtualAddress),
+    /// Wherever it fits.
+    Anywhere,
+}
+
 /// What `Map::lookup` finds for an address.
 pub struct Lookup {
     /// The object behind it.
@@ -446,7 +496,7 @@ pub struct Lookup {
     /// The object's state, locked.
     pub state: TokenGuard<'static, ObjectState>,
     /// Where the address is in the object.
-    pub offset: usize,
+    pub offset: Offset,
     /// What the entry allows.
     pub protection: Protection,
     /// Whether the entry is wired.
@@ -457,7 +507,7 @@ pub struct Lookup {
 
 impl Contents {
     /// The entry that holds `address`.
-    fn find(&self, address: usize) -> Option<&Entry> {
+    fn find(&self, address: VirtualAddress) -> Option<&Entry> {
         self.entries
             .upper_bound(Bound::Included(&address))
             .get()
@@ -470,14 +520,15 @@ impl Contents {
     /// or else from the map's `start`, if the leading gap holds them.
     fn find_space(
         &self,
-        start: usize,
+        start: VirtualAddress,
         size: usize,
         align: usize,
-    ) -> Result<(Option<UnsafeRef<Entry>>, usize), Error> {
+    ) -> Result<(Option<UnsafeRef<Entry>>, VirtualAddress), Error> {
         // Aligning a page boundary skips at most `align - PAGE_SIZE`.
-        let fit = self
-            .gaps
-            .lower_bound(Bound::Included(&(size + align - PAGE_SIZE, 0)));
+        let fit = self.gaps.lower_bound(Bound::Included(&(
+            size + align - PAGE_SIZE,
+            VirtualAddress::from(0),
+        )));
         let aligned = start.next_multiple_of(align);
         match fit.get() {
             Some(entry) => Ok((fit.clone_pointer(), entry.range.end.next_multiple_of(align))),
@@ -486,10 +537,38 @@ impl Contents {
         }
     }
 
+    /// Where `size` bytes fit anywhere in a map of `bounds`: at its start
+    /// while it is empty, else right after `first_free`.
+    ///
+    /// # Panics
+    ///
+    /// If an empty map is too small for them, or `first_free` is none or
+    /// its gap too small: not yet.
+    fn find_anywhere(&self, bounds: &Range<VirtualAddress>, size: usize) -> VirtualAddress {
+        if self.entries.is_empty() {
+            assert!(
+                bounds.end - bounds.start >= size,
+                "vm_map_find_entry_anywhere: no more room, not yet"
+            );
+            return bounds.start;
+        }
+        self.first_free
+            .as_ref()
+            .filter(|entry| entry.gap.load(Ordering::Relaxed) >= size)
+            .expect("vm_map_find_entry_anywhere: the gap tree, not yet")
+            .range
+            .end
+    }
+
     /// Links `entry` after `previous`, or first, keeping the gaps and size
     /// up to date; it fits between `previous` and the entry after it, or
-    /// the map's `start` and end.
-    fn link(&mut self, start: usize, previous: Option<UnsafeRef<Entry>>, entry: CacheBox<Entry>) {
+    /// the map's `start` and end. Returns it, as linked.
+    fn link(
+        &mut self,
+        start: VirtualAddress,
+        previous: Option<UnsafeRef<Entry>>,
+        entry: CacheBox<Entry>,
+    ) -> UnsafeRef<Entry> {
         let (range, gap) = (entry.range.clone(), entry.gap.load(Ordering::Relaxed));
         // The entry now ends the gap after the one before it, or the leading
         // gap.
@@ -515,6 +594,8 @@ impl Contents {
             self.gaps.insert(unsafe { UnsafeRef::from_raw(entry) });
         }
         self.size += range.end - range.start;
+        // SAFETY: as above; entries are never freed yet.
+        unsafe { UnsafeRef::from_raw(entry) }
     }
 }
 
@@ -526,7 +607,7 @@ pub struct Entry {
     /// Its place in its map's gap tree, while free space follows it.
     gap_link: RBTreeAtomicLink,
     /// The addresses it covers.
-    range: Range<usize>,
+    range: Range<VirtualAddress>,
     /// The free space after it, up to the next entry or the map's end;
     /// changed only under the map's write lock.
     gap: AtomicUsize,
@@ -576,16 +657,16 @@ impl Entry {
     /// `offset`, its `state` locked, at the map's `version`.
     fn found(
         &self,
-        address: usize,
+        address: VirtualAddress,
         object: &'static Object,
         state: TokenGuard<'static, ObjectState>,
-        offset: usize,
+        offset: Offset,
         version: u32,
     ) -> Lookup {
         Lookup {
             object,
             state,
-            offset: address - self.range.start + offset,
+            offset: offset + (address - self.range.start),
             protection: self.protection(),
             wired: self.wire_count != 0,
             version,
@@ -638,9 +719,9 @@ intrusive_adapter!(
 );
 
 impl<'a> KeyAdapter<'a> for EntryAdapter {
-    type Key = usize;
+    type Key = VirtualAddress;
 
-    fn get_key(&self, entry: &'a Entry) -> usize {
+    fn get_key(&self, entry: &'a Entry) -> VirtualAddress {
         entry.range.start
     }
 }
@@ -654,9 +735,9 @@ intrusive_adapter!(
 );
 
 impl<'a> KeyAdapter<'a> for GapAdapter {
-    type Key = (usize, usize);
+    type Key = (usize, VirtualAddress);
 
-    fn get_key(&self, entry: &'a Entry) -> (usize, usize) {
+    fn get_key(&self, entry: &'a Entry) -> (usize, VirtualAddress) {
         (entry.gap.load(Ordering::Relaxed), entry.range.start)
     }
 }

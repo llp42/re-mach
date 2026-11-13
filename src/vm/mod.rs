@@ -13,6 +13,7 @@ pub mod phys_map;
 pub mod proxy;
 pub mod user;
 
+use core::ops::{Add, Sub};
 use core::sync::atomic::AtomicU32;
 
 use phys_map::MachinePhysMap as _;
@@ -29,6 +30,56 @@ bitflags::bitflags! {
         const WRITE = 2;
         /// Running it.
         const EXECUTE = 4;
+    }
+}
+
+/// A virtual address, as maps hold them.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct VirtualAddress(usize);
+
+impl VirtualAddress {
+    /// Rounds down to a multiple of `align`, a power of two.
+    pub const fn align_down(self, align: usize) -> Self {
+        Self(self.0 & !(align - 1))
+    }
+
+    /// Rounds up to a multiple of `align`.
+    pub const fn next_multiple_of(self, align: usize) -> Self {
+        Self(self.0.next_multiple_of(align))
+    }
+
+    /// `self` plus `size`; `None` on overflow.
+    pub fn checked_add(self, size: usize) -> Option<Self> {
+        self.0.checked_add(size).map(Self)
+    }
+}
+
+impl From<usize> for VirtualAddress {
+    fn from(address: usize) -> Self {
+        Self(address)
+    }
+}
+
+impl From<VirtualAddress> for usize {
+    fn from(address: VirtualAddress) -> Self {
+        address.0
+    }
+}
+
+impl Add<usize> for VirtualAddress {
+    type Output = Self;
+
+    fn add(self, size: usize) -> Self {
+        Self(self.0 + size)
+    }
+}
+
+impl Sub for VirtualAddress {
+    type Output = usize;
+
+    /// The bytes from `other` up to `self`.
+    fn sub(self, other: Self) -> usize {
+        self.0 - other.0
     }
 }
 

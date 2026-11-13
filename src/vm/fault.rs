@@ -10,7 +10,7 @@ use super::map::Map;
 use super::object::{Flags, Object, ObjectState};
 use super::page::{self, Page};
 use super::phys_map::{MachinePhysMap as _, Wiring};
-use super::{Protection, STATISTICS};
+use super::{Protection, STATISTICS, VirtualAddress};
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
 use crate::smp;
@@ -35,11 +35,11 @@ use crate::sync::TokenGuard;
     reason = "the lookups' and vm_fault_page's guards are moved out and dropped first"
 )]
 pub fn fault(map: &Map, address: usize, access: Protection) -> Result<(), Error> {
-    let mut lookup = map.lookup(address, access)?;
+    let mut lookup = map.lookup(VirtualAddress::from(address), access)?;
     // A reference of its own keeps the object while the map changes.
     lookup.object.reference();
     lookup.state.begin_paging();
-    let found = fault_page(lookup.object, lookup.state, lookup.offset);
+    let found = fault_page(lookup.object, lookup.state, usize::from(lookup.offset));
     let (mut protection, mut wired, mut version) =
         (lookup.protection, lookup.wired, lookup.version);
     // With no shadows, the page's object is the lookup's.
@@ -51,7 +51,7 @@ pub fn fault(map: &Map, address: usize, access: Protection) -> Result<(), Error>
         }
         // Not asking for writing: a page no longer writable is mapped without.
         let retry = map
-            .lookup(address, access - Protection::WRITE)
+            .lookup(VirtualAddress::from(address), access - Protection::WRITE)
             .unwrap_or_else(|_| {
                 panic!("vm_fault: vm_map_lookup failed after vm_map_verify, not yet")
             });

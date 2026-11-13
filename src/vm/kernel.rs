@@ -5,11 +5,11 @@
 
 use core::ptr::{self, NonNull};
 
-use super::map::Map;
+use super::map::{Map, Placement};
 use super::object::KERNEL_OBJECT;
 use super::page::{self, Page};
 use super::phys_map::MachinePhysMap as _;
-use super::{Inheritance, Protection};
+use super::{Inheritance, Protection, VirtualAddress};
 use core::ops::Range;
 
 use crate::arch::{
@@ -38,10 +38,13 @@ fn kernel_map() -> &'static Map {
 /// If the boot mappings can't be entered, or on a second call.
 pub fn init() {
     // A range can't end past the last page, so the map stops before it.
-    let bounds = MIN_KERNEL_ADDRESS..MAX_KERNEL_ADDRESS - PAGE_SIZE + 1;
+    let bounds = VirtualAddress::from(MIN_KERNEL_ADDRESS)
+        ..VirtualAddress::from(MAX_KERNEL_ADDRESS - PAGE_SIZE + 1);
     let map = Map::new(arch::PhysMap::kernel(), bounds);
+    let boot_space = arch::PhysMap::boot_space();
     if let Err(error) = map.enter(
-        arch::PhysMap::boot_space(),
+        Placement::Fixed(VirtualAddress::from(boot_space.start)),
+        boot_space.end - boot_space.start,
         Protection::READ | Protection::WRITE,
         Protection::all(),
         Inheritance::Copy,
@@ -86,6 +89,7 @@ pub fn map_device(physical: PhysAddr, size: usize) -> Result<NonNull<u8>, Error>
         Protection::all(),
         None,
     )?;
+    let range = usize::from(range.start)..usize::from(range.end);
     arch::PhysMap::enter_device(range.clone(), PhysAddr(physical.0 - offset));
     Ok(NonNull::new(ptr::with_exposed_provenance_mut(range.start + offset)).unwrap())
 }
@@ -110,6 +114,7 @@ pub fn allocate_wired(size: usize) -> Result<NonNull<u8>, Error> {
         Protection::all(),
         Some(&KERNEL_OBJECT),
     )?;
+    let range = usize::from(range.start)..usize::from(range.end);
     fill(range.clone())?;
     Ok(NonNull::new(ptr::with_exposed_provenance_mut(range.start)).unwrap())
 }
@@ -136,6 +141,7 @@ pub fn allocate_aligned(size: usize) -> Result<NonNull<u8>, Error> {
         Protection::all(),
         Some(&KERNEL_OBJECT),
     )?;
+    let range = usize::from(range.start)..usize::from(range.end);
     fill(range.clone())?;
     Ok(NonNull::new(ptr::with_exposed_provenance_mut(range.start)).unwrap())
 }
@@ -200,6 +206,7 @@ pub fn allocate_stack() -> Result<KernelStack, Error> {
         Protection::all(),
         Some(&KERNEL_OBJECT),
     )?;
+    let range = usize::from(range.start)..usize::from(range.end);
     fill(range.start + PAGE_SIZE..range.end)?;
     Ok(KernelStack { top: range.end })
 }

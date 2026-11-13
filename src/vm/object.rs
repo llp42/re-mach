@@ -3,6 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Memory objects' kernel side.
 
+use core::ops::Add;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
@@ -30,6 +31,30 @@ pub struct Object {
     persisting_link: LinkedListAtomicLink,
     /// Its state, behind its token.
     state: Token<ObjectState>,
+}
+
+/// A place in an object, in bytes from its start.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Offset(usize);
+
+impl From<usize> for Offset {
+    fn from(offset: usize) -> Self {
+        Self(offset)
+    }
+}
+
+impl From<Offset> for usize {
+    fn from(offset: Offset) -> Self {
+        offset.0
+    }
+}
+
+impl Add<usize> for Offset {
+    type Output = Self;
+
+    fn add(self, size: usize) -> Self {
+        Self(self.0 + size)
+    }
 }
 
 /// What an object's token guards; so far only its pages, where the last
