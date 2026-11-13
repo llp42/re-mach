@@ -20,7 +20,7 @@ use crate::processor::{DEFAULT_SET, ProcessorSet};
 use crate::sched::{Priority, USER_PRIORITY};
 use crate::slab::{Cache, CacheBox};
 use crate::smp;
-use crate::sync::{CriticalSection, OnceLock, Token};
+use crate::sync::{CriticalSection, OnceLock, Spinlock, Token};
 use crate::thread::{TaskThreadAdapter, Thread};
 use crate::vm::kernel::KERNEL_MAP;
 use crate::vm::map::Map;
@@ -35,10 +35,8 @@ pub struct Task {
     pub(super) map: UnsafeRef<Map>,
     /// Its names for ports and port sets.
     pub(super) space: UnsafeRef<Space>,
-    /// Its port, which controls it.
-    pub(super) self_port: AtomicPtr<Port>,
-    /// The send right for its port it hands out.
-    self_send: AtomicPtr<Port>,
+    /// Its port, and the send right it hands out for it.
+    pub(super) ports: Spinlock<TaskPorts>,
     /// Whether it may be moved to another processor set.
     may_assign: bool,
     /// When it was created.
@@ -67,6 +65,18 @@ intrusive_adapter!(
     )]
     pub SetTaskAdapter = UnsafeRef<Task>: Task { set_link => LinkedListAtomicLink }
 );
+
+/// A task's ports, under its lock; so far only its own.
+pub struct TaskPorts {
+    /// Its port, which controls it.
+    pub(super) self_port: Option<NonNull<Port>>,
+    /// The send right for its port it hands out.
+    self_send: Option<NonNull<Port>>,
+}
+
+// SAFETY: a port is shared under its own lock, and each slot's right keeps
+// its port alive.
+unsafe impl Send for TaskPorts {}
 
 /// Whether a task is alive, its priorities and suspensions, its threads and
 /// its name.
@@ -122,6 +132,30 @@ impl Task {
         members
             .threads
             .push_back(unsafe { UnsafeRef::from_raw(thread) });
+    }
+
+    /// Gives a new send right for its port, as `retrieve_task_self_fast`
+    /// does.
+    ///
+    /// # Panics
+    ///
+    /// If it has no port. If it hands out a right for another port: not
+    /// yet. As `Port::copy_send`.
+    pub(super) fn retrieve_self(&self) -> &Port {
+        let ports = self.ports.lock();
+        let port = ports
+            .self_port
+            .expect("retrieve_task_self_fast: no task port");
+        assert!(
+            ports.self_send == Some(port),
+            "retrieve_task_self_fast: an interposed port, not yet"
+        );
+        // SAFETY: its slots' rights hold references to it, under the lock;
+        // then the new right's.
+        let port = unsafe { port.as_ref() };
+        port.copy_send();
+        drop(ports);
+        port
     }
 
     /// Drops a reference on it, which is not its last.
@@ -316,8 +350,10 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
         map: unsafe { UnsafeRef::from_raw(ptr::from_ref(map)) },
         // SAFETY: its box, unused until given up below, outlives the task.
         space: unsafe { UnsafeRef::from_raw(ptr::from_mut(&mut *space)) },
-        self_port: AtomicPtr::new(ptr::null_mut()),
-        self_send: AtomicPtr::new(ptr::null_mut()),
+        ports: Spinlock::new(TaskPorts {
+            self_port: None,
+            self_send: None,
+        }),
         may_assign: true,
         creation_time: clock::time::stamp().into(),
         faults: AtomicUsize::new(0),
@@ -349,9 +385,11 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
     // later.
     let task = unsafe { task.as_ref() };
     port.set_kernel_object(KernelObject::Task(NonNull::from(task)));
-    let port = CacheBox::into_raw(port).as_ptr();
-    task.self_port.store(port, Ordering::Release);
-    task.self_send.store(port, Ordering::Release);
+    let port = CacheBox::into_raw(port);
+    let mut ports = task.ports.lock();
+    ports.self_port = Some(port);
+    ports.self_send = Some(port);
+    drop(ports);
     DEFAULT_SET.add_task(task);
     Ok(task)
 }

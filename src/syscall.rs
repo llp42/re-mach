@@ -59,7 +59,7 @@ pub static MACH_TRAPS: [MachTrap; COUNT] = {
     traps[25] = MachTrap::Written(message, 7);
     traps[26] = MachTrap::Written(reply_port, 0);
     traps[27] = MachTrap::NotYet("mach_thread_self");
-    traps[28] = MachTrap::NotYet("mach_task_self");
+    traps[28] = MachTrap::Written(task_self, 0);
     traps[29] = MachTrap::Written(host_self, 0);
     traps[30] = MachTrap::Written(print, 1);
     traps[39] = MachTrap::NotYet("syscall_device_writev_request");
@@ -133,6 +133,21 @@ fn reply_port(_: &[usize; 7]) -> u32 {
     Port::allocate(&thread.task().space)
         .expect("mach_reply_port: a failed allocation, not yet")
         .into()
+}
+
+/// Gives the caller a send right for its task's port, as `mach_task_self`:
+/// its name in the task's space.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU; as `Task::retrieve_self` and
+/// `Port::copy_out_send`.
+fn task_self(_: &[usize; 7]) -> u32 {
+    let thread = smp::current()
+        .active_thread()
+        .expect("mach_task_self: no current thread");
+    let task = thread.task();
+    task.retrieve_self().copy_out_send(&task.space).into()
 }
 
 /// Gives the caller a send right for the host's port, as `mach_host_self`:

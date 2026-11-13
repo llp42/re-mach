@@ -159,6 +159,21 @@ impl Port {
         self.references.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Makes a send right for it from another, as `ipc_port_copy_send`
+    /// does.
+    ///
+    /// # Panics
+    ///
+    /// If it has no send right. If it is dead: not yet.
+    pub fn copy_send(&self) {
+        let mut state = self.state.lock();
+        assert!(state.active, "ipc_port_copy_send: a dead port, not yet");
+        assert!(state.send_rights > 0, "ipc_port_copy_send: no send right");
+        self.reference();
+        state.send_rights += 1;
+        drop(state);
+    }
+
     /// Releases a send right for it, which the caller holds, with its
     /// reference, as `ipc_port_release_send` does.
     ///

@@ -79,7 +79,11 @@ pub fn create() {
     };
     set("host-port", port(&HOST.privileged_port));
     set("device-port", port(&device::MASTER_PORT));
-    set("kernel-task", port(&kernel_task.self_port));
+    let kernel_task_port = kernel_task.ports.lock().self_port;
+    set(
+        "kernel-task",
+        Value::Port(kernel_task_port.expect("bootstrap_create: no port")),
+    );
     set("kernel-command-line", Value::String(command_line));
     // Those the old Hurd's serverboot set.
     let (boot_args, root_device) = compat_strings(command_line);
