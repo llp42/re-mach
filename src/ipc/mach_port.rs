@@ -6,9 +6,11 @@
 use core::{ptr, slice};
 
 use super::entry::{Entry, Rights};
+use super::object::{self, Object};
 use super::port::{self, Port, PortName, PortType, Right};
+use super::port_set::PortSet;
 use super::space::Space;
-use super::{MessageType, object, right};
+use super::{MessageType, right};
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
 use crate::slab::CacheBox;
@@ -121,9 +123,9 @@ fn entry_type(entry: &Entry) -> PortType {
         .rights
         .intersects(Rights::SEND | Rights::SEND_ONCE)
     {
-        let port = entry
-            .object
-            .expect("mach_port_names_helper: a send right with no port");
+        let Some(Object::Port(port)) = entry.object else {
+            panic!("mach_port_names_helper: a send right with no port");
+        };
         // SAFETY: the entry holds a reference to its port, and the space's
         // lock keeps the entry.
         let port = unsafe { port.as_ref() };
@@ -182,16 +184,17 @@ pub fn rename(space: &Space, old_name: PortName, new_name: PortName) -> Result<(
 }
 
 /// Puts a new right of the kind numbered `right` in `space` as `name`, as
-/// `mach_port_allocate_name` does; so far only receive rights.
+/// `mach_port_allocate_name` does; so far receive rights and port sets.
 ///
 /// # Errors
 ///
-/// As `Port::allocate_name`.
+/// As `Port::allocate_name` and `PortSet::allocate_name`.
 ///
 /// # Panics
 ///
-/// If `name` is null or dead, or `right` is not a receive right: not yet.
-/// As `Port::allocate_name`.
+/// If `name` is null or dead, or `right` is neither a receive right nor a
+/// port set: not yet. As `Port::allocate_name` and
+/// `PortSet::allocate_name`.
 pub fn allocate_name(space: &Space, right: u32, name: PortName) -> Result<(), Error> {
     assert!(
         name.is_valid(),
@@ -202,7 +205,7 @@ pub fn allocate_name(space: &Space, right: u32, name: PortName) -> Result<(), Er
     });
     match right {
         Right::Receive => Port::allocate_name(space, name),
-        Right::PortSet => panic!("mach_port_allocate_name: ipc_pset_alloc_name, not yet"),
+        Right::PortSet => PortSet::allocate_name(space, name),
         Right::DeadName => panic!("mach_port_allocate_name: ipc_object_alloc_dead_name, not yet"),
     }
 }

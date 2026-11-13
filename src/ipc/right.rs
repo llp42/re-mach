@@ -7,6 +7,7 @@ use core::ptr::{self, NonNull};
 
 use super::MessageType;
 use super::entry::{Entry, EntryBits, Rights};
+use super::object::Object;
 use super::port::{Port, PortName, PortState, PortType};
 use super::space::{Space, SpaceState};
 use crate::arch::PhysAddr;
@@ -114,9 +115,9 @@ pub(super) fn copy_out(
 /// yet.
 fn check<'a>(state: &SpaceState, entry: &'a Entry) -> SpinlockGuard<'a, PortState> {
     assert!(state.active, "ipc_right_check: a dead space");
-    let port = entry
-        .object
-        .expect("ipc_right_check: a send right with no port");
+    let Some(Object::Port(port)) = entry.object else {
+        panic!("ipc_right_check: a send right with no port");
+    };
     // SAFETY: the entry holds a reference to its port, and the space's lock
     // keeps the entry.
     let port = unsafe { port.as_ref() };
@@ -164,8 +165,8 @@ pub(super) fn info(state: &SpaceState, entry: &Entry) -> PortType {
 ///
 /// If the space is dead, either name has no entry, or the new entry holds
 /// rights, or for rights that are none of Mach's. If the old entry has a
-/// dead-name or message-accepted request, or its rights are a receive or
-/// send-once right: not yet. As `SpaceState::deallocate`.
+/// dead-name or message-accepted request, or its rights are a receive,
+/// send-once or port set right: not yet. As `SpaceState::deallocate`.
 pub(super) fn rename(state: &mut SpaceState, old_name: PortName, new_name: PortName) {
     assert!(state.active, "ipc_right_rename: a dead space");
     let SpaceState {
@@ -205,7 +206,9 @@ pub(super) fn rename(state: &mut SpaceState, old_name: PortName, new_name: PortN
     new.request = request;
     new.object = object;
     if rights.bits() == Rights::SEND.bits() {
-        let port = object.expect("ipc_right_rename: a send right with no port");
+        let Some(Object::Port(port)) = object else {
+            panic!("ipc_right_rename: a send right with no port");
+        };
         // SAFETY: the entry holds a reference to its port, and the space's
         // lock keeps the entry.
         let port = unsafe { port.as_ref() };
@@ -217,6 +220,8 @@ pub(super) fn rename(state: &mut SpaceState, old_name: PortName, new_name: PortN
         panic!("ipc_right_rename: MACH_PORT_TYPE_RECEIVE, not yet");
     } else if rights.bits() == Rights::SEND_ONCE.bits() {
         panic!("ipc_right_rename: MACH_PORT_TYPE_SEND_ONCE, not yet");
+    } else if rights.bits() == Rights::PORT_SET.bits() {
+        panic!("ipc_right_rename: MACH_PORT_TYPE_PORT_SET, not yet");
     } else {
         panic!("ipc_right_rename: strange rights");
     }

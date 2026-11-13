@@ -3,25 +3,24 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Entries: one name in a space, and the rights it holds.
 
-use core::ptr::NonNull;
-
-use super::port::{Port, PortName};
+use super::object::Object;
+use super::port::PortName;
 use crate::collections::radix_tree::Owner;
 use crate::slab::{Cache, CacheBox};
 
-/// An entry: a name, its rights, and the port they are for.
+/// An entry: a name, its rights, and the object they are for.
 pub struct Entry {
     /// Its name.
     pub(super) name: PortName,
     /// Its rights, and their user references.
     pub(super) bits: EntryBits,
-    /// The port its rights are for.
-    pub(super) object: Option<NonNull<Port>>,
+    /// The port or port set its rights are for.
+    pub(super) object: Option<Object>,
     /// Its dead-name request; 0 for none.
     pub(super) request: u32,
 }
 
-// SAFETY: an entry has no interior mutability, and its port pointer is
+// SAFETY: an entry has no interior mutability, and its object's pointer is
 // followed only under `unsafe`.
 unsafe impl Sync for Entry {}
 
@@ -66,6 +65,8 @@ bitflags::bitflags! {
         const RECEIVE = 1 << 1;
         /// A send-once right.
         const SEND_ONCE = 1 << 2;
+        /// A port set's right.
+        const PORT_SET = 1 << 3;
     }
 }
 

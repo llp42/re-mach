@@ -10,6 +10,7 @@ use super::entry::Rights;
 use super::kernel_message::{
     self, EXPAND_FACTOR, Header, KernelMessage, MessageBits, SAVED_MESSAGE_SIZE,
 };
+use super::object::Object;
 use super::port::{Port, PortName};
 use super::space::KERNEL_SPACE;
 use crate::arch::PAGE_SIZE;
@@ -95,7 +96,9 @@ pub fn trap(
         destination.bits.rights.bits() == Rights::SEND.bits(),
         "mach_msg_trap: slow_copyin, not yet"
     );
-    let (Some(reply_port), Some(destination_port)) = (reply.object, destination.object) else {
+    let (Some(Object::Port(reply_port)), Some(Object::Port(destination_port))) =
+        (reply.object, destination.object)
+    else {
         panic!("mach_msg_trap: an entry with no port");
     };
     // SAFETY: the entries hold references to their ports, and the space's

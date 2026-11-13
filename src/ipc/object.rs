@@ -1,16 +1,26 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
-//! Objects: what a space's names stand for; so far ports.
+//! Objects: what a space's names stand for, ports and port sets.
 
 use core::ptr::NonNull;
 
 use super::entry::Rights;
 use super::port::{Port, PortName};
+use super::port_set::PortSet;
 use super::space::Space;
 use super::{MessageType, right};
 use crate::error::Error;
 use crate::slab::CacheBox;
+
+/// What an entry's rights are for.
+#[derive(Clone, Copy)]
+pub(super) enum Object {
+    /// A port.
+    Port(NonNull<Port>),
+    /// A port set.
+    PortSet(#[expect(dead_code, reason = "ipc_right_destroy reads it")] NonNull<PortSet>),
+}
 
 /// Puts the receive right for `port`, new, in `space` under a free name,
 /// and gives the name; the entry takes the right and the port's
@@ -31,27 +41,29 @@ pub(super) fn allocate(space: &Space, mut port: CacheBox<Port>) -> Result<PortNa
     let port = CacheBox::into_raw(port);
     // The receive right, with no user references.
     entry.bits.rights |= Rights::RECEIVE;
-    entry.object = Some(port);
+    entry.object = Some(Object::Port(port));
     drop(state);
     Ok(name)
 }
 
-/// Puts the receive right for `port`, new, in `space` as `name`, as
-/// `ipc_object_alloc_name` does; the entry takes the right and the port's
-/// reference, linked only once the port knows the name.
+/// Puts the right for `object`, new, in `space` as `name`, as
+/// `ipc_object_alloc_name` does: the receive right for a port, the port set
+/// right for a set, `kind` telling which. The entry takes the right and the
+/// object's reference.
 ///
 /// # Errors
 ///
-/// `ResourceShortage` if no entry or map node can be allocated; the port
+/// `ResourceShortage` if no entry or map node can be allocated; the object
 /// is freed.
 ///
 /// # Panics
 ///
 /// If `name` holds rights: not yet. As `SpaceState::allocate_name`.
-pub(super) fn allocate_name(
+pub(super) fn allocate_name<T>(
     space: &Space,
-    mut port: CacheBox<Port>,
+    object: CacheBox<T>,
     name: PortName,
+    kind: fn(NonNull<T>) -> Object,
 ) -> Result<(), Error> {
     let mut state = space.state.write();
     let entry = state.allocate_name(name)?;
@@ -60,11 +72,13 @@ pub(super) fn allocate_name(
         !entry.in_use(),
         "ipc_object_alloc_name: KERN_NAME_EXISTS, not yet"
     );
-    port.state.get_mut().receiver_name = name;
-    let port = CacheBox::into_raw(port);
-    // The receive right, with no user references.
-    entry.bits.rights |= Rights::RECEIVE;
-    entry.object = Some(port);
+    let object = kind(CacheBox::into_raw(object));
+    // The right, with no user references.
+    entry.bits.rights |= match object {
+        Object::Port(_) => Rights::RECEIVE,
+        Object::PortSet(_) => Rights::PORT_SET,
+    };
+    entry.object = Some(object);
     drop(state);
     Ok(())
 }
@@ -103,7 +117,7 @@ pub(super) fn copy_out(
             port_state.active,
             "ipc_object_copyout: a dead port, not yet"
         );
-        entry.object = Some(NonNull::from(port));
+        entry.object = Some(Object::Port(NonNull::from(port)));
         (name, port_state)
     };
     right::copy_out(&mut state, name, message_type, port, port_state);
@@ -154,7 +168,7 @@ pub(super) fn copy_out_name(
         port_state.active,
         "ipc_object_copyout_name: a dead port, not yet"
     );
-    entry.object = Some(NonNull::from(port));
+    entry.object = Some(Object::Port(NonNull::from(port)));
     right::copy_out(&mut state, name, message_type, port, port_state);
     drop(state);
     Ok(())

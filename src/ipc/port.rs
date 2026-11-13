@@ -123,8 +123,10 @@ impl Port {
     ///
     /// As `object::allocate_name`.
     pub(super) fn allocate_name(space: &Space, name: PortName) -> Result<(), Error> {
-        let port = CACHE.allocate(Self::new(NonNull::from(space)))?;
-        object::allocate_name(space, port, name)
+        let mut port = CACHE.allocate(Self::new(NonNull::from(space)))?;
+        // As ipc_port_init: its name there.
+        port.state.get_mut().receiver_name = name;
+        object::allocate_name(space, port, name, object::Object::Port)
     }
 
     /// Makes it stand for `object`.
