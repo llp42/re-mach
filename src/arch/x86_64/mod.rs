@@ -180,20 +180,19 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     // SAFETY: the boot CPU, once, after the physical map's bootstrap; no
     // copy or trap runs yet.
     unsafe { smap::init() };
-    // SAFETY: the boot CPU, once.
-    unsafe { gdt::init() };
+    // SAFETY: the boot CPU, once, with its own table.
+    unsafe { gdt::init(PerCpu::current().gdt()) };
     // SAFETY: the boot CPU, once, after the GDT.
     unsafe { idt::init() };
     // SAFETY: the boot CPU, once, after the IDT.
     unsafe { interrupt::init() };
     // SAFETY: the boot CPU, once, after the GDT.
-    unsafe { gdt::store_user_segments() };
+    unsafe { gdt::store_user_segments(PerCpu::current().gdt()) };
     // SAFETY: the boot CPU, once, after the user segments.
     unsafe { syscall::init() };
     // SAFETY: the boot CPU, once, after the GDT and its per-CPU data.
     unsafe { tss::init() };
     PerCpu::store_apic_id();
-    PerCpu::current().store_gdt(&gdt::GDT);
     machine::store_slot(0, Slot::new(CpuType::X86_64, CpuSubtype::AT386));
     startup::start()
 }

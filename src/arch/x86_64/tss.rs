@@ -28,7 +28,8 @@ static DEBUG_STACK: Stack<STACK_SIZE> = Stack::new();
 ///
 /// Runs once, on the boot CPU, after `gdt::init` and `per_cpu::init`.
 pub unsafe fn init() {
-    let tss = PerCpu::current().tss();
+    let cpu = PerCpu::current();
+    let tss = cpu.tss();
     let mut filled = tss.get();
     filled.privilege_stack_table[0] = PRIVILEGE_STACK.top();
     filled.interrupt_stack_table[0] = DOUBLE_FAULT_STACK.top();
@@ -36,5 +37,5 @@ pub unsafe fn init() {
     tss.set(filled);
     // SAFETY: the TSS stays in its per-CPU data, filled, and the selector
     // names its descriptor.
-    unsafe { load_tss(gdt::store_tss(tss.as_ptr())) };
+    unsafe { load_tss(gdt::store_tss(cpu.gdt(), tss.as_ptr())) };
 }

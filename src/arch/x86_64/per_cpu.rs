@@ -31,7 +31,7 @@ pub struct PerCpu {
     /// Its local APIC's ID.
     apic_id: OnceLock<u8>,
     /// Its GDT, which holds its TSS's descriptor.
-    gdt: OnceLock<&'static GlobalDescriptorTable<{ gdt::ENTRIES }>>,
+    gdt: GlobalDescriptorTable<{ gdt::ENTRIES }>,
     tss: Cell<TaskStateSegment>,
     /// The interrupts its critical sections held back, a bit per vector.
     pending_interrupts: [AtomicU64; 4],
@@ -96,7 +96,7 @@ impl PerCpu {
             this: AtomicPtr::new(ptr::null_mut()),
             common: smp::PerCpu::new(id),
             apic_id: OnceLock::new(),
-            gdt: OnceLock::new(),
+            gdt: GlobalDescriptorTable::from_raw_entries(&[0; gdt::ENTRIES]),
             tss: Cell::new(TaskStateSegment::new()),
             pending_interrupts: [const { AtomicU64::new(0) }; 4],
             interrupts_held: AtomicBool::new(false),
@@ -131,13 +131,9 @@ impl PerCpu {
         *self.apic_id.get().expect("per_cpu: no APIC ID yet")
     }
 
-    /// Stores its GDT.
-    ///
-    /// # Panics
-    ///
-    /// On a second call.
-    pub fn store_gdt(&self, table: &'static GlobalDescriptorTable<{ gdt::ENTRIES }>) {
-        assert!(self.gdt.set(table).is_ok(), "per_cpu: GDT stored twice");
+    /// Its GDT, which stays where it is.
+    pub const fn gdt(&self) -> &GlobalDescriptorTable<{ gdt::ENTRIES }> {
+        &self.gdt
     }
 
     /// Its TSS, which stays where it is.

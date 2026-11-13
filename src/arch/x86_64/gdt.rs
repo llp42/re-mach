@@ -28,22 +28,27 @@ pub const USER_CODE: SegmentSelector = SegmentSelector::new(4, PrivilegeLevel::R
 /// The TSS's selector; its descriptor takes two entries.
 const KERNEL_TSS: SegmentSelector = SegmentSelector::new(5, PrivilegeLevel::Ring0);
 
-/// The boot CPU's.
-pub static GDT: GlobalDescriptorTable<ENTRIES> = {
-    let mut gdt = GlobalDescriptorTable::from_raw_entries(&[0; ENTRIES]);
-    gdt.set(1, Descriptor::kernel_code_segment());
-    gdt.set(2, Descriptor::kernel_data_segment());
-    gdt
-};
-
-/// Loads the boot CPU's GDT and reloads CS, SS, DS and ES from it; FS and
-/// GS stay null, keeping the per-CPU GS base.
+/// Fills `table` with the kernel code and data segments, loads it and
+/// reloads CS, SS, DS and ES from it; FS and GS stay null, keeping the
+/// per-CPU GS base.
 ///
 /// # Safety
 ///
-/// Runs once, on the boot CPU.
-pub unsafe fn init() {
-    GDT.load();
+/// Runs once, on the CPU whose table `table` is, before any segment
+/// register loads from it.
+pub unsafe fn init(table: &'static GlobalDescriptorTable<ENTRIES>) {
+    // SAFETY: no segment register was loaded from the table.
+    unsafe {
+        table.store(
+            usize::from(KERNEL_CODE.index()),
+            Descriptor::kernel_code_segment(),
+        );
+        table.store(
+            usize::from(KERNEL_DATA.index()),
+            Descriptor::kernel_data_segment(),
+        );
+    }
+    table.load();
     // SAFETY: the selectors name the descriptors just loaded.
     unsafe {
         CS::set_reg(KERNEL_CODE);
@@ -53,37 +58,39 @@ pub unsafe fn init() {
     }
 }
 
-/// Writes the user data and code segments into the boot CPU's GDT.
+/// Writes the user data and code segments into `table`.
 ///
 /// # Safety
 ///
-/// Runs once, on the boot CPU, after `init`.
-pub unsafe fn store_user_segments() {
+/// Runs once, on the CPU whose table `table` is, after `init`.
+pub unsafe fn store_user_segments(table: &GlobalDescriptorTable<ENTRIES>) {
     // SAFETY: no segment register was loaded from these slots.
     unsafe {
-        GDT.store(
+        table.store(
             usize::from(USER_DATA.index()),
             Descriptor::user_data_segment(),
         );
-        GDT.store(
+        table.store(
             usize::from(USER_CODE.index()),
             Descriptor::user_code_segment(),
         );
     }
 }
 
-/// Writes `tss`'s descriptor into the boot CPU's GDT, returning its
-/// selector.
+/// Writes `tss`'s descriptor into `table`, returning its selector.
 ///
 /// # Safety
 ///
-/// Runs once, on the boot CPU, after `init`; `tss` is the boot CPU's, in
-/// its per-CPU data.
-pub unsafe fn store_tss(tss: *const TaskStateSegment) -> SegmentSelector {
+/// Runs once, on the CPU whose table `table` is, after `init`; `tss` is
+/// that CPU's, in its per-CPU data.
+pub unsafe fn store_tss(
+    table: &GlobalDescriptorTable<ENTRIES>,
+    tss: *const TaskStateSegment,
+) -> SegmentSelector {
     // SAFETY: guaranteed by the caller; TR was never loaded from these
     // slots.
     unsafe {
-        GDT.store(
+        table.store(
             usize::from(KERNEL_TSS.index()),
             Descriptor::tss_segment_unchecked(tss),
         )
