@@ -5,7 +5,7 @@
 
 use core::ops::{DerefMut, Range};
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use intrusive_collections::rbtree::Cursor;
 use intrusive_collections::{
@@ -46,8 +46,12 @@ pub struct Map {
 struct Contents {
     /// Its entries, by address.
     entries: RBTree<EntryAdapter>,
-    /// The entries free space follows, by its size, then by address.
+    /// The entries free space follows, by its size, then by when it was
+    /// inserted.
     gaps: RBTree<GapAdapter>,
+    /// How many gaps it has inserted; each insert stamps its entry with the
+    /// count before it.
+    gap_inserts: u64,
     /// The free space before the first entry; all of the map while it is
     /// empty.
     leading_gap: usize,
@@ -76,6 +80,7 @@ impl Map {
             contents: SleepLock::new(Contents {
                 entries: RBTree::new(EntryAdapter::NEW),
                 gaps: RBTree::new(GapAdapter::NEW),
+                gap_inserts: 0,
                 leading_gap,
                 first_free: None,
                 size: 0,
@@ -149,6 +154,7 @@ impl Map {
             start: AtomicUsize::new(usize::from(self.bounds.start)),
             end: AtomicUsize::new(usize::from(self.bounds.start)),
             gap: AtomicUsize::new(0),
+            gap_sequence: AtomicU64::new(0),
             protection: AtomicU32::new(protection.bits()),
             max_protection,
             inheritance,
@@ -227,12 +233,19 @@ impl Map {
                 .store(usize::from(range.end), Ordering::Relaxed);
             // Its gap shrinks to the space left before the next entry.
             if previous.gap_link.is_linked() {
-                let key = (previous.gap.load(Ordering::Relaxed), previous.start());
+                let key = (
+                    previous.gap.load(Ordering::Relaxed),
+                    previous.gap_sequence.load(Ordering::Relaxed),
+                );
                 contents.gaps.find_mut(&key).remove();
             }
             let gap = next - range.end;
             previous.gap.store(gap, Ordering::Relaxed);
             if gap != 0 {
+                previous
+                    .gap_sequence
+                    .store(contents.gap_inserts, Ordering::Relaxed);
+                contents.gap_inserts += 1;
                 contents.gaps.insert(previous.clone());
             }
             // The free space hint is left as it is. The entry after may now
@@ -305,6 +318,7 @@ impl Map {
             start: AtomicUsize::new(usize::from(range.start)),
             end: AtomicUsize::new(usize::from(range.end)),
             gap: AtomicUsize::new(next - range.end),
+            gap_sequence: AtomicU64::new(0),
             protection: AtomicU32::new((Protection::READ | Protection::WRITE).bits()),
             max_protection: Protection::all(),
             inheritance: Inheritance::Copy,
@@ -352,6 +366,7 @@ impl Map {
             start: AtomicUsize::new(usize::from(range.start)),
             end: AtomicUsize::new(usize::from(range.end)),
             gap: AtomicUsize::new(next - range.end),
+            gap_sequence: AtomicU64::new(0),
             protection: AtomicU32::new(protection.bits()),
             max_protection,
             inheritance: Inheritance::Copy,
@@ -766,6 +781,7 @@ impl Map {
                 start: AtomicUsize::new(usize::from(entry.start())),
                 end: AtomicUsize::new(usize::from(entry.end())),
                 gap: AtomicUsize::new(entry.gap.load(Ordering::Relaxed)),
+                gap_sequence: AtomicU64::new(0),
                 protection: AtomicU32::new(entry.protection().bits()),
                 max_protection: entry.max_protection,
                 inheritance: entry.inheritance,
@@ -1012,8 +1028,9 @@ impl Contents {
 
     /// Where `size` bytes fit at a multiple of `align`, a multiple of the
     /// page size, and the entry they would follow: after the smallest gap
-    /// that holds them however far aligning skips, the lowest among equals,
-    /// or else from the map's `start`, if the leading gap holds them.
+    /// that holds them however far aligning skips, the first inserted among
+    /// equals, or else from the map's `start`, if the leading gap holds
+    /// them.
     fn find_space(
         &self,
         start: VirtualAddress,
@@ -1021,10 +1038,9 @@ impl Contents {
         align: usize,
     ) -> Result<(Option<UnsafeRef<Entry>>, VirtualAddress), Error> {
         // Aligning a page boundary skips at most `align - PAGE_SIZE`.
-        let fit = self.gaps.lower_bound(Bound::Included(&(
-            size + align - PAGE_SIZE,
-            VirtualAddress::from(0),
-        )));
+        let fit = self
+            .gaps
+            .lower_bound(Bound::Included(&(size + align - PAGE_SIZE, 0)));
         let aligned = start.next_multiple_of(align);
         match fit.get() {
             Some(entry) => Ok((fit.clone_pointer(), entry.end().next_multiple_of(align))),
@@ -1035,12 +1051,11 @@ impl Contents {
 
     /// Where `size` bytes fit anywhere in a map of `bounds`: at its start
     /// while it is empty, else right after `first_free`, else after the
-    /// smallest gap that holds them.
+    /// smallest gap that holds them, the last inserted among equals.
     ///
     /// # Panics
     ///
-    /// If no free space holds them, or other gaps are as large as the one
-    /// found: not yet.
+    /// If no free space holds them: not yet.
     fn find_anywhere(&self, bounds: &Range<VirtualAddress>, size: usize) -> VirtualAddress {
         if self.entries.is_empty() {
             assert!(
@@ -1056,22 +1071,19 @@ impl Contents {
         {
             return entry.end();
         }
-        let fit = self
+        let gap = self
             .gaps
-            .lower_bound(Bound::Included(&(size, VirtualAddress::from(0))));
-        let entry = fit
+            .lower_bound(Bound::Included(&(size, 0)))
             .get()
-            .unwrap_or_else(|| panic!("vm_map_find_entry_anywhere: no more room, not yet"));
-        // GNU Mach takes the last inserted of equal gaps; this tree orders
-        // them by address.
-        let gap = entry.gap.load(Ordering::Relaxed);
-        assert!(
-            fit.peek_next()
-                .get()
-                .is_none_or(|next| next.gap.load(Ordering::Relaxed) != gap),
-            "vm_map_find_entry_anywhere: the gap list, not yet"
-        );
-        entry.end()
+            .unwrap_or_else(|| panic!("vm_map_find_entry_anywhere: no more room, not yet"))
+            .gap
+            .load(Ordering::Relaxed);
+        // The last inserted of that size, as GNU Mach's gap list.
+        self.gaps
+            .upper_bound(Bound::Included(&(gap, u64::MAX)))
+            .get()
+            .unwrap()
+            .end()
     }
 
     /// Links `entry` after `previous`, or first, keeping the gaps and size
@@ -1092,12 +1104,19 @@ impl Contents {
         match previous {
             Some(previous) => {
                 if previous.gap_link.is_linked() {
-                    let key = (previous.gap.load(Ordering::Relaxed), previous.start());
+                    let key = (
+                        previous.gap.load(Ordering::Relaxed),
+                        previous.gap_sequence.load(Ordering::Relaxed),
+                    );
                     self.gaps.find_mut(&key).remove();
                 }
                 let previous_gap = range.start - previous.end();
                 previous.gap.store(previous_gap, Ordering::Relaxed);
                 if previous_gap != 0 {
+                    previous
+                        .gap_sequence
+                        .store(self.gap_inserts, Ordering::Relaxed);
+                    self.gap_inserts += 1;
                     self.gaps.insert(previous);
                 }
             }
@@ -1109,7 +1128,12 @@ impl Contents {
         self.entries.insert(unsafe { UnsafeRef::from_raw(entry) });
         if gap != 0 {
             // SAFETY: as above.
-            self.gaps.insert(unsafe { UnsafeRef::from_raw(entry) });
+            let entry = unsafe { UnsafeRef::from_raw(entry) };
+            entry
+                .gap_sequence
+                .store(self.gap_inserts, Ordering::Relaxed);
+            self.gap_inserts += 1;
+            self.gaps.insert(entry);
         }
         self.size += range.end - range.start;
         // SAFETY: as above; `Map::delete` moves the free space hint off an
@@ -1136,18 +1160,28 @@ impl Contents {
         let entry = cursor.remove().expect("vm_map_entry_unlink: no entry");
         let next = cursor.get().map_or(bounds.end, Entry::start);
         if entry.gap_link.is_linked() {
-            let key = (entry.gap.load(Ordering::Relaxed), start);
+            let key = (
+                entry.gap.load(Ordering::Relaxed),
+                entry.gap_sequence.load(Ordering::Relaxed),
+            );
             self.gaps.find_mut(&key).remove();
         }
         match previous {
             Some(previous) => {
                 if previous.gap_link.is_linked() {
-                    let key = (previous.gap.load(Ordering::Relaxed), previous.start());
+                    let key = (
+                        previous.gap.load(Ordering::Relaxed),
+                        previous.gap_sequence.load(Ordering::Relaxed),
+                    );
                     self.gaps.find_mut(&key).remove();
                 }
                 let gap = next - previous.end();
                 previous.gap.store(gap, Ordering::Relaxed);
                 if gap != 0 {
+                    previous
+                        .gap_sequence
+                        .store(self.gap_inserts, Ordering::Relaxed);
+                    self.gap_inserts += 1;
                     self.gaps.insert(previous);
                 }
             }
@@ -1183,6 +1217,7 @@ impl Contents {
             start: AtomicUsize::new(usize::from(end)),
             end: AtomicUsize::new(usize::from(entry.end())),
             gap: AtomicUsize::new(gap),
+            gap_sequence: AtomicU64::new(0),
             protection: AtomicU32::new(entry.protection().bits()),
             max_protection: entry.max_protection,
             inheritance: entry.inheritance,
@@ -1197,7 +1232,7 @@ impl Contents {
         entry.end.store(usize::from(end), Ordering::Relaxed);
         // Linked after it: the free space after it moves to the new entry.
         if entry.gap_link.is_linked() {
-            let key = (gap, entry.start());
+            let key = (gap, entry.gap_sequence.load(Ordering::Relaxed));
             self.gaps.find_mut(&key).remove();
         }
         entry.gap.store(0, Ordering::Relaxed);
@@ -1207,7 +1242,10 @@ impl Contents {
         self.entries.insert(unsafe { UnsafeRef::from_raw(new) });
         if gap != 0 {
             // SAFETY: as above.
-            self.gaps.insert(unsafe { UnsafeRef::from_raw(new) });
+            let new = unsafe { UnsafeRef::from_raw(new) };
+            new.gap_sequence.store(self.gap_inserts, Ordering::Relaxed);
+            self.gap_inserts += 1;
+            self.gaps.insert(new);
         }
         // SAFETY: the entry holds a reference on its object, which lives
         // until vm_object_deallocate frees it.
@@ -1238,6 +1276,7 @@ impl EntryReservation {
                     start: AtomicUsize::new(0),
                     end: AtomicUsize::new(0),
                     gap: AtomicUsize::new(0),
+                    gap_sequence: AtomicU64::new(0),
                     protection: AtomicU32::new(Protection::empty().bits()),
                     max_protection: Protection::empty(),
                     inheritance: Inheritance::Copy,
@@ -1283,6 +1322,9 @@ pub struct Entry {
     /// The free space after it, up to the next entry or the map's end;
     /// changed only under the map's write lock.
     gap: AtomicUsize,
+    /// Its place among equal gaps: its map's `gap_inserts` when its gap was
+    /// last inserted; changed only under the map's write lock.
+    gap_sequence: AtomicU64,
     /// What it allows now, as `Protection`'s bits; changed only under the
     /// map's write lock.
     protection: AtomicU32,
@@ -1430,10 +1472,13 @@ intrusive_adapter!(
 );
 
 impl<'a> KeyAdapter<'a> for GapAdapter {
-    type Key = (usize, VirtualAddress);
+    type Key = (usize, u64);
 
-    fn get_key(&self, entry: &'a Entry) -> (usize, VirtualAddress) {
-        (entry.gap.load(Ordering::Relaxed), entry.start())
+    fn get_key(&self, entry: &'a Entry) -> (usize, u64) {
+        (
+            entry.gap.load(Ordering::Relaxed),
+            entry.gap_sequence.load(Ordering::Relaxed),
+        )
     }
 }
 
