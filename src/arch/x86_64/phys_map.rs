@@ -304,6 +304,35 @@ impl MachinePhysMap for PhysMap {
         }
     }
 
+    fn change_wiring(&self, address: usize, wiring: Wiring) {
+        assert!(
+            ptr::eq(self, Self::kernel()),
+            "pmap_change_wiring: a user pmap, not yet"
+        );
+        assert!(
+            address >= MIN_KERNEL_ADDRESS,
+            "pmap_change_wiring: {address:#x} is not a kernel address"
+        );
+        assert!(
+            matches!(wiring, Wiring::Pageable),
+            "pmap_change_wiring: wiring down, not yet"
+        );
+        // Kernel space's PML4 entries are always there.
+        for level in [2, 1] {
+            let entry = PageTableFlags::from_bits_truncate(
+                window_entry(address, level).load(Ordering::Relaxed),
+            );
+            assert!(
+                entry.contains(PageTableFlags::PRESENT)
+                    && !entry.contains(PageTableFlags::HUGE_PAGE),
+                "pmap_change_wiring: pte missing"
+            );
+        }
+        // Atomic, as the CPU sets accessed and dirty bits; it ignores this
+        // one, so no TLB needs flushing.
+        window_entry(address, 0).fetch_and(!WIRED.bits(), Ordering::Relaxed);
+    }
+
     fn protect(&self, range: Range<usize>, protection: Protection) {
         let no_execute = *NO_EXECUTE.get().expect("pmap: not bootstrapped");
         // Nothing to lower: writing stays, and running too or the CPU can't

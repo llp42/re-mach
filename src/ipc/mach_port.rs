@@ -24,7 +24,7 @@ use crate::vm::{self, Protection};
 /// If the walk finds at least as many names as the space's size. If the
 /// space is dead, no room is left in the IPC map, the space outgrew the
 /// arrays or holds no names: not yet. As `vm::user::allocate`,
-/// `Map::pageable` and `entry_type`. Always, at the arrays' unwiring: not
+/// `Map::pageable` and `entry_type`. Always, at the arrays' copy-in: not
 /// yet.
 pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
     let map = super::KERNEL_MAP
@@ -65,7 +65,7 @@ pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
     // SAFETY: the arrays are two of this call's allocations, apart and
     // page-aligned, that nothing else reaches: `size` bytes each, readable
     // and writable, wired and zero-filled.
-    let (names, types) = unsafe {
+    let (name_array, type_array) = unsafe {
         (
             slice::from_raw_parts_mut(
                 ptr::with_exposed_provenance_mut::<PortName>(usize::from(names)),
@@ -82,8 +82,8 @@ pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
     let _timestamp = port::timestamp();
     for entry in state.map.iter().filter(|entry| entry.in_use()) {
         let port_type = entry_type(entry);
-        names[actual] = entry.name;
-        types[actual] = port_type;
+        name_array[actual] = entry.name;
+        type_array[actual] = port_type;
         actual += 1;
     }
     assert!(
@@ -92,7 +92,14 @@ pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
     );
     drop(state);
     assert!(actual != 0, "mach_port_names: no names, not yet");
-    panic!("mach_port_names: vm_map_pageable with VM_PROT_NONE, not yet");
+    let size_used = (actual * size_of::<PortName>()).next_multiple_of(PAGE_SIZE);
+    // Pageable again, to be copied in.
+    for array in [names, types] {
+        if let Err(error) = map.pageable(array..array + size_used, Protection::empty()) {
+            panic!("mach_port_names: vm_map_pageable failed: {error:?}");
+        }
+    }
+    panic!("mach_port_names: vm_map_copyin, not yet");
 }
 
 /// The type of `entry`'s rights, its space locked, as

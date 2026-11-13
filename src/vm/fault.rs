@@ -59,7 +59,12 @@ pub fn fault(map: &Map, address: usize, access: Protection, purpose: Purpose) ->
     // A reference of its own keeps the object while the map changes.
     lookup.object.reference();
     lookup.state.begin_paging();
-    let found = fault_page(lookup.object, lookup.state, usize::from(lookup.offset));
+    let found = fault_page(
+        lookup.object,
+        lookup.state,
+        usize::from(lookup.offset),
+        Residency::Optional,
+    );
     let (mut protection, mut wired, mut version) =
         (lookup.protection, lookup.wired, lookup.version);
     // With no shadows, the page's object is the lookup's.
@@ -182,6 +187,41 @@ fn wire_fast(address: usize, entry: &Entry) -> Result<(), Error> {
     Err(Error::Failure)
 }
 
+/// Unwires the pages of `entry` in `map`, while the map is write-locked: each
+/// loses its mapping's wiring, then `fault_page` finds it, resident, to
+/// unwire it.
+///
+/// # Panics
+///
+/// For a submap, or an entry with no object: not yet. As
+/// `MachinePhysMap::change_wiring`, `fault_page` and `Page::unwire`.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the object's guard is moved into fault_page, then out and dropped"
+)]
+pub(super) fn unwire(map: &Map, entry: &Entry) {
+    let Backing::Object { object, offset } = &entry.backing else {
+        panic!("vm_fault_unwire: vm_fault on a submap, not yet");
+    };
+    // SAFETY: the entry holds a reference on its object, and the map's write
+    // lock, held through the call, keeps the entry and so that reference.
+    let object = unsafe { object.load(Ordering::Relaxed).as_ref() }
+        .expect("vm_fault_unwire: vm_fault with no object, not yet");
+    let start = usize::from(entry.start());
+    for address in (start..usize::from(entry.end())).step_by(PAGE_SIZE) {
+        map.phys_map().change_wiring(address, Wiring::Pageable);
+        let mut state = object.lock();
+        state.begin_paging();
+        let offset = offset.load(Ordering::Relaxed) + (address - start);
+        let Found { page, mut state } = fault_page(object, state, offset, Residency::Required);
+        page.unwire();
+        page.clear_busy();
+        state.end_paging();
+        drop(state);
+    }
+    // pmap_pageable has no counterpart: the machine's does nothing.
+}
+
 /// What `fault_page` finds.
 struct Found {
     /// The page, busy.
@@ -191,18 +231,30 @@ struct Found {
     state: TokenGuard<'static, ObjectState>,
 }
 
+/// Whether the page `fault_page` finds must be resident.
+#[derive(Clone, Copy)]
+enum Residency {
+    /// It must: it is wired.
+    Required,
+    /// It need not: one missing is filled with zeros.
+    Optional,
+}
+
 /// Finds the page at `offset` in `object`, whose `state` is locked and
-/// holds a paging operation for the call; so far one resident there, or
-/// one `object` lacks, which it fills with zeros there.
+/// holds a paging operation for the call; so far one resident there, or,
+/// as `residency` allows, one `object` lacks, which it fills with zeros
+/// there.
 ///
 /// # Panics
 ///
-/// If no thread runs on the CPU. If the page is busy, `object` has a pager,
-/// a shadow or a copy, or if no page is free: not yet.
+/// If no thread runs on the CPU. If the page is busy, it must be resident
+/// and is not, `object` has a pager, a shadow or a copy, or if no page is
+/// free: not yet.
 fn fault_page(
     object: &'static Object,
     mut state: TokenGuard<'static, ObjectState>,
     offset: usize,
+    residency: Residency,
 ) -> Found {
     let task = smp::current()
         .active_thread()
@@ -221,6 +273,10 @@ fn fault_page(
         );
         return Found { page, state };
     }
+    assert!(
+        matches!(residency, Residency::Optional),
+        "vm_fault_page: must_be_resident, no page in the first object, not yet"
+    );
     // The placeholder: a real page, busy, where GNU Mach's is fictitious.
     // Objects have no colour of their own yet.
     let page = page::allocate(offset / PAGE_SIZE)

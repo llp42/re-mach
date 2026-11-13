@@ -455,9 +455,9 @@ impl Map {
     }
 
     /// Sets what the entries of `range`, cut to the map's bounds, allow
-    /// while wired to `access`, splitting them at its end, then wires those
-    /// newly given access; the range holds no hole, and each entry allows
-    /// `access`.
+    /// while wired to `access`, splitting them at its end, then unwires
+    /// those given none and wires those newly given some; the range holds
+    /// no hole, and each entry allows `access`.
     ///
     /// # Errors
     ///
@@ -467,10 +467,11 @@ impl Map {
     ///
     /// # Panics
     ///
-    /// If no entry can be allocated. If the range starts inside an entry,
-    /// an entry is to be unwired or is a submap, or the map is not over the
-    /// kernel's physical map: not yet. As `Contents::clip_end`,
-    /// `object::allocate` and `fault::wire`.
+    /// If no entry can be allocated. If the range starts inside an entry, a
+    /// wired entry allows nothing, an entry to wire is a submap, or wiring
+    /// faults are due and the map is not over the kernel's physical map: not
+    /// yet. As `Contents::clip_end`, `object::allocate`, `fault::unwire` and
+    /// `fault::wire`.
     #[expect(
         clippy::too_many_lines,
         reason = "vm_map_pageable's and vm_map_pageable_scan's steps, in GNU Mach's order"
@@ -525,10 +526,19 @@ impl Map {
         let mut cursor = contents.entries.lower_bound(Bound::Included(&start));
         while let Some(entry) = cursor.get().filter(|entry| entry.start() < end) {
             cursor.move_next();
-            if entry.wired_access().is_empty() || entry.protection().is_empty() {
+            if entry.wired_access().is_empty() {
+                if entry.wire_count() != 0 {
+                    // vm_map_entry_reset_wired.
+                    contents.size_wired -= entry.end() - entry.start();
+                    entry.wire_count.store(0, Ordering::Relaxed);
+                    fault::unwire(self, entry);
+                }
+                continue;
+            }
+            if entry.protection().is_empty() {
                 assert!(
                     entry.wire_count() == 0,
-                    "vm_map_pageable_scan: vm_fault_unwire, not yet"
+                    "vm_map_pageable_scan: vm_fault_unwire after a change of protection, not yet"
                 );
                 continue;
             }

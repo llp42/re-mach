@@ -59,6 +59,15 @@ pub trait MachinePhysMap {
     /// is active on another CPU: not yet.
     fn enter(&self, address: usize, physical: PhysAddr, protection: Protection, wiring: Wiring);
 
+    /// Makes the mapping of kernel `address` in the kernel's physical map
+    /// wired as `wiring` says.
+    ///
+    /// # Panics
+    ///
+    /// If `address` is not a kernel address, or no table maps it. In
+    /// another physical map, or for `Wiring::Wired`: not yet.
+    fn change_wiring(&self, address: usize, wiring: Wiring);
+
     /// Cuts the mappings of user `range` down to `protection`, skipping the
     /// pages and tables not there.
     ///

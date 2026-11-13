@@ -174,6 +174,30 @@ impl Page {
         self.wire_count.store(count + 1, Ordering::Relaxed);
     }
 
+    /// Unwires it once, behind its object's token; unwired for good, it goes
+    /// referenced to the end of its colour's active queue.
+    ///
+    /// # Panics
+    ///
+    /// If it is not wired.
+    pub(super) fn unwire(&'static self) {
+        let count = self.wire_count.load(Ordering::Relaxed);
+        assert!(count != 0, "vm_page_unwire: a page not wired");
+        self.wire_count.store(count - 1, Ordering::Relaxed);
+        // No page is fictitious or private yet.
+        if count > 1 {
+            return;
+        }
+        let color = color(self.address().0 / PAGE_SIZE);
+        QUEUES.active.push(color, self);
+        let flags = Flags::from_bits_retain(self.flags.load(Ordering::Relaxed));
+        self.flags.store(
+            (flags | Flags::ACTIVE | Flags::REFERENCED).bits(),
+            Ordering::Relaxed,
+        );
+        QUEUES.wired_pages.fetch_sub(1, Ordering::Relaxed);
+    }
+
     /// Fills it with zeros.
     ///
     /// # Safety
