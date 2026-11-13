@@ -30,15 +30,11 @@ pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
     let map = super::KERNEL_MAP
         .get()
         .expect("mach_port_names: no IPC map");
-    let names = vm::user::allocate(map, Placement::Anywhere, size)
+    let _names = vm::user::allocate(map, Placement::Anywhere, size)
         .unwrap_or_else(|_| panic!("mach_port_names: no more room in ipc_kernel_map, not yet"));
-    let types = vm::user::allocate(map, Placement::Anywhere, size)
+    let _types = vm::user::allocate(map, Placement::Anywhere, size)
         .unwrap_or_else(|_| panic!("mach_port_names: no more room in ipc_kernel_map, not yet"));
-    panic!(
-        "mach_port_names: vm_map_pageable of {:#x} and {:#x}, not yet",
-        usize::from(names),
-        usize::from(types)
-    );
+    panic!("mach_port_names: vm_map_pageable, not yet");
 }
 
 /// Inserts the right `message_type` names, for `port`, in `space` as

@@ -250,3 +250,24 @@ pub fn allocate(size: usize) -> &'static Object {
         .store(CacheBox::into_raw(port).as_ptr(), Ordering::Release);
     object
 }
+
+/// The object and offset two adjoining ranges backed by `previous` and
+/// `next`, none for no object, have once joined.
+///
+/// # Panics
+///
+/// Unless neither has an object: not yet.
+pub fn coalesce(
+    previous: Option<&'static Object>,
+    next: Option<&'static Object>,
+) -> (Option<&'static Object>, Offset) {
+    match (previous, next) {
+        // Neither exists, so the offsets don't matter.
+        (None, None) => (None, Offset::from(0)),
+        (Some(previous), Some(next)) if ptr::eq(previous, next) => {
+            panic!("vm_object_coalesce: the same object, not yet")
+        }
+        (Some(_), Some(_)) => panic!("vm_object_coalesce: two different objects, not yet"),
+        _ => panic!("vm_object_coalesce: one object, not yet"),
+    }
+}

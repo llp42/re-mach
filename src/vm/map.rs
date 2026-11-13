@@ -105,7 +105,8 @@ impl Map {
 
     /// Maps `size` bytes with nothing behind them yet, placed as `placement`
     /// says, allowing `protection` now and at most `max_protection`, and
-    /// giving child tasks `inheritance`; returns where.
+    /// giving child tasks `inheritance`; returns where. The entry right
+    /// before them grows over them if it maps alike.
     ///
     /// # Errors
     ///
@@ -116,9 +117,14 @@ impl Map {
     ///
     /// # Panics
     ///
-    /// If `max_protection` is none, a neighbouring entry could be extended
-    /// over the range, or for `Placement::Anywhere` if the map is too small
-    /// or the free space hint can't hold them: not yet.
+    /// If `max_protection` is none, the next entry could be extended over
+    /// the range, the entry grown over it could merge with the next, or for
+    /// `Placement::Anywhere` if the map is too small or the free space hint
+    /// can't hold them: not yet. As `object::coalesce`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "vm_map_enter's steps, in GNU Mach's order"
+    )]
     pub fn enter(
         &self,
         placement: Placement,
@@ -188,20 +194,54 @@ impl Map {
                 && neighbour.max_protection == entry.max_protection
                 && neighbour.wire_count() == 0
         };
-        assert!(
-            !below
-                .get()
-                .is_some_and(|previous| previous.end() == range.start && extends(previous)),
-            "vm_map_enter: vm_object_coalesce with the previous entry, not yet"
-        );
+        let previous = below.clone_pointer();
+        let next = above.get().map_or(self.bounds.end, Entry::start);
+        // The entry before grows over the range if their objects coalesce.
+        if let Some(previous) = previous
+            .as_ref()
+            .filter(|previous| previous.end() == range.start && extends(previous))
+            && let Backing::Object {
+                object: slot,
+                offset,
+            } = &previous.backing
+        {
+            // SAFETY: the entry holds a reference on its object, which lives
+            // until vm_object_deallocate frees it.
+            let (object, object_offset) =
+                object::coalesce(unsafe { slot.load(Ordering::Relaxed).as_ref() }, None);
+            slot.store(
+                object.map_or(ptr::null_mut(), |object| ptr::from_ref(object).cast_mut()),
+                Ordering::Relaxed,
+            );
+            offset.store(usize::from(object_offset), Ordering::Relaxed);
+            contents.size = size;
+            previous
+                .end
+                .store(usize::from(range.end), Ordering::Relaxed);
+            // Its gap shrinks to the space left before the next entry.
+            if previous.gap_link.is_linked() {
+                let key = (previous.gap.load(Ordering::Relaxed), previous.start());
+                contents.gaps.find_mut(&key).remove();
+            }
+            let gap = next - range.end;
+            previous.gap.store(gap, Ordering::Relaxed);
+            if gap != 0 {
+                contents.gaps.insert(previous.clone());
+            }
+            // The free space hint is left as it is. The entry after may now
+            // merge into the grown one.
+            coalesce(&contents.entries.lower_bound(Bound::Excluded(&range.start)));
+            drop(contents);
+            // The entry made before the lock is unused.
+            drop(entry);
+            return Ok(range);
+        }
         assert!(
             !above
                 .get()
                 .is_some_and(|next| next.start() == range.end && extends(next)),
             "vm_map_enter: vm_object_coalesce with the next entry, not yet"
         );
-        let previous = below.clone_pointer();
-        let next = above.get().map_or(self.bounds.end, Entry::start);
         entry
             .start
             .store(usize::from(range.start), Ordering::Relaxed);
