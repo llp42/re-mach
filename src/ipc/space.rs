@@ -5,7 +5,7 @@
 
 use core::ptr::NonNull;
 
-use super::entry::{self, Entry, ZERO_ENTRY};
+use super::entry::{self, Entry};
 use super::port::PortName;
 use crate::collections::radix_tree::RadixTree;
 use crate::error::Error;
@@ -26,9 +26,9 @@ pub(super) struct SpaceState {
     /// Whether it is in use; special spaces never are.
     pub(super) active: bool,
     /// Its entries, by name.
-    pub(super) map: RadixTree<Entry>,
-    /// Its send rights' entries, by port.
-    pub(super) reverse_map: RadixTree<Entry>,
+    pub(super) map: RadixTree<CacheBox<Entry>>,
+    /// Its send rights' entries, by port, as the name map points to them.
+    pub(super) reverse_map: RadixTree<NonNull<Entry>>,
     /// How many names it holds.
     pub(super) size: u32,
 }
@@ -54,7 +54,7 @@ impl Space {
     /// `ResourceShortage` if no space can be allocated.
     pub fn create() -> Result<CacheBox<Self>, Error> {
         let mut map = RadixTree::new();
-        map.insert(PortName::NULL.key(), NonNull::from(&ZERO_ENTRY))
+        map.insert_shared(PortName::NULL.key())
             .map_err(|_| Error::ResourceShortage)?;
         CACHE.allocate(Self {
             references: Count::new(2),
@@ -88,12 +88,7 @@ impl SpaceState {
     /// The entry of `name`, if it holds rights, as `ipc_entry_lookup` finds
     /// it.
     pub(super) fn lookup(&self, name: PortName) -> Option<&Entry> {
-        self.map
-            .lookup(name.key())
-            // SAFETY: the space's lock, held, guards its entries, and no
-            // mutable reference to one is alive while the state is shared.
-            .map(|entry| unsafe { entry.as_ref() })
-            .filter(|entry| entry.in_use())
+        self.map.get(name.key()).filter(|entry| entry.in_use())
     }
 
     /// The lowest free name, and a new entry for it that holds no rights.
@@ -105,21 +100,17 @@ impl SpaceState {
     /// # Panics
     ///
     /// If the space is dead: not yet.
-    pub(super) fn allocate(&mut self) -> Result<(PortName, NonNull<Entry>), Error> {
+    pub(super) fn allocate(&mut self) -> Result<(PortName, &mut Entry), Error> {
         assert!(self.active, "ipc_entry_alloc: a dead space, not yet");
         // Entries are never freed yet, so there is no free list to take from.
-        let entry = CacheBox::into_raw(entry::CACHE.allocate(Entry::new(PortName::NULL))?);
-        let Ok(key) = self.map.insert_alloc(entry) else {
-            // SAFETY: it came from `into_raw` of an entry box, and the map
-            // didn't take it.
-            drop(unsafe { CacheBox::from_raw(&entry::CACHE, entry) });
-            return Err(Error::ResourceShortage);
-        };
+        let entry = entry::CACHE.allocate(Entry::new(PortName::NULL))?;
+        let (key, entry) = self
+            .map
+            .insert_alloc(entry)
+            .map_err(|_| Error::ResourceShortage)?;
         self.size += 1;
         let name = PortName::from_key(key);
-        // SAFETY: the space's lock, held, guards its entries, and no
-        // reference to this one is alive.
-        unsafe { (*entry.as_ptr()).name = name };
+        entry.name = name;
         Ok((name, entry))
     }
 
@@ -132,23 +123,21 @@ impl SpaceState {
     /// # Panics
     ///
     /// If the space is dead, or the name's entry is free: not yet.
-    pub(super) fn allocate_name(&mut self, name: PortName) -> Result<NonNull<Entry>, Error> {
+    pub(super) fn allocate_name(&mut self, name: PortName) -> Result<&mut Entry, Error> {
         assert!(self.active, "ipc_entry_alloc_name: a dead space, not yet");
         let key = name.key();
-        if let Some(entry) = self.map.lookup(key) {
-            // SAFETY: the space's lock, held, guards its entries, and no
-            // reference to this one is alive.
-            let used = unsafe { entry.as_ref() }.in_use();
-            assert!(used, "ipc_entry_alloc_name: a free entry, not yet");
+        if self.map.get(key).is_some() {
+            // The zero entry, which is free, is never lent mutably.
+            let Some(entry) = self.map.get_mut(key).filter(|entry| entry.in_use()) else {
+                panic!("ipc_entry_alloc_name: a free entry, not yet");
+            };
             return Ok(entry);
         }
-        let entry = CacheBox::into_raw(entry::CACHE.allocate(Entry::new(name))?);
-        if self.map.insert(key, entry).is_err() {
-            // SAFETY: it came from `into_raw` of an entry box, and the map
-            // didn't take it.
-            drop(unsafe { CacheBox::from_raw(&entry::CACHE, entry) });
-            return Err(Error::ResourceShortage);
-        }
+        let entry = entry::CACHE.allocate(Entry::new(name))?;
+        let entry = self
+            .map
+            .insert(key, entry)
+            .map_err(|_| Error::ResourceShortage)?;
         self.size += 1;
         Ok(entry)
     }

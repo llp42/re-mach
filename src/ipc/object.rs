@@ -29,9 +29,6 @@ pub(super) fn allocate(space: &Space, mut port: CacheBox<Port>) -> Result<PortNa
     let (name, entry) = state.allocate()?;
     port.state.get_mut().receiver_name = name;
     let port = CacheBox::into_raw(port);
-    // SAFETY: the space's lock, held, guards its entries, and no reference
-    // to this new one is alive.
-    let entry = unsafe { &mut *entry.as_ptr() };
     // The receive right, with no user references.
     entry.bits.rights |= Rights::RECEIVE;
     entry.object = Some(port);
@@ -64,7 +61,7 @@ pub(super) fn copy_out(
     } else {
         right::reverse(space, &state, port)
     };
-    let (name, entry, port_state) = if let Some(found) = found {
+    let (name, port_state) = if let Some(found) = found {
         found
     } else {
         let (name, entry) = state.allocate()?;
@@ -73,14 +70,10 @@ pub(super) fn copy_out(
             port_state.active,
             "ipc_object_copyout: a dead port, not yet"
         );
-        // SAFETY: the space's lock, held, guards its entries, and no
-        // reference to this new one is alive.
-        unsafe { (*entry.as_ptr()).object = Some(NonNull::from(port)) };
-        (name, entry, port_state)
+        entry.object = Some(NonNull::from(port));
+        (name, port_state)
     };
-    // SAFETY: `reverse` or `allocate` gave the space's entry for `name`,
-    // which the lock still guards, and no reference to it is alive.
-    unsafe { right::copy_out(&mut state, name, entry, message_type, port, port_state) };
+    right::copy_out(&mut state, name, message_type, port, port_state);
     drop(state);
     Ok(name)
 }
@@ -97,6 +90,10 @@ pub(super) fn copy_out(
 ///
 /// If `port` is dead, or `space` holds a send right for it: not yet; as
 /// `SpaceState::allocate_name`, `right::reverse` and `right::copy_out`.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the port's guard is moved into right::copy_out"
+)]
 pub(super) fn copy_out_name(
     space: &Space,
     port: &Port,
@@ -104,7 +101,7 @@ pub(super) fn copy_out_name(
     name: PortName,
 ) -> Result<(), Error> {
     let mut state = space.state.write();
-    let entry = state.allocate_name(name)?;
+    let used = state.allocate_name(name)?.in_use();
     if !matches!(message_type, MessageType::PortSendOnce) {
         let found = right::reverse(space, &state, port);
         assert!(
@@ -112,21 +109,20 @@ pub(super) fn copy_out_name(
             "ipc_object_copyout_name: a right ipc_right_reverse found, not yet"
         );
     }
-    // SAFETY: the space's lock, held, guards its entries, and no reference
-    // to this one is alive.
-    if unsafe { entry.as_ref() }.in_use() {
+    if used {
         return Err(Error::NameExists);
     }
+    let entry = state
+        .map
+        .get_mut(name.key())
+        .expect("ipc_object_copyout_name: no entry");
     let port_state = port.state.lock();
     assert!(
         port_state.active,
         "ipc_object_copyout_name: a dead port, not yet"
     );
-    // SAFETY: as above; a free entry is a new one, never the zero entry.
-    unsafe { (*entry.as_ptr()).object = Some(NonNull::from(port)) };
-    // SAFETY: `allocate_name` gave the space's entry for `name`, which the
-    // lock still guards, and no reference to it is alive.
-    unsafe { right::copy_out(&mut state, name, entry, message_type, port, port_state) };
+    entry.object = Some(NonNull::from(port));
+    right::copy_out(&mut state, name, message_type, port, port_state);
     drop(state);
     Ok(())
 }

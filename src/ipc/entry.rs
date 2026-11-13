@@ -6,7 +6,8 @@
 use core::ptr::NonNull;
 
 use super::port::{Port, PortName};
-use crate::slab::Cache;
+use crate::collections::radix_tree::Owner;
+use crate::slab::{Cache, CacheBox};
 
 /// An entry: a name, its rights, and the port they are for.
 pub struct Entry {
@@ -64,7 +65,14 @@ bitflags::bitflags! {
 }
 
 /// The entry of name 0, which every space reserves.
-pub static ZERO_ENTRY: Entry = Entry::new(PortName::NULL);
+static ZERO_ENTRY: Entry = Entry::new(PortName::NULL);
+
+// SAFETY: an entry box gives the tree an entry nothing else points to,
+// which may move between threads with its space; the zero entry is a
+// static nothing writes.
+unsafe impl Owner for CacheBox<Entry> {
+    const SHARED: &'static Entry = &ZERO_ENTRY;
+}
 
 /// The cache entries come from.
 pub(super) static CACHE: Cache<Entry> = Cache::new("ipc_entry");
