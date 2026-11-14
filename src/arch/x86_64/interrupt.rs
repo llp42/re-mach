@@ -14,7 +14,7 @@ use x86_64::structures::idt::InterruptStackFrameValue;
 use super::per_cpu::{KERNEL_STACK, PerCpu};
 use super::serial::Serial;
 use super::trap::TrapFrame;
-use super::{MachineState, apic, idt};
+use super::{MachineState, apic, idt, shootdown};
 use crate::clock;
 use crate::config::HZ;
 use crate::machine::Mode;
@@ -118,12 +118,19 @@ extern "sysv64" fn user_interrupt(frame: &TrapFrame) -> ! {
 }
 
 /// Holds the interrupt back inside a critical section, and handles it in
-/// one otherwise.
+/// one otherwise; a shootdown is never held back.
 extern "sysv64" fn interrupt(frame: &TrapFrame) {
     let cpu = PerCpu::current();
     let _interrupt = cpu.common().enter_interrupt();
     // The local APIC's spurious vector, which takes no EOI.
     if frame.vector == 0xff {
+        return;
+    }
+    // Its sender waits for it, maybe holding a lock this CPU's section
+    // waits on.
+    if frame.vector == shootdown::VECTOR {
+        apic::end_of_interrupt();
+        shootdown::interrupt();
         return;
     }
     // The timer's EOI comes first, so a tick held back still lets the next

@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 //! Sets of CPUs.
 
+use core::iter;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// An atomic set of CPU numbers, a bit each, for up to 256 CPUs.
@@ -42,6 +43,20 @@ impl CpuMask {
                 others &= !(1 << (cpu % 64));
             }
             others != 0
+        })
+    }
+
+    /// The CPUs it holds, in order, each word loaded `Acquire`.
+    pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        self.0.iter().enumerate().flat_map(|(word, bits)| {
+            let mut bits = bits.load(Ordering::Acquire);
+            iter::from_fn(move || {
+                (bits != 0).then(|| {
+                    let bit = bits.trailing_zeros();
+                    bits &= bits - 1;
+                    word * 64 + usize::try_from(bit).unwrap()
+                })
+            })
         })
     }
 }

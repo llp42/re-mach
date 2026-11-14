@@ -28,6 +28,7 @@ mod pic;
 mod reset;
 mod rtc;
 mod serial;
+mod shootdown;
 mod smap;
 mod stack;
 mod syscall;
