@@ -34,7 +34,7 @@ pub struct Task {
     /// How many references it has.
     references: AtomicU32,
     /// Its address space.
-    pub(super) map: UnsafeRef<Map>,
+    pub(super) map: Reference<Map>,
     /// Its names for ports and port sets.
     pub(super) space: Reference<Space>,
     /// Its port, and the send right it hands out for it.
@@ -117,8 +117,8 @@ impl Task {
             VirtualAddress::from(MIN_USER_ADDRESS)..VirtualAddress::from(MAX_USER_ADDRESS),
         )
         .unwrap_or_else(|error| panic!("task_create_kernel: {error:?}, pmap_destroy not yet"));
-        // SAFETY: a task's map lives until vm_map_deallocate frees it, which
-        // comes later.
+        // SAFETY: the box, given up, holds the map's first reference, which
+        // the task takes.
         let map = unsafe { CacheBox::into_raw(map).as_ref() };
         Ok(create_with_map(map).unwrap_or_else(|error| {
             panic!("task_create_kernel: {error:?}, vm_map_deallocate not yet")
@@ -328,6 +328,16 @@ pub fn space_of(port: &Port) -> Option<Reference<Space>> {
     })
 }
 
+/// The map of the task `port` stands for, with a reference to it taken
+/// under the port's lock, as `convert_port_to_map` gives it.
+pub fn map_of(port: &Port) -> Option<Reference<Map>> {
+    port.with_kernel_object(|object| match object {
+        // SAFETY: a task outlives its port's standing for it.
+        Some(KernelObject::Task(task)) => Some(unsafe { task.as_ref() }.map.clone()),
+        _ => None,
+    })
+}
+
 /// The kernel's task, once `init` creates it.
 pub static KERNEL_TASK: OnceLock<&'static Task> = OnceLock::new();
 
@@ -343,22 +353,23 @@ static CACHE: Cache<Task> = Cache::new("task");
 pub fn init() {
     CACHE.register();
     arch::Current::task_module_init();
+    // The kernel task takes the kernel map's one reference.
     let map = KERNEL_MAP.get().expect("task_init: no kernel map");
     let task = create_with_map(map).unwrap_or_else(|error| panic!("task_init: {error:?}"));
     task.members.lock().name.set(format_args!("gnumach"));
     assert!(KERNEL_TASK.set(task).is_ok(), "task_init: twice");
 }
 
-/// A new task with no parent over `map`, named by its address: a new
-/// space, and a port with a send right, at the default set's priorities,
-/// in the default set.
+/// A new task with no parent over `map`, whose reference the caller gives,
+/// named by its address: a new space, and a port with a send right, at the
+/// default set's priorities, in the default set.
 fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
     let mut space = Space::create()?;
     let port = Port::allocate_kernel()?;
     let mut task = CACHE.allocate(Task {
         references: AtomicU32::new(2),
-        // SAFETY: a task's map outlives it.
-        map: unsafe { UnsafeRef::from_raw(ptr::from_ref(map)) },
+        // SAFETY: the caller's reference to the map, which the task takes.
+        map: unsafe { Reference::from_raw(NonNull::from(map)) },
         // SAFETY: the box, given up below, holds the task's reference.
         space: unsafe { Reference::from_raw(NonNull::from(&mut *space)) },
         ports: Spinlock::new(TaskPorts {

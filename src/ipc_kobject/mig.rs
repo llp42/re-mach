@@ -187,7 +187,7 @@ macro_rules! subsystem {
     (
         base $base:literal;
         $(
-            $offset:literal $name:ident ($port:ident = $intran:path $(, $($arguments:tt)+)?)
+            $offset:literal $name:ident $arguments:tt
             $(-> ($($outs:tt)+))?;
         )*
     ) => {
@@ -196,7 +196,7 @@ macro_rules! subsystem {
             id: i32,
         ) -> Option<
             fn(
-                &$crate::ipc::kernel_message::KernelMessage,
+                &mut $crate::ipc::kernel_message::KernelMessage,
                 &mut $crate::ipc::kernel_message::KernelMessage,
             ),
         > {
@@ -210,13 +210,36 @@ macro_rules! subsystem {
         mod stub {
             $(
                 $crate::ipc_kobject::mig::subsystem!(
-                    @sort $name ($port = $intran) [] [] [$($($arguments)+)?] [$($($outs)+)?]
+                    @head $name $arguments [$($($outs)+)?]
                 );
             )*
         }
     };
+    // The request port: through an intran, or raw.
+    (
+        @head $name:ident ($port:ident = $intran:path $(, $($arguments:tt)+)?) $out_list:tt
+    ) => {
+        $crate::ipc_kobject::mig::subsystem!(
+            @sort $name (intran $port $intran) [] [] [$($($arguments)+)?] $out_list
+        );
+    };
+    (@head $name:ident ($port:ident: Port $(, $($arguments:tt)+)?) $out_list:tt) => {
+        $crate::ipc_kobject::mig::subsystem!(
+            @sort $name (raw $port) [] [] [$($($arguments)+)?] $out_list
+        );
+    };
     // Sorts the arguments, in order, into ins, the request's fields, and outs,
     // the reply's, each `(name kind parameters)`.
+    // A send right in, through an intran.
+    (
+        @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*]
+        [$in:ident = $intran:path $(, $($rest:tt)*)?] $out_list:tt
+    ) => {
+        $crate::ipc_kobject::mig::subsystem!(
+            @sort $name $head [$($ins)* ($in send_right $intran)] [$($outs)*] [$($($rest)*)?]
+            $out_list
+        );
+    };
     // An in-argument.
     (
         @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*]
@@ -254,17 +277,17 @@ macro_rules! subsystem {
         );
     };
     // Sorted: the stub, given the names of the locals the rules reach.
-    (@sort $name:ident ($port:ident = $intran:path) [$($ins:tt)*] [$($outs:tt)*] [] []) => {
+    (@sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*] [] []) => {
         $crate::ipc_kobject::mig::subsystem!(
-            @stub $name ($port = $intran) [$($ins)*] [$($outs)*] request reply
+            @stub $name $head [$($ins)*] [$($outs)*] request reply port
         );
     };
     // The stub: one skeleton, each argument through its kind's rules.
     (
-        @stub $name:ident ($port:ident = $intran:path)
+        @stub $name:ident ($port_kind:ident $port:ident $($intran:path)?)
         [$(($in:ident $in_kind:ident $($in_parameter:tt)*))*]
         [$(($out:ident $out_kind:ident $($out_parameter:tt)*))*]
-        $request:ident $reply:ident
+        $request:ident $reply:ident $request_port:ident
     ) => {
         /// The routine's stub.
         pub(super) mod $name {
@@ -290,37 +313,42 @@ macro_rules! subsystem {
                 $($out: mig::subsystem!(@field reply $out_kind $($out_parameter)*),)*
             }
 
-            /// Serves `request`, as MIG's stub does.
+            /// Serves `request`, as MIG's stub does; the request's send rights
+            /// are taken out of it, and released as the call ends.
             ///
             /// # Panics
             ///
             /// On a request MIG refuses: not yet; as the routine.
-            pub fn serve(request: &KernelMessage, reply: &mut KernelMessage) {
-                // SAFETY: `Request` is `repr(C)`, a `Header`, then `Inline` data only.
-                let $request = unsafe { request.layout::<Request>() };
+            pub fn serve(request: &mut KernelMessage, reply: &mut KernelMessage) {
+                // SAFETY: `Request` is `repr(C)`, a `Header`, then `Inline` data or
+                // ports' addresses only.
+                let $request = unsafe { request.layout_mut::<Request>() };
+                // Complex if it carries a right.
                 assert!(
                     usize::try_from($request.header.size) == Ok(size_of::<Request>())
-                        && !$request.header.bits.is_complex()
+                        && $request.header.bits.is_complex()
+                            == mig::subsystem!(@complex $($in_kind)*)
                         $(&& mig::subsystem!(@check $request $in $in_kind $($in_parameter)*))*,
                     concat!(stringify!($name), ": MIG_BAD_ARGUMENTS, not yet")
                 );
                 // SAFETY: copied in, the destination is a port's exposed address, and
                 // the request holds a reference to it.
-                let port =
+                let $request_port =
                     unsafe { &*ptr::with_exposed_provenance::<Port>($request.header.remote_port) };
                 // SAFETY: `Reply` is `repr(C)`, a `ReplyHeader`, then `Inline` or
                 // `Element` data, or copies' addresses, only.
                 let $reply = unsafe { reply.layout_mut::<Reply>() };
-                // The intran's value drops right after the call.
+                // The intrans' values and the rights drop right after the call.
                 let result: Result<
                     mig::subsystem!(
                         @type $(mig::subsystem!(@value $out_kind $($out_parameter)*)),*
                     ),
                     $crate::error::Error,
                 > = {
-                    let $port = $intran(port);
+                    $(mig::subsystem! { @take $request $in $in_kind $($in_parameter)* })*
+                    let $port = mig::subsystem!(@port $request_port $port_kind $($intran)?);
                     super::super::$name(
-                        $port.as_deref()
+                        mig::subsystem!(@port_pass $port $port_kind)
                         $(, mig::subsystem!(@pass $request $reply $in $in_kind $($in_parameter)*))*
                     )
                 };
@@ -328,20 +356,51 @@ macro_rules! subsystem {
             }
         }
     };
+    // The request port as the routine gets it: through its intran, or raw.
+    (@port $request_port:ident intran $intran:path) => { $intran($request_port) };
+    (@port $request_port:ident raw) => { $request_port };
+    (@port_pass $port:ident intran) => { $port.as_deref() };
+    (@port_pass $port:ident raw) => { $port };
+    // Whether the request is complex: if any in is a right.
+    (@complex) => { false };
+    (@complex send_right $($rest:ident)*) => { true };
+    (@complex $kind:ident $($rest:ident)*) => { mig::subsystem!(@complex $($rest)*) };
+    // A right's handle takes it out of the request, its slot cleared; null
+    // gives none.
+    (@take $request:ident $in:ident send_right $intran:path) => {
+        let $in = core::ptr::NonNull::new(core::ptr::with_exposed_provenance_mut::<
+            $crate::ipc::port::Port,
+        >(core::mem::take(&mut $request.$in.data)))
+        .map(|port| {
+            // SAFETY: copied in, a port's data is the exposed address of a
+            // reference to it given up by `into_raw`, which the handle takes.
+            let port = unsafe { $crate::reference::Reference::from_raw(port) };
+            $crate::ipc::port::SendRight::new(port)
+        });
+    };
+    (@take $request:ident $in:ident $kind:ident $($parameter:tt)*) => {};
     // Each kind's field: in the request, then in the reply.
+    (@field request send_right $intran:path) => { mig::Argument<usize> };
     (@field request inline $type:ty) => { mig::Argument<$type> };
     (@field request count $element:ty, $max:literal) => { mig::Argument<u32> };
     (@field reply inline $type:ty) => { mig::Argument<$type> };
     (@field reply count $element:ty, $max:literal) => { mig::Argument<[$element; $max]> };
     (@field reply out_of_line $element:ty) => { mig::Argument<usize> };
     // Its check: the word, whole.
+    (@check $request:ident $in:ident send_right $intran:path) => {
+        $request.$in.word == mig::type_word($crate::ipc::MessageType::PortSend, 64, 1)
+    };
     (@check $request:ident $in:ident inline $type:ty) => {
         $request.$in.word == <$type as mig::Inline>::WORD
     };
     (@check $request:ident $in:ident count $element:ty, $max:literal) => {
         $request.$in.word == <u32 as mig::Inline>::WORD
     };
-    // What the routine gets: the data; for a count, the reply's array, cut to it.
+    // What the routine gets: the data; for a right, its intran's value; for a
+    // count, the reply's array, cut to it.
+    (@pass $request:ident $reply:ident $in:ident send_right $intran:path) => {
+        $in.as_deref().and_then($intran).as_deref()
+    };
     (@pass $request:ident $reply:ident $in:ident inline $type:ty) => { $request.$in.data };
     (@pass $request:ident $reply:ident $in:ident count $element:ty, $max:literal) => {
         &mut $reply.$in.data[..usize::try_from($request.$in.data).unwrap().min($max)]

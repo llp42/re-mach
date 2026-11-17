@@ -33,6 +33,17 @@ bitflags::bitflags! {
     }
 }
 
+bitflags::bitflags! {
+    /// What wiring a whole map covers, as Mach's interface numbers it; none
+    /// unwires it.
+    pub struct Wire: u32 {
+        /// What it maps now.
+        const CURRENT = 1;
+        /// What it maps later.
+        const FUTURE = 2;
+    }
+}
+
 /// A virtual address, as maps hold them.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VirtualAddress(usize);

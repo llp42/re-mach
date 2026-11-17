@@ -155,6 +155,10 @@ SPDX-FileName: include/mach/exec/exec.h
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
 
+SPDX-FileName: include/mach/gnumach.defs
+SPDX-FileCopyrightText: 2012 Free Software Foundation
+SPDX-License-Identifier: GPL-2.0-or-later
+
 SPDX-FileName: include/mach/host_info.h
 SPDX-FileCopyrightText: 1993, 1992, 1991, 1990, 1989, 1988 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
@@ -230,6 +234,10 @@ SPDX-FileContributor: Avadis Tevanian, Jr.
 SPDX-FileContributor: Michael Wayne Young
 SPDX-FileContributor: David Golub
 SPDX-License-Identifier: CMU-Mach
+
+SPDX-FileName: include/mach/vm_wire.h
+SPDX-FileCopyrightText: 2017 Free Software Foundation
+SPDX-License-Identifier: GPL-2.0-or-later
 
 SPDX-FileName: ipc/copy_user.c
 SPDX-FileCopyrightText: 2023 Free Software Foundation

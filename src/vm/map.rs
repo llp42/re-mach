@@ -20,12 +20,12 @@ use super::{Inheritance, Protection, VirtualAddress};
 use crate::arch::{PAGE_SIZE, PhysMap};
 use crate::collections::ArrayVec;
 use crate::error::Error;
+use crate::reference::{Count, Counted};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{OnceLock, SleepLock, TokenGuard};
 
 /// An address map: ranges of virtual memory and what they map; so far only
 /// what a new map sets.
-#[expect(dead_code, reason = "vm_map_reference and vm_set_size_limit read them")]
 pub struct Map {
     /// The addresses it may map.
     bounds: Range<VirtualAddress>,
@@ -33,10 +33,11 @@ pub struct Map {
     #[expect(clippy::struct_field_names, reason = "named for its type, PhysMap")]
     phys_map: &'static PhysMap,
     /// How many references it has.
-    references: u32,
+    references: Count,
     /// The most it may map, in bytes.
     size_limit: usize,
     /// The most `size_limit` may be raised to.
+    #[expect(dead_code, reason = "vm_set_size_limit reads it")]
     max_size_limit: usize,
     /// What changes as it maps and unmaps, behind its lock.
     contents: SleepLock<Contents>,
@@ -74,7 +75,7 @@ impl Map {
         Self {
             bounds,
             phys_map,
-            references: 1,
+            references: Count::new(1),
             size_limit: usize::MAX,
             max_size_limit: usize::MAX,
             contents: SleepLock::new(Contents {
@@ -1015,6 +1016,22 @@ pub struct Lookup {
     pub wired: bool,
     /// The map's version at the lookup.
     pub version: u32,
+}
+
+// SAFETY: its count is its own, and `free` frees nothing yet.
+unsafe impl Counted for Map {
+    fn references(&self) -> &Count {
+        &self.references
+    }
+
+    /// Frees `map`, as `vm_map_deallocate` does at zero.
+    ///
+    /// # Panics
+    ///
+    /// Always: not yet.
+    unsafe fn free(_map: NonNull<Self>) {
+        panic!("vm_map_deallocate: the last reference, not yet");
+    }
 }
 
 impl Contents {

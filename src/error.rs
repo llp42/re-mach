@@ -21,6 +21,10 @@ pub enum Error {
     ResourceShortage,
     /// The name denotes a right already.
     NameExists,
+    /// The target is not an active task.
+    InvalidTask,
+    /// The target is not a host, or not the host port the call needs.
+    InvalidHost,
 }
 
 impl From<Error> for u32 {
@@ -33,6 +37,8 @@ impl From<Error> for u32 {
             Error::Failure => 5,
             Error::ResourceShortage => 6,
             Error::NameExists => 13,
+            Error::InvalidTask => 16,
+            Error::InvalidHost => 22,
         }
     }
 }

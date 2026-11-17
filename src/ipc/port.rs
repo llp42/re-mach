@@ -3,6 +3,8 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Ports.
 
+use core::mem::ManuallyDrop;
+use core::ops::Deref;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -316,6 +318,33 @@ impl From<CacheBox<Port>> for Reference<Port> {
     fn from(port: CacheBox<Port>) -> Self {
         // SAFETY: a port's box holds its first reference, given up here.
         unsafe { Self::from_raw(CacheBox::into_raw(port)) }
+    }
+}
+
+/// A send right for a port, released as it drops.
+pub struct SendRight(ManuallyDrop<Reference<Port>>);
+
+impl SendRight {
+    /// The handle of a send right for `port`, which the caller gives with its
+    /// reference.
+    pub const fn new(port: Reference<Port>) -> Self {
+        Self(ManuallyDrop::new(port))
+    }
+}
+
+impl Deref for SendRight {
+    type Target = Port;
+
+    fn deref(&self) -> &Port {
+        &self.0
+    }
+}
+
+impl Drop for SendRight {
+    /// Releases the right, as `ipc_port_release_send` does.
+    fn drop(&mut self) {
+        // SAFETY: drop runs once, and the field is not used after.
+        Port::release_send(unsafe { ManuallyDrop::take(&mut self.0) });
     }
 }
 

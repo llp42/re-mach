@@ -4,10 +4,10 @@
 //! The virtual memory calls of Mach's interface.
 
 use super::map::{Change, Map, Placement};
-use super::{Inheritance, Protection, VirtualAddress};
+use super::{Inheritance, Protection, VirtualAddress, Wire};
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
-use crate::ipc::port::Port;
+use crate::ipc::port::{KernelObject, Port};
 
 /// Maps `size` bytes of zero-filled memory into `map`, as `placement`
 /// says, a fixed address rounded down to a page, `size` rounded up to
@@ -164,4 +164,30 @@ pub fn protect(
         protection,
         change,
     )
+}
+
+/// Wires all of `map` as `flags` say, or unwires it all for none, if
+/// `host` is the host's privileged port.
+///
+/// # Errors
+///
+/// `InvalidHost` unless `host` is the host's privileged port, alive,
+/// `InvalidTask` for no map, `InvalidArgument` if `flags` hold a bit
+/// `Wire` lacks.
+///
+/// # Panics
+///
+/// Past those checks: not yet.
+pub fn wire_all(host: &Port, map: Option<&Map>, flags: u32) -> Result<(), Error> {
+    if !matches!(host.kernel_object(), Some(KernelObject::HostPrivileged(_))) {
+        return Err(Error::InvalidHost);
+    }
+    if map.is_none() {
+        return Err(Error::InvalidTask);
+    }
+    if Wire::from_bits(flags).is_none() {
+        return Err(Error::InvalidArgument);
+    }
+    // Maps hold no projected buffers.
+    panic!("vm_wire_all: vm_map_pageable_all, not yet")
 }

@@ -3,6 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Serving the messages sent to ports the kernel receives on.
 
+mod gnumach;
 mod mach_host;
 mod mach_port;
 mod mig;
@@ -50,8 +51,9 @@ pub fn server(mut request: KernelMessage) -> KernelMessage {
     reply_header.return_code.word = <i32 as mig::Inline>::WORD;
     let routine = mach_port::routine(header.id)
         .or_else(|| mach_host::routine(header.id))
+        .or_else(|| gnumach::routine(header.id))
         .unwrap_or_else(|| panic!("ipc_kobject_server: MIG_BAD_ID, not yet"));
-    routine(&request, &mut reply);
+    routine(&mut request, &mut reply);
     let kernel_task = task::KERNEL_TASK
         .get()
         .expect("ipc_kobject_server: no kernel task");
