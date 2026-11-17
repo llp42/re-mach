@@ -293,6 +293,15 @@ pub fn configure_io_apics() {
     setup_local(local);
 }
 
+/// Sets another CPU's local APIC up and turns it on, as it starts.
+///
+/// # Panics
+///
+/// If the ACPI step found no local APIC.
+pub fn setup_other_cpu() {
+    setup_local(LOCAL_APIC.get().expect("lapic_setup: no local APIC"));
+}
+
 /// Sets the current CPU's local APIC up and turns it on: LINT0, the timer
 /// and the performance counter masked, LINT1 delivering NMIs, every
 /// priority accepted.
@@ -306,25 +315,39 @@ fn setup_local(local: &Registers) {
     local.write(local::ERROR_STATUS, 0);
 }
 
-/// Calibrates the current CPU's local APIC timer against the time counter
+/// Calibrates the boot CPU's local APIC timer against the time counter
 /// over `CALIBRATION_TICKS` ticks, then starts it ticking `HZ` times a
 /// second.
 ///
 /// # Panics
 ///
-/// If the ACPI step found no local APIC, or the timer did not count.
+/// If the ACPI step found no local APIC, the timer did not count, or it
+/// was calibrated already.
 pub fn start_timer() {
     let local = LOCAL_APIC.get().expect("startrtclock: no local APIC");
-    let count = if let Some(&count) = TICK_COUNT.get() {
-        count
-    } else {
-        let count = calibrate(local);
-        assert!(
-            TICK_COUNT.set(count).is_ok(),
-            "startrtclock: calibrated twice"
-        );
-        count
-    };
+    let count = calibrate(local);
+    assert!(
+        TICK_COUNT.set(count).is_ok(),
+        "startrtclock: calibrated twice"
+    );
+    start_periodic(local, count);
+}
+
+/// Starts another CPU's local APIC timer ticking `HZ` times a second, on
+/// the boot CPU's calibration.
+///
+/// # Panics
+///
+/// If the ACPI step found no local APIC, or the boot CPU's timer is not
+/// calibrated.
+pub fn start_other_cpu_timer() {
+    let local = LOCAL_APIC.get().expect("startrtclock: no local APIC");
+    let count = *TICK_COUNT.get().expect("startrtclock: not calibrated");
+    start_periodic(local, count);
+}
+
+/// Starts the current CPU's local APIC timer, periodic, `count` per tick.
+fn start_periodic(local: &Registers, count: u32) {
     local.write(local::DIVIDE, DIVIDE_BY_2);
     local.write(
         local::TIMER,

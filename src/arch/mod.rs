@@ -39,7 +39,7 @@ pub trait Machine {
     /// Starts the other CPUs the ACPI tables list as enabled, and leaves
     /// them parked, on the boot CPU.
     fn start_other_cpus();
-    /// Starts the current CPU's clock ticking.
+    /// Starts the boot CPU's clock ticking, on the boot CPU.
     fn start_clock();
     /// The time counter: nanoseconds since it started.
     fn counter_nanoseconds() -> u64;

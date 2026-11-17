@@ -210,8 +210,8 @@ unsafe extern "sysv64" fn high_entry() -> ! {
 
 /// Sets AP `cpu` up, from `high_entry` on its boot stack: its per-CPU data,
 /// local APIC and caching, then, once the boot CPU waits for it,
-/// `cpu_setup`'s page directory, paging, descriptor tables and FPU; then
-/// parks it, interrupts off.
+/// `cpu_setup`'s page directory, paging, descriptor tables, FPU and local
+/// APIC, and its clock; then parks it, interrupts off.
 ///
 /// # Safety
 ///
@@ -288,6 +288,10 @@ unsafe extern "sysv64" fn setup(cpu: usize) -> ! {
     }
     println!("AP=({cpu}) ktss done");
     fpu::init_cpu();
+    apic::setup_other_cpu();
+    // startrtclock, from cpu_launch_first_thread: no tick is taken before
+    // the release sets IF.
+    apic::start_other_cpu_timer();
     STATES[cpu].store(State::Parked.number(), Ordering::Release);
     while STATES[cpu].load(Ordering::Acquire) == State::Parked.number() {
         hint::spin_loop();
