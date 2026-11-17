@@ -72,6 +72,9 @@ pub fn start() -> ! {
     ipc::bootstrap();
     vm::init();
     ipc::init();
+    // The boot CPU uses the kernel's page tables; SeqCst, though the other
+    // CPUs start only later.
+    smp::STARTED.insert(smp::current().id());
     arch::Current::init();
     clock::mapped_time::map_time();
     machine::init_info();

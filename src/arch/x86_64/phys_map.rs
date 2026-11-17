@@ -21,14 +21,14 @@ use super::cpuid;
 use super::memory_layout::{
     DIRECT_MAP_BASE, KERNEL_BASE, MAX_USER_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE, PAGE_TABLE_BASE,
 };
+use super::shootdown;
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
-use crate::smp::CpuMask;
+use crate::smp::{self, CpuMask};
 use crate::sync::{OnceLock, Spinlock};
 use crate::vm::Protection;
 use crate::vm::page::{self, Page};
 use crate::vm::phys_map::{MachinePhysMap, Wiring};
-use crate::{machine, smp};
 
 /// Entries per table.
 const ENTRIES: usize = 512;
@@ -364,20 +364,18 @@ impl MachinePhysMap for PhysMap {
             if table {
                 for page in (address..next).step_by(PAGE_SIZE) {
                     // Atomic, as the CPU sets accessed and dirty bits; they
-                    // are kept nowhere yet.
+                    // are kept nowhere yet. A SeqCst RMW: `shoot` reads its
+                    // targets after it, as a joining CPU flushes after its
+                    // join.
                     if window_entry(page, 0).swap(0, Ordering::SeqCst) != 0 {
                         self.resident.fetch_sub(1, Ordering::Relaxed);
-                        tlb::flush(VirtAddr::new(u64::try_from(page).unwrap()));
                     }
                 }
             }
             address = next;
         }
-        // The kernel physical map is active on every running CPU.
-        assert!(
-            machine::available_cpus() <= 1,
-            "PMAP_UPDATE_TLBS: signal_cpus, not yet"
-        );
+        // After the swaps: every CPU using the kernel's tables drops them.
+        shootdown::shoot(range);
     }
 
     fn protect(&self, range: Range<usize>, protection: Protection) {

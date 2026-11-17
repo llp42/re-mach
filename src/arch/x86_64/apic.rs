@@ -3,6 +3,9 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Local APIC and IO APICs; `enable` chooses the local APIC's mode.
 
+use core::hint;
+
+use x86_64::instructions::interrupts;
 use x86_64::registers::model_specific::{ApicBase, ApicBaseFlags};
 
 use super::counter;
@@ -102,6 +105,8 @@ mod local {
     pub const END_OF_INTERRUPT: usize = 0xb0;
     pub const SPURIOUS: usize = 0xf0;
     pub const ERROR_STATUS: usize = 0x280;
+    pub const INTERRUPT_COMMAND_LOW: usize = 0x300;
+    pub const INTERRUPT_COMMAND_HIGH: usize = 0x310;
     pub const TIMER: usize = 0x320;
     pub const PERFORMANCE: usize = 0x340;
     pub const LINT0: usize = 0x350;
@@ -134,6 +139,14 @@ const SOFTWARE_ENABLE: u32 = 1 << 8;
 
 /// A local vector table entry's NMI delivery mode.
 const NMI: u32 = 4 << 8;
+
+/// The interrupt command register's bit set while an interrupt is being
+/// sent.
+const SEND_PENDING: u32 = 1 << 12;
+
+/// The interrupt command register's level bit, asserted for every
+/// delivery mode but INIT de-assert.
+const ASSERT: u32 = 1 << 14;
 
 /// An IO APIC's select and window registers, by byte offset.
 const SELECT: usize = 0;
@@ -307,6 +320,27 @@ fn calibrate(local: &Registers) -> u32 {
     );
     println!("timer calibration... done");
     counted / u32::try_from(CALIBRATION_TICKS).unwrap()
+}
+
+/// Sends interrupt `vector` to CPU `cpu`: fixed delivery, to its local APIC
+/// ID in physical mode. xAPIC only: its uncached command write comes after
+/// every earlier store, so the interrupt does too.
+///
+/// # Panics
+///
+/// If the ACPI step found no local APIC, or no CPU `cpu`.
+pub fn send_ipi(cpu: usize, vector: u8) {
+    let local = LOCAL_APIC.get().expect("smp_send_ipi: no local APIC");
+    let destination = APIC_IDS.get().expect("smp_send_ipi: no APIC IDs")[cpu];
+    // With interrupts off: a send from an interrupt between the wait and
+    // the two writes would change this one's destination.
+    interrupts::without_interrupts(|| {
+        while local.read(local::INTERRUPT_COMMAND_LOW) & SEND_PENDING != 0 {
+            hint::spin_loop();
+        }
+        local.write(local::INTERRUPT_COMMAND_HIGH, u32::from(destination) << 24);
+        local.write(local::INTERRUPT_COMMAND_LOW, ASSERT | u32::from(vector));
+    });
 }
 
 /// Ends the interrupt the current CPU's local APIC is delivering.
