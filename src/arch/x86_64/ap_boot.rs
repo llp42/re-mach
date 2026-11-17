@@ -20,7 +20,7 @@ use super::boot_header::IA32_EFER;
 use super::memory_layout::PAGE_SIZE;
 use super::per_cpu::{self, PerCpu};
 use super::phys_map::{self, PhysMap};
-use super::{apic, counter, cpuid, gdt, idt, syscall, tss};
+use super::{apic, counter, cpuid, fpu, gdt, idt, syscall, tss};
 use crate::config::MAX_CPUS;
 use crate::println;
 use crate::smp::{self, MachinePerCpu as _};
@@ -210,8 +210,8 @@ unsafe extern "sysv64" fn high_entry() -> ! {
 
 /// Sets AP `cpu` up, from `high_entry` on its boot stack: its per-CPU data,
 /// local APIC and caching, then, once the boot CPU waits for it,
-/// `cpu_setup`'s page directory, paging and descriptor tables; then parks
-/// it, interrupts off.
+/// `cpu_setup`'s page directory, paging, descriptor tables and FPU; then
+/// parks it, interrupts off.
 ///
 /// # Safety
 ///
@@ -287,6 +287,7 @@ unsafe extern "sysv64" fn setup(cpu: usize) -> ! {
         tss::init(this, top(&PARAMETERS.double_fault), top(&PARAMETERS.debug));
     }
     println!("AP=({cpu}) ktss done");
+    fpu::init_cpu();
     STATES[cpu].store(State::Parked.number(), Ordering::Release);
     while STATES[cpu].load(Ordering::Acquire) == State::Parked.number() {
         hint::spin_loop();

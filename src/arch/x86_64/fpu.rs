@@ -54,32 +54,15 @@ const FXSAVE_SIZE: usize = 512;
 ///
 /// On a second call.
 pub fn init() {
-    // SAFETY: the kernel is built without floating point, so setting TS
-    // traps only threads' instructions.
-    unsafe {
-        Cr0::update(|flags| {
-            flags.remove(Cr0Flags::EMULATE_COPROCESSOR);
-            flags.insert(
-                Cr0Flags::MONITOR_COPROCESSOR | Cr0Flags::NUMERIC_ERROR | Cr0Flags::TASK_SWITCHED,
-            );
-        });
-        Cr4::update(|flags| {
-            flags.insert(Cr4Flags::OSFXSR);
-            // Firmware may leave it set.
-            flags.remove(Cr4Flags::OSXMMEXCPT_ENABLE);
-        });
-    }
-    let (save, size) = if cpuid::features().has_xsave() {
+    let xsave = cpuid::features().has_xsave();
+    if xsave {
         // Read raw: raw-cpuid drops the state bits it doesn't know, and EDX's.
         let supported = raw_cpuid::cpuid!(0xd, 0);
         let features = (u64::from(supported.edx) << 32 | u64::from(supported.eax)) & !LEFT_OUT;
-        // SAFETY: the CPU has XSAVE, and these are states it supports, x87
-        // and SSE among them.
-        unsafe {
-            Cr4::update(|flags| flags.insert(Cr4Flags::OSXSAVE));
-            XCr0::write_raw(features);
-        }
         assert!(FEATURES.set(features).is_ok(), "fpu: set up twice");
+    }
+    init_cpu();
+    let (save, size) = if xsave {
         // Read again for the size of the states XCR0 now enables.
         let state = cpuid::cpu_id()
             .get_extended_state_info()
@@ -98,6 +81,35 @@ pub fn init() {
         SAVE.set(save).is_ok() && STATE_SIZE.set(size).is_ok(),
         "fpu: set up twice"
     );
+}
+
+/// Sets up the current CPU's FPU registers as `init` chose: TS set, so a
+/// thread's first use traps, and with XSAVE, XCR0 the boot CPU's states.
+pub fn init_cpu() {
+    // SAFETY: the kernel is built without floating point, so setting TS
+    // traps only threads' instructions.
+    unsafe {
+        Cr0::update(|flags| {
+            flags.remove(Cr0Flags::EMULATE_COPROCESSOR);
+            flags.insert(
+                Cr0Flags::MONITOR_COPROCESSOR | Cr0Flags::NUMERIC_ERROR | Cr0Flags::TASK_SWITCHED,
+            );
+        });
+        Cr4::update(|flags| {
+            flags.insert(Cr4Flags::OSFXSR);
+            // Firmware may leave it set.
+            flags.remove(Cr4Flags::OSXMMEXCPT_ENABLE);
+        });
+    }
+    if let Some(&features) = FEATURES.get() {
+        // SAFETY: the boot CPU has XSAVE and supports these states, x87 and
+        // SSE among them, and the APs have its features; one XCR0 on every
+        // CPU keeps `SAVE` and `STATE_SIZE` right.
+        unsafe {
+            Cr4::update(|flags| flags.insert(Cr4Flags::OSXSAVE));
+            XCr0::write_raw(features);
+        }
+    }
 }
 
 /// Where a saved state's area starts in its buffer, past its header; the
