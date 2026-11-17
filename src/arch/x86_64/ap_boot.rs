@@ -10,6 +10,7 @@ use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use raw_cpuid::ExtendedFeatures;
 use x86_64::VirtAddr;
+use x86_64::instructions::tlb;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
 use x86_64::registers::model_specific::{Efer, EferFlags};
 use x86_64::registers::rflags::{self, RFlags};
@@ -25,8 +26,8 @@ use crate::config::MAX_CPUS;
 use crate::println;
 use crate::smp::{self, MachinePerCpu as _};
 use crate::sync::{CriticalSection, OnceLock};
-use crate::vm;
 use crate::vm::phys_map::MachinePhysMap as _;
+use crate::{startup, vm};
 
 /// Physical address of the AP boot page, once boot memory sets it aside.
 pub static ADDRESS: OnceLock<PhysAddr> = OnceLock::new();
@@ -39,7 +40,7 @@ const CODE32_SELECTOR: u16 = 0x18;
 /// How long an AP gets to park, in nanoseconds.
 const START_TIMEOUT: u64 = 5_000_000_000;
 
-/// Where an AP is in its startup; only the states used here.
+/// Where an AP is in its startup.
 enum State {
     /// Not started.
     Off,
@@ -47,6 +48,11 @@ enum State {
     Starting,
     /// Set up, waiting to be released.
     Parked,
+    /// Released: it launches its first thread, and the boot CPU waits for
+    /// it.
+    Released,
+    /// Up, in `smp::STARTED` and flushed: the boot CPU goes on.
+    Running,
 }
 
 impl State {
@@ -56,6 +62,8 @@ impl State {
             Self::Off => 0,
             Self::Starting => 1,
             Self::Parked => 2,
+            Self::Released => 3,
+            Self::Running => 4,
         }
     }
 }
@@ -211,7 +219,8 @@ unsafe extern "sysv64" fn high_entry() -> ! {
 /// Sets AP `cpu` up, from `high_entry` on its boot stack: its per-CPU data,
 /// local APIC and caching, then, once the boot CPU waits for it,
 /// `cpu_setup`'s page directory, paging, descriptor tables, FPU and local
-/// APIC, and its clock; then parks it, interrupts off.
+/// APIC, and its clock; then parks it, interrupts off, until the boot CPU
+/// releases it to launch its first thread.
 ///
 /// # Safety
 ///
@@ -293,10 +302,11 @@ unsafe extern "sysv64" fn setup(cpu: usize) -> ! {
     // the release sets IF.
     apic::start_other_cpu_timer();
     STATES[cpu].store(State::Parked.number(), Ordering::Release);
+    // Acquire: the boot CPU's work before the release is seen.
     while STATES[cpu].load(Ordering::Acquire) == State::Parked.number() {
         hint::spin_loop();
     }
-    panic!("cpu_launch_first_thread: not yet")
+    startup::launch_first_thread(None)
 }
 
 /// Starts each other CPU the ACPI tables list as enabled, one at a time,
@@ -381,4 +391,48 @@ pub fn start_other_cpus() {
         }
     }
     println!("BSP: Completed SMP init");
+}
+
+/// Releases each parked AP, one at a time, and waits until it runs, on the
+/// boot CPU: busy, never blocking, so no other thread of the boot CPU takes
+/// a token while the AP's `cpu_up` holds its sets'.
+pub fn release_other_cpus() {
+    // splhigh, as start_other_cpus' wait.
+    let _section = CriticalSection::enter();
+    for cpu in
+        (1..MAX_CPUS).filter(|&cpu| STATES[cpu].load(Ordering::Relaxed) == State::Parked.number())
+    {
+        // Release: its first thread sees what the boot CPU did before.
+        STATES[cpu].store(State::Released.number(), Ordering::Release);
+        // Acquire: its `cpu_up` and join are done.
+        while STATES[cpu].load(Ordering::Acquire) != State::Running.number() {
+            hint::spin_loop();
+        }
+    }
+}
+
+/// Joins the current CPU, an AP launching its first thread, to
+/// `smp::STARTED`, flushes its whole TLB, then marks it running; the boot
+/// CPU joined at startup.
+pub fn activate_kernel_tables() {
+    let cpu = smp::current().id();
+    if smp::STARTED.contains(cpu) {
+        return;
+    }
+    // SeqCst: a sender that misses this CPU swapped its PTEs before, so the
+    // flush drops the old entries.
+    smp::STARTED.insert(cpu);
+    let cr4 = Cr4::read();
+    if cr4.contains(Cr4Flags::PAGE_GLOBAL) {
+        // SAFETY: turns global pages off and back on, which only flushes
+        // the TLB, global entries included.
+        unsafe {
+            Cr4::write(cr4 - Cr4Flags::PAGE_GLOBAL);
+            Cr4::write(cr4);
+        }
+    } else {
+        tlb::flush_all();
+    }
+    // Release: the boot CPU, going on, sees its sets' tokens released.
+    STATES[cpu].store(State::Running.number(), Ordering::Release);
 }

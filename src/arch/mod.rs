@@ -39,6 +39,12 @@ pub trait Machine {
     /// Starts the other CPUs the ACPI tables list as enabled, and leaves
     /// them parked, on the boot CPU.
     fn start_other_cpus();
+    /// Releases the parked CPUs, one at a time, each once the one before
+    /// runs, on the boot CPU.
+    fn release_other_cpus();
+    /// Joins the current CPU to the kernel page tables' users as it launches
+    /// its first thread; the boot CPU joined at startup.
+    fn activate_kernel_tables();
     /// Starts the boot CPU's clock ticking, on the boot CPU.
     fn start_clock();
     /// The time counter: nanoseconds since it started.

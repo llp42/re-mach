@@ -15,8 +15,9 @@ use crate::{device, ipc, smp, vm};
 /// bootstrap tasks; so far only an idle thread for each processor, then a
 /// softclock thread for each, the reaper, the scheduler thread, the
 /// interrupt thread, the action thread, the start of the other CPUs, the
-/// device service, the kernel task's creation time and the start of the
-/// bootstrap, then it becomes the pageout daemon.
+/// device service, the kernel task's creation time, the start of the
+/// bootstrap and the release of the other CPUs, then it becomes the
+/// pageout daemon.
 fn start_kernel_threads() -> ! {
     let kernel_task = task::KERNEL_TASK
         .get()
@@ -57,6 +58,7 @@ fn start_kernel_threads() -> ! {
     device::create_service();
     kernel_task.creation_time.store(clock::time::stamp());
     bootstrap::create();
+    arch::Current::release_other_cpus();
     smp::current()
         .active_thread()
         .expect("start_kernel_threads: no current thread")
@@ -95,14 +97,27 @@ pub fn start() -> ! {
     startup
         .resume()
         .unwrap_or_else(|error| panic!("startup: thread_resume: {error:?}"));
-    launch_first_thread(startup)
+    launch_first_thread(Some(startup))
 }
 
-/// Brings the current CPU up and starts `thread` on it, its first.
-fn launch_first_thread(thread: &'static Thread) -> ! {
-    machine::cpu_up(smp::current().id());
+/// Brings the current CPU up and starts its first thread on it: `thread`
+/// on the boot CPU, else the first its processor's run queues give.
+///
+/// # Panics
+///
+/// With no thread given and none queued.
+pub fn launch_first_thread(thread: Option<&'static Thread>) -> ! {
+    let cpu = smp::current();
+    machine::cpu_up(cpu.id());
     let section = CriticalSection::enter();
-    thread.run_here();
-    arch::Current::start_clock();
-    thread.load(section)
+    let first = thread
+        .or_else(|| cpu.processor().dequeue())
+        .expect("cpu_launch_first_thread");
+    arch::Current::activate_kernel_tables();
+    first.run_here();
+    // The other CPUs' clocks started at their park.
+    if thread.is_some() {
+        arch::Current::start_clock();
+    }
+    first.load(section)
 }

@@ -373,6 +373,14 @@ impl Machine for X86_64 {
         ap_boot::start_other_cpus();
     }
 
+    fn release_other_cpus() {
+        ap_boot::release_other_cpus();
+    }
+
+    fn activate_kernel_tables() {
+        ap_boot::activate_kernel_tables();
+    }
+
     fn start_clock() {
         apic::start_timer();
     }

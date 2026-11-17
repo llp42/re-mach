@@ -165,7 +165,7 @@ pub fn recompute_priorities(_: &'static Timeout) {
     SCHEDULER_TICK.fetch_add(1, Ordering::Relaxed);
     clock::timeout::set_timeout(&RECOMPUTE_PRIORITIES, u64::from(HZ));
     if let Some(&thread) = SCHED_THREAD.get() {
-        // Its home CPU is this one while only the boot CPU runs threads.
+        // Its home CPU, CPU 0 (the default set's), runs this timeout.
         clear_wait(thread, WaitResult::Awakened);
     }
 }

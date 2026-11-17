@@ -884,7 +884,8 @@ fn thread_timeout(timer: &'static Timeout) {
     // SAFETY: only threads' timers are made with this function, each with
     // its thread as its argument, and a thread lives while its timer is set.
     let thread = unsafe { &*timer.argument().cast::<Thread>() };
-    // Its home CPU is this one while only the boot CPU runs threads.
+    // Its home CPU is this one: the default set's threads run on CPU 0, and
+    // the other CPUs' bound threads set no timer.
     sched::clear_wait(thread, WaitResult::TimedOut);
 }
 
