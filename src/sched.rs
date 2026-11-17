@@ -460,13 +460,21 @@ pub fn wakeup(event: Event) {
 ///
 /// # Panics
 ///
-/// If it runs already, or is suspended in an interruptible wait: not yet.
+/// If it runs already, is suspended in an interruptible wait, or waits on
+/// another CPU's sleep queue: not yet.
 pub fn clear_wait(thread: &'static Thread, result: WaitResult) {
     let _section = CriticalSection::enter();
     if let Some(event) = thread.wait_event() {
-        let mut queues = smp::current().sleep_queues();
-        // SAFETY: a thread waiting for an event is on its home CPU's queue
-        // for it.
+        let cpu = smp::current();
+        assert!(
+            thread
+                .last_processor()
+                .is_some_and(|processor| ptr::eq(processor, cpu.processor())),
+            "clear_wait: another CPU's thread, not yet"
+        );
+        let mut queues = cpu.sleep_queues();
+        // SAFETY: a waiting thread is on its last CPU's queue for its event,
+        // this CPU by the check above.
         unsafe { queues[event.hash()].cursor_mut_from_ptr(thread) }.remove();
         drop(queues);
         thread.set_wait_event(None);

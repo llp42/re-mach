@@ -547,6 +547,12 @@ impl Thread {
         unsafe { self.bound.load(Ordering::Acquire).as_ref() }
     }
 
+    /// The processor it last ran on, if it has run.
+    pub(super) fn last_processor(&self) -> Option<&'static Processor> {
+        // SAFETY: processors live for good.
+        unsafe { self.last_processor.load(Ordering::Acquire).as_ref() }
+    }
+
     /// Adds `microseconds` to its time in `mode`, on the CPU it runs on.
     pub fn add_time(&self, microseconds: u32, mode: Mode) {
         let time = match mode {
