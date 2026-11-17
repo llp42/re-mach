@@ -9,6 +9,7 @@ use core::mem::offset_of;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use raw_cpuid::ExtendedFeatures;
+use x86_64::VirtAddr;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
 use x86_64::registers::model_specific::{Efer, EferFlags};
 use x86_64::registers::rflags::{self, RFlags};
@@ -17,13 +18,14 @@ use x86_64::structures::gdt::DescriptorFlags;
 use super::address::PhysAddr;
 use super::boot_header::IA32_EFER;
 use super::memory_layout::PAGE_SIZE;
-use super::per_cpu;
+use super::per_cpu::{self, PerCpu};
 use super::phys_map::{self, PhysMap};
-use super::{apic, counter, cpuid};
+use super::{apic, counter, cpuid, gdt, idt, syscall, tss};
 use crate::config::MAX_CPUS;
 use crate::println;
-use crate::smp;
+use crate::smp::{self, MachinePerCpu as _};
 use crate::sync::{CriticalSection, OnceLock};
+use crate::vm;
 use crate::vm::phys_map::MachinePhysMap as _;
 
 /// Physical address of the AP boot page, once boot memory sets it aside.
@@ -61,8 +63,7 @@ impl State {
 /// Each CPU's `State`, by number.
 static STATES: [AtomicU8; MAX_CPUS] = [const { AtomicU8::new(State::Off.number()) }; MAX_CPUS];
 
-/// What the AP being started reads as it enters the kernel; APs start one
-/// at a time.
+/// What the AP being started reads; APs start one at a time.
 #[repr(C)]
 struct Parameters {
     /// Its CPU number.
@@ -74,6 +75,10 @@ struct Parameters {
     page_directory: AtomicU64,
     /// The EFER bits it sets before CR3: the boot CPU's NXE.
     no_execute: AtomicU32,
+    /// Its IST 1's top: the double fault's and the NMI's stack.
+    double_fault: AtomicUsize,
+    /// Its IST 2's top: the debug exception's stack.
+    debug: AtomicUsize,
 }
 
 static PARAMETERS: Parameters = Parameters {
@@ -81,6 +86,8 @@ static PARAMETERS: Parameters = Parameters {
     stack: AtomicUsize::new(0),
     page_directory: AtomicU64::new(0),
     no_execute: AtomicU32::new(0),
+    double_fault: AtomicUsize::new(0),
+    debug: AtomicUsize::new(0),
 };
 
 unsafe extern "C" {
@@ -203,7 +210,8 @@ unsafe extern "sysv64" fn high_entry() -> ! {
 
 /// Sets AP `cpu` up, from `high_entry` on its boot stack: its per-CPU data,
 /// local APIC and caching, then, once the boot CPU waits for it,
-/// `cpu_setup`'s page directory and paging; then parks it, interrupts off.
+/// `cpu_setup`'s page directory, paging and descriptor tables; then parks
+/// it, interrupts off.
 ///
 /// # Safety
 ///
@@ -253,6 +261,32 @@ unsafe extern "sysv64" fn setup(cpu: usize) -> ! {
         });
     }
     println!("AP=({cpu}) paging done");
+    // init_percpu's APIC ID; per_cpu::init named its slot at entry.
+    PerCpu::store_apic_id();
+    let this = PerCpu::current();
+    // Its tables are in its per-CPU data, its trap stacks from
+    // `start_other_cpus`.
+    println!("AP=({cpu}) mpdesc done");
+    // SAFETY: once, on this CPU, with its own table.
+    unsafe { gdt::init(this.gdt()) };
+    println!("AP=({cpu}) gdt done");
+    idt::load();
+    println!("AP=({cpu}) idt done");
+    // The shared IDT holds the interrupt vectors already.
+    println!("AP=({cpu}) int done");
+    // No LDT: its user segments go in the GDT, beside the system call MSRs.
+    // SAFETY: once, on this CPU, after its GDT.
+    unsafe { gdt::store_user_segments(this.gdt()) };
+    // SAFETY: once, on this CPU, after its user segments.
+    unsafe { syscall::init() };
+    let top =
+        |stack: &AtomicUsize| VirtAddr::new(u64::try_from(stack.load(Ordering::Relaxed)).unwrap());
+    // SAFETY: once, on this CPU, after its GDT; `start_other_cpus` took
+    // the two stacks for this CPU alone, and never frees them.
+    unsafe {
+        tss::init(this, top(&PARAMETERS.double_fault), top(&PARAMETERS.debug));
+    }
+    println!("AP=({cpu}) ktss done");
     STATES[cpu].store(State::Parked.number(), Ordering::Release);
     while STATES[cpu].load(Ordering::Acquire) == State::Parked.number() {
         hint::spin_loop();
@@ -262,12 +296,12 @@ unsafe extern "sysv64" fn setup(cpu: usize) -> ! {
 
 /// Starts each other CPU the ACPI tables list as enabled, one at a time,
 /// and waits until it parks, on the boot CPU; each boots on the stack of
-/// its first bound thread, idle/n.
+/// its first bound thread, idle/n, with trap stacks of its own.
 ///
 /// # Panics
 ///
-/// If the ACPI step found no APIC, an AP has no idle thread, or an AP does
-/// not park within `START_TIMEOUT`.
+/// If the ACPI step found no APIC, a trap stack can't be allocated, an AP
+/// has no idle thread, or an AP does not park within `START_TIMEOUT`.
 pub fn start_other_cpus() {
     let ids = apic::APIC_IDS.get().expect("start_other_cpus: no APIC IDs");
     if ids.len() == 1 {
@@ -288,6 +322,19 @@ pub fn start_other_cpus() {
         0,
         "start_other_cpus: not on the boot CPU"
     );
+    let enabled = apic::ENABLED_CPUS
+        .get()
+        .expect("start_other_cpus: no enabled CPUs");
+    // Each AP's IST 1 and IST 2 tops, taken before the critical section.
+    let allocate = || {
+        vm::kernel::allocate_stack()
+            .unwrap_or_else(|error| panic!("start_other_cpus: no trap stack: {error:?}"))
+            .top()
+    };
+    let mut trap_stacks = [(0, 0); MAX_CPUS];
+    for cpu in enabled.iter().filter(|&cpu| cpu != 0) {
+        trap_stacks[cpu] = (allocate(), allocate());
+    }
     let _section = CriticalSection::enter();
     PARAMETERS.page_directory.store(
         u64::try_from(PhysMap::kernel().pml4().0).unwrap(),
@@ -297,9 +344,6 @@ pub fn start_other_cpus() {
     PARAMETERS
         .no_execute
         .store(u32::try_from(no_execute.bits()).unwrap(), Ordering::Relaxed);
-    let enabled = apic::ENABLED_CPUS
-        .get()
-        .expect("start_other_cpus: no enabled CPUs");
     for cpu in enabled.iter().filter(|&cpu| cpu != 0) {
         let idle = smp::of(cpu)
             .processor()
@@ -312,6 +356,11 @@ pub fn start_other_cpus() {
             idle.machine_state().stack_top.load(Ordering::Relaxed) - PAGE_SIZE,
             Ordering::Relaxed,
         );
+        let (double_fault, debug) = trap_stacks[cpu];
+        PARAMETERS
+            .double_fault
+            .store(double_fault, Ordering::Relaxed);
+        PARAMETERS.debug.store(debug, Ordering::Relaxed);
         // Its wbinvd and uncached command writes follow these stores, which
         // the AP reads once started.
         apic::start_processor(cpu, page);

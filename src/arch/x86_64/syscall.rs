@@ -116,7 +116,7 @@ unsafe extern "sysv64" fn system_call(frame: *mut TrapFrame) -> ! {
 ///
 /// # Safety
 ///
-/// Runs once, on the boot CPU, after `gdt::store_user_segments`.
+/// Runs once on each CPU, after `gdt::store_user_segments` with its table.
 pub unsafe fn init() {
     // The flags the kernel must not start with.
     SFMask::write(
