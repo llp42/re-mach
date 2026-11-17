@@ -9,10 +9,13 @@ use core::slice;
 
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
-use super::MessageType;
+use super::port::PortName;
+use super::space::Space;
+use super::{MessageType, object};
 use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::error::Error;
 use crate::kalloc;
+use crate::reference::Reference;
 use crate::slab::CacheBox;
 use crate::sync::CpuLocal;
 use crate::vm::map::{COPY_CACHE, Map, MapCopy};
@@ -235,6 +238,92 @@ impl KernelMessage {
         header.remote_port &= 0xffff_ffff;
         header.local_port &= 0xffff_ffff;
         Ok(())
+    }
+
+    /// Copies in its body's rights from `space`, as `ipc_kmsg_copyin_body`
+    /// does: each inline port's name, its 32 bits, becomes the exposed
+    /// address of its port, which the message's right holds; a null name a
+    /// null port.
+    ///
+    /// # Panics
+    ///
+    /// If a type is invalid or the body too small, an item is out of line,
+    /// a right is not a copied send right, a name is dead, or no item
+    /// carries a right: not yet. As `object::copy_in`.
+    pub(super) fn copy_in_body(&mut self, space: &Space) {
+        let end = usize::try_from(self.header().size).unwrap();
+        let message = self.message_mut();
+        let mut offset = size_of::<Header>();
+        let mut complex = false;
+        while offset < end {
+            // Short and long type words are both 8 bytes here.
+            assert!(
+                end - offset >= 8,
+                "ipc_kmsg_copyin_body: MACH_SEND_MSG_TOO_SMALL, not yet"
+            );
+            let place = offset;
+            let mut word = u64::from_le_bytes(message[place..place + 8].try_into().unwrap());
+            offset += 8;
+            let [name, size_low, size_high, ..] = word.to_le_bytes();
+            let size = u16::from_le_bytes([size_low, size_high]);
+            let number = word >> 32;
+            // msgt_inline, bit 29.
+            let inline = word & (1 << 29) != 0;
+            // MACH_MSG_TYPE_PORT_ANY: from MOVE_RECEIVE to MAKE_SEND_ONCE.
+            let port = (16..=21).contains(&name);
+            // A port's size, as a name out of line, as a port inline; msgt_unused,
+            // bits 24 to 28; msgt_deallocate, bit 31, only out of line.
+            assert!(
+                !(port && size != if inline { 64 } else { 32 })
+                    && word & (0x1f << 24) == 0
+                    && !(inline && word & (1 << 31) != 0),
+                "ipc_kmsg_copyin_body: MACH_SEND_INVALID_TYPE, not yet"
+            );
+            let length = usize::try_from((number * u64::from(size)).div_ceil(8)).unwrap();
+            // The data inline, else its address.
+            assert!(
+                end - offset >= if inline { length } else { 8 },
+                "ipc_kmsg_copyin_body: MACH_SEND_MSG_TOO_SMALL, not yet"
+            );
+            assert!(
+                inline,
+                "ipc_kmsg_copyin_body: out-of-line {}, not yet",
+                if port { "ports" } else { "memory" }
+            );
+            let data = offset;
+            offset += length;
+            if port {
+                assert!(
+                    name == MessageType::CopySend.number(),
+                    "ipc_kmsg_copyin_body: type {name}, MOVE_ and MAKE_ rights, not yet"
+                );
+                // As ipc_object_copyin_type.
+                word = (word & !0xff) | u64::from(MessageType::PortSend.number());
+                message[place..place + 8].copy_from_slice(&word.to_le_bytes());
+                for slot in message[data..offset].as_chunks_mut::<8>().0 {
+                    // Only a name's 32 bits count.
+                    let port_name =
+                        PortName::from(u32::from_le_bytes(slot[..4].try_into().unwrap()));
+                    let address = if port_name.is_valid() {
+                        let copied = object::copy_in(space, port_name);
+                        Reference::into_raw(copied).as_ptr().expose_provenance()
+                    } else {
+                        assert!(
+                            port_name == PortName::NULL,
+                            "ipc_kmsg_copyin_body: invalid_name_to_port of MACH_PORT_DEAD, not yet"
+                        );
+                        0
+                    };
+                    *slot = address.to_le_bytes();
+                }
+                complex = true;
+            }
+            offset = offset.next_multiple_of(8);
+        }
+        assert!(
+            complex,
+            "ipc_kmsg_copyin_body: no rights or memory, MACH_MSGH_BITS_COMPLEX cleared, not yet"
+        );
     }
 
     /// Its buffer's size, in bytes.

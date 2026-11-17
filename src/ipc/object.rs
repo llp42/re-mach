@@ -147,6 +147,20 @@ pub(super) fn allocate_dead_name(space: &Space, name: PortName) -> Result<(), Er
     Ok(())
 }
 
+/// Copies a send right from `name` in `space`, as `ipc_object_copyin` does
+/// for `MACH_MSG_TYPE_COPY_SEND`: gives the port's new send right with its
+/// reference.
+///
+/// # Panics
+///
+/// As `right::lookup_write` and `right::copy_in`.
+pub(super) fn copy_in(space: &Space, name: PortName) -> Reference<Port> {
+    let state = right::lookup_write(space, name);
+    let port = right::copy_in(&state, name);
+    drop(state);
+    port
+}
+
 /// Puts the right `message_type` names, for `port`, in `space` under a
 /// free name, as `ipc_object_copyout` does, and gives the name; the space
 /// takes the right and its reference.

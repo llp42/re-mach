@@ -36,8 +36,8 @@ bitflags::bitflags! {
 ///
 /// If no thread runs on the CPU, or the reply port has no send-once right.
 /// On every other path: not yet; as `kernel_message::get`,
-/// `ipc_kobject::server`, `KernelMessage::copy_out_body` and
-/// `kernel_message::put`.
+/// `KernelMessage::copy_in_body`, `ipc_kobject::server`,
+/// `KernelMessage::copy_out_body` and `kernel_message::put`.
 #[expect(
     clippy::too_many_lines,
     reason = "mach_msg_trap's fast path, in GNU Mach's order"
@@ -73,10 +73,12 @@ pub fn trap(
     // fast_copyin.
     let header = request.header_mut();
     // A copied send right for the destination, and a send-once right made
-    // for the reply port.
+    // for the reply port; a complex message's rights go through
+    // slow_copyin's ipc_kmsg_copyin_header the same way.
+    let complex = header.bits.is_complex();
+    let bits = MessageBits::new(Some(MessageType::CopySend), Some(MessageType::MakeSendOnce));
     assert!(
-        header.bits
-            == MessageBits::new(Some(MessageType::CopySend), Some(MessageType::MakeSendOnce)),
+        header.bits == if complex { bits.with_complex() } else { bits },
         "mach_msg_trap: header bits {:#x}, not yet",
         u32::from(header.bits)
     );
@@ -116,7 +118,8 @@ pub fn trap(
     drop(state);
     destination_state.send_rights += 1;
     reply_state.send_once_rights += 1;
-    header.bits = MessageBits::new(Some(MessageType::PortSend), Some(MessageType::PortSendOnce));
+    let bits = MessageBits::new(Some(MessageType::PortSend), Some(MessageType::PortSendOnce));
+    header.bits = if complex { bits.with_complex() } else { bits };
     let kernel = destination_state.receiver == Receiver::Space(NonNull::from(&KERNEL_SPACE));
     drop(reply_state);
     drop(destination_state);
@@ -125,6 +128,10 @@ pub fn trap(
         .as_ptr()
         .expose_provenance();
     header.local_port = Reference::into_raw(reply_port).as_ptr().expose_provenance();
+    if complex {
+        // slow_copyin: its body's rights, then back to kernel_send.
+        request.copy_in_body(space);
+    }
     assert!(kernel, "mach_msg_trap: fast_send_receive, not yet");
     // kernel_send.
     let mut reply = ipc_kobject::server(request);

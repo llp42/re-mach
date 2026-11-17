@@ -12,6 +12,7 @@ use super::port::{Port, PortName, PortState, PortType, Receiver};
 use super::port_set::{self, PortSet};
 use super::space::{Space, SpaceState};
 use crate::arch::PhysAddr;
+use crate::reference::Reference;
 use crate::slab::CacheBox;
 use crate::sync::{SleepLockWriteGuard, SpinlockGuard};
 
@@ -128,6 +129,43 @@ pub(super) fn copy_out<'a>(
         }
         _ => panic!("ipc_right_copyout: strange rights"),
     }
+}
+
+/// Copies a send right from the entry of `name`, in the write-locked,
+/// alive space of state `state`, as `ipc_right_copyin` does for
+/// `MACH_MSG_TYPE_COPY_SEND`: gives the port's new send right with its
+/// reference; the entry is unchanged.
+///
+/// # Panics
+///
+/// If the space is dead, `name` has no entry, or its entry has no port. If
+/// the entry is a dead name or its port died, or it holds no send right:
+/// not yet.
+pub(super) fn copy_in(state: &SpaceState, name: PortName) -> Reference<Port> {
+    assert!(state.active, "ipc_right_copyin: a dead space");
+    let entry = state.lookup(name).expect("ipc_right_copyin: no entry");
+    let rights = entry.bits.rights;
+    assert!(
+        !rights.contains(Rights::DEAD_NAME),
+        "ipc_right_copyin: copy_dead, not yet"
+    );
+    // Dead send-once rights pass here, for `check`.
+    assert!(
+        rights.intersects(Rights::SEND | Rights::SEND_ONCE),
+        "ipc_right_copyin: KERN_INVALID_RIGHT, not yet"
+    );
+    let Some(Object::Port(port)) = &entry.object else {
+        panic!("ipc_right_copyin: a send right with no port");
+    };
+    let mut port_state = check(state, entry);
+    assert!(
+        rights.contains(Rights::SEND),
+        "ipc_right_copyin: a send-once right, KERN_INVALID_RIGHT, not yet"
+    );
+    port_state.send_rights += 1;
+    let port = port.clone();
+    drop(port_state);
+    port
 }
 
 /// Checks whether the port of `entry`'s send or send-once right, in the
