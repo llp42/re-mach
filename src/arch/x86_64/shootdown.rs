@@ -4,7 +4,7 @@
 
 use core::hint;
 use core::ops::Range;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use x86_64::VirtAddr;
 use x86_64::instructions::{interrupts, tlb};
@@ -46,10 +46,37 @@ static REQUESTS: [Request; MAX_CPUS] = [const {
 /// The CPUs whose request is in flight.
 static SENDERS: CpuMask = CpuMask::empty();
 
+/// A CPU's state in its idle loop, as kernel shootdowns see it.
+enum Idle {
+    /// Not halted: a sender interrupts it.
+    Active,
+    /// Halted: a sender skips it.
+    Halted,
+    /// Halted, and skipped since: it flushes its TLB as it wakes.
+    Stale,
+}
+
+impl Idle {
+    /// Its number.
+    const fn number(self) -> u8 {
+        match self {
+            Self::Active => 0,
+            Self::Halted => 1,
+            Self::Stale => 2,
+        }
+    }
+}
+
+/// Each CPU's `Idle` state, by number. Only its CPU leaves and re-enters
+/// `Active`; a sender only turns `Halted` into `Stale`. One atomic, so a
+/// skip and a wake are ordered.
+static IDLE: [AtomicU8; MAX_CPUS] = [const { AtomicU8::new(Idle::Active.number()) }; MAX_CPUS];
+
 /// Invalidates `range`, changed in the kernel's page tables, on every CPU
 /// that uses them, once the caller's atomic swaps are done: it interrupts
-/// the other started CPUs and waits for them. With interrupts on, so
-/// another sender's request still lands on this CPU while it waits.
+/// the other started CPUs, except halted ones, which flush as they wake, and
+/// waits for them. With interrupts on, so another sender's request still
+/// lands on this CPU while it waits.
 ///
 /// # Panics
 ///
@@ -63,8 +90,11 @@ pub fn shoot(range: Range<usize>) {
     let current = smp::current().id();
     // The other started CPUs. Acquire loads after the caller's swaps,
     // locked RMWs they can't pass: a CPU joining later flushes after its
-    // SeqCst join.
-    let mut targets = smp::STARTED.iter().filter(|&cpu| cpu != current).peekable();
+    // SeqCst join. Halted ones are skipped.
+    let mut targets = smp::STARTED
+        .iter()
+        .filter(|&cpu| cpu != current && !skip(cpu))
+        .peekable();
     if targets.peek().is_none() {
         invalidate(range);
         return;
@@ -91,6 +121,41 @@ pub fn shoot(range: Range<usize>) {
     }
     // SeqCst RMW: receivers stop scanning it.
     SENDERS.remove(current);
+}
+
+/// Marks `cpu` stale if it is halted, returning whether it is: it then
+/// flushes its TLB as it wakes, and the sender skips it.
+fn skip(cpu: usize) -> bool {
+    // Writes `Stale` over `Stale` too, so the wake's swap sees every
+    // skipping sender's PTE swaps (Release); Acquire: the CPU's work before
+    // halting is done.
+    IDLE[cpu]
+        .try_update(Ordering::AcqRel, Ordering::Relaxed, |state| {
+            (state != Idle::Active.number()).then_some(Idle::Stale.number())
+        })
+        .is_ok()
+}
+
+/// Marks the current CPU halted, with interrupts off, just before it
+/// halts: senders skip it from then on.
+pub fn mark_idle() {
+    // Release: what it did before is done before a sender skips it. Only
+    // this CPU leaves `Active`, so a store does.
+    IDLE[smp::current().id()].store(Idle::Halted.number(), Ordering::Release);
+}
+
+/// Marks the current CPU active as it wakes, flushing its TLB if a sender
+/// skipped it meanwhile: before it runs an interrupt held back, or touches
+/// a kernel mapping such a sender changed.
+pub fn mark_active() {
+    // Acquire: a sender's swaps, before its mark, are seen.
+    if IDLE[smp::current().id()].swap(Idle::Active.number(), Ordering::Acquire)
+        == Idle::Stale.number()
+    {
+        // Removable kernel PTEs are not global, so reloading CR3 drops
+        // them.
+        tlb::flush_all();
+    }
 }
 
 /// Serves every request pending on the current CPU, with interrupts off; it

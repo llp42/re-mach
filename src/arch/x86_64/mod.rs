@@ -334,7 +334,10 @@ impl Machine for X86_64 {
         if PerCpu::current().holds_interrupts() {
             interrupts::enable();
         } else {
+            shootdown::mark_idle();
             interrupts::enable_and_hlt();
+            // Flushes if a sender skipped it, before held interrupts run.
+            shootdown::mark_active();
         }
     }
 
