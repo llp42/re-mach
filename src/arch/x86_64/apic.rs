@@ -3,22 +3,35 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Local APIC and IO APICs; `enable` chooses the local APIC's mode.
 
+use core::arch::asm;
 use core::hint;
 
 use x86_64::instructions::interrupts;
 use x86_64::registers::model_specific::{ApicBase, ApicBaseFlags};
 
+use super::address::PhysAddr;
 use super::counter;
 use super::mmio::Registers;
 use super::per_cpu::PerCpu;
 use crate::collections::ArrayVec;
 use crate::config::{HZ, MAX_CPUS};
 use crate::println;
-use crate::smp::{self, MachinePerCpu as _};
+use crate::smp::{self, CpuMask, MachinePerCpu as _};
 use crate::sync::OnceLock;
 
 /// Turns on the boot CPU's local APIC in xAPIC mode.
 pub fn enable() {
+    turn_on(ApicBaseFlags::BSP);
+}
+
+/// Turns on another CPU's local APIC in xAPIC mode, as it starts.
+pub fn enable_other_cpu() {
+    turn_on(ApicBaseFlags::empty());
+}
+
+/// Turns on the current CPU's local APIC in xAPIC mode, `boot` its BSP
+/// flag.
+fn turn_on(boot: ApicBaseFlags) {
     let (base, mut flags) = ApicBase::read();
     if flags.contains(ApicBaseFlags::X2APIC_ENABLE) {
         // TODO: support x2APIC; keep it here instead of leaving it.
@@ -26,7 +39,8 @@ pub fn enable() {
         // SAFETY: same base; x2APIC to disabled, the only way back to xAPIC.
         unsafe { ApicBase::write(base, flags) };
     }
-    flags.insert(ApicBaseFlags::LAPIC_ENABLE | ApicBaseFlags::BSP);
+    flags.remove(ApicBaseFlags::BSP);
+    flags.insert(ApicBaseFlags::LAPIC_ENABLE | boot);
     // SAFETY: same base; disabled or xAPIC to xAPIC.
     unsafe { ApicBase::write(base, flags) };
 }
@@ -82,6 +96,10 @@ pub struct Override {
 
 /// Each CPU's local APIC ID, by CPU number: the boot CPU's first.
 pub static APIC_IDS: OnceLock<ArrayVec<u8, MAX_CPUS>> = OnceLock::new();
+
+/// The CPUs the MADT lists as enabled, by CPU number; the others it lists
+/// are only online capable.
+pub static ENABLED_CPUS: OnceLock<CpuMask> = OnceLock::new();
 
 /// The local APIC's registers, at the address every CPU sees its own.
 pub static LOCAL_APIC: OnceLock<Registers> = OnceLock::new();
@@ -147,6 +165,18 @@ const SEND_PENDING: u32 = 1 << 12;
 /// The interrupt command register's level bit, asserted for every
 /// delivery mode but INIT de-assert.
 const ASSERT: u32 = 1 << 14;
+
+/// The interrupt command register's INIT and startup delivery modes.
+const INIT: u32 = 5 << 8;
+const STARTUP: u32 = 6 << 8;
+
+/// The error status bits a startup checks: all but the redirectable IPI's.
+const DELIVERY_ERRORS: u32 = 0xef;
+
+/// How long a CPU gets after INIT, then after each startup interrupt, in
+/// nanoseconds.
+const INIT_WAIT: u64 = 10_000_000;
+const STARTUP_WAIT: u64 = 200_000;
 
 /// An IO APIC's select and window registers, by byte offset.
 const SELECT: usize = 0;
@@ -332,6 +362,12 @@ fn calibrate(local: &Registers) -> u32 {
 pub fn send_ipi(cpu: usize, vector: u8) {
     let local = LOCAL_APIC.get().expect("smp_send_ipi: no local APIC");
     let destination = APIC_IDS.get().expect("smp_send_ipi: no APIC IDs")[cpu];
+    send(local, destination, ASSERT | u32::from(vector));
+}
+
+/// Sends `command` to local APIC ID `destination` in physical mode, once
+/// the command register is free.
+fn send(local: &Registers, destination: u8, command: u32) {
     // With interrupts off: a send from an interrupt between the wait and
     // the two writes would change this one's destination.
     interrupts::without_interrupts(|| {
@@ -339,8 +375,59 @@ pub fn send_ipi(cpu: usize, vector: u8) {
             hint::spin_loop();
         }
         local.write(local::INTERRUPT_COMMAND_HIGH, u32::from(destination) << 24);
-        local.write(local::INTERRUPT_COMMAND_LOW, ASSERT | u32::from(vector));
+        local.write(local::INTERRUPT_COMMAND_LOW, command);
     });
+}
+
+/// Starts CPU `cpu` at `page`, below 1 MiB, to its local APIC ID in
+/// physical mode: the caches written back, INIT, then two startup
+/// interrupts, each followed by its wait.
+///
+/// # Panics
+///
+/// If the ACPI step found no local APIC or no CPU `cpu`, or if the local
+/// APIC reports a delivery error.
+pub fn start_processor(cpu: usize, page: PhysAddr) {
+    let local = LOCAL_APIC.get().expect("smp_startup_cpus: no local APIC");
+    let destination = APIC_IDS.get().expect("smp_startup_cpus: no APIC IDs")[cpu];
+    let vector = u32::try_from(page.0 >> 12).unwrap();
+    // SAFETY: only writes back and drops cached lines.
+    unsafe { asm!("wbinvd", options(att_syntax, nostack, preserves_flags)) };
+    println!(
+        "Sending IPIs from BSP APIC ID {}...",
+        PerCpu::current().apic_id()
+    );
+    // Writing the error status latches the errors since the last write.
+    local.write(local::ERROR_STATUS, 0);
+    send(local, destination, INIT | ASSERT);
+    delay(INIT_WAIT);
+    local.write(local::ERROR_STATUS, 0);
+    let error = local.read(local::ERROR_STATUS);
+    if error != 0 {
+        println!("ESR error upon INIT {error:#x}");
+    }
+    for _ in 0..2 {
+        send(local, destination, STARTUP | ASSERT | vector);
+        delay(STARTUP_WAIT);
+    }
+    while local.read(local::INTERRUPT_COMMAND_LOW) & SEND_PENDING != 0 {
+        hint::spin_loop();
+    }
+    local.write(local::ERROR_STATUS, 0);
+    let error = local.read(local::ERROR_STATUS) & DELIVERY_ERRORS;
+    if error != 0 {
+        println!("ESR error: delivery {error:#x}");
+        panic!("FATAL: APs failed to start");
+    }
+    println!("done");
+}
+
+/// Waits `nanoseconds` on the time counter.
+fn delay(nanoseconds: u64) {
+    let start = counter::nanoseconds();
+    while counter::nanoseconds() - start < nanoseconds {
+        hint::spin_loop();
+    }
 }
 
 /// Ends the interrupt the current CPU's local APIC is delivering.

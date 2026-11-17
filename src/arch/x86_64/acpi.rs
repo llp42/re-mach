@@ -19,7 +19,7 @@ use crate::boot::multiboot2::{Info, Tag};
 use crate::collections::ArrayVec;
 use crate::config::MAX_CPUS;
 use crate::println;
-use crate::smp::MachinePerCpu as _;
+use crate::smp::{CpuMask, MachinePerCpu as _};
 use crate::sync::OnceLock;
 
 /// A verified copy of the RSDP, by revision.
@@ -263,6 +263,7 @@ pub fn init_apics() -> Result<(), Error> {
     .map_err(|_| Error::NoMapping)?;
     let Madt {
         ids,
+        enabled,
         io_apics,
         overrides,
     } = parse_madt(&madt)?;
@@ -283,6 +284,7 @@ pub fn init_apics() -> Result<(), Error> {
     }
     assert!(
         apic::APIC_IDS.set(ids).is_ok()
+            && apic::ENABLED_CPUS.set(enabled).is_ok()
             && apic::LOCAL_APIC.set(local_apic).is_ok()
             && apic::IO_APICS.set(io_apics).is_ok()
             && apic::OVERRIDES.set(overrides).is_ok(),
@@ -349,6 +351,8 @@ fn find_tables(root: &RootTable) -> Result<Table, Error> {
 struct Madt {
     /// The local APICs enabled or able to be, by CPU number.
     ids: ArrayVec<u8, MAX_CPUS>,
+    /// The CPUs enabled, not only able to be.
+    enabled: CpuMask,
     /// The IO APICs, with their registers mapped.
     io_apics: ArrayVec<IoApic, MAX_IO_APICS>,
     /// The interrupt overrides.
@@ -360,6 +364,8 @@ fn parse_madt(madt: &Table) -> Result<Madt, Error> {
     let boot_id = PerCpu::current().apic_id();
     let (mut ids, mut io_apics, mut overrides) =
         (ArrayVec::new(), ArrayVec::new(), ArrayVec::new());
+    let enabled = CpuMask::empty();
+    enabled.insert(0);
     ids.push(boot_id);
     let mut offset = 44;
     while offset + 2 <= madt.0.len() {
@@ -374,6 +380,9 @@ fn parse_madt(madt: &Table) -> Result<Madt, Error> {
                         entry[3]
                     );
                 } else {
+                    if word(4) & 1 != 0 {
+                        enabled.insert(ids.len());
+                    }
                     ids.push(entry[3]);
                 }
             }
@@ -417,6 +426,7 @@ fn parse_madt(madt: &Table) -> Result<Madt, Error> {
     }
     Ok(Madt {
         ids,
+        enabled,
         io_apics,
         overrides,
     })

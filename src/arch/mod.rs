@@ -36,6 +36,9 @@ pub trait Machine {
     /// sets the APICs up, reads the time of day, and starts the time
     /// counter.
     fn init();
+    /// Starts the other CPUs the ACPI tables list as enabled, and leaves
+    /// them parked, on the boot CPU.
+    fn start_other_cpus();
     /// Starts the current CPU's clock ticking.
     fn start_clock();
     /// The time counter: nanoseconds since it started.

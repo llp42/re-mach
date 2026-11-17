@@ -80,6 +80,10 @@ SPDX-FileContributor: Marcus Brinkmann
 SPDX-FileContributor: Thomas Schwinge
 SPDX-License-Identifier: GPL-2.0-or-later
 
+SPDX-FileName: i386/i386/mp_desc.c
+SPDX-FileCopyrightText: 1991, 1990 Carnegie Mellon University
+SPDX-License-Identifier: CMU-Mach
+
 SPDX-FileName: i386/i386/pcb.c
 SPDX-FileCopyrightText: 1991, 1990 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
@@ -589,6 +593,10 @@ SPDX-License-Identifier: CMU-Mach
 
 SPDX-FileName: x86_64/boothdr.S
 SPDX-FileCopyrightText: 2022 Free Software Foundation
+SPDX-License-Identifier: GPL-2.0-or-later
+
+SPDX-FileName: x86_64/cpuboot.S
+SPDX-FileCopyrightText: 2025 Free Software Foundation
 SPDX-License-Identifier: GPL-2.0-or-later
 
 SPDX-FileName: x86_64/cswitch.S

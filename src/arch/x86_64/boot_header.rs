@@ -15,7 +15,7 @@ use super::memory_layout::KERNEL_BASE;
 use crate::boot::multiboot2::{ARCHITECTURE_X86, HEADER_MAGIC, HeaderTagType, TagType};
 
 /// The EFER's MSR number.
-const IA32_EFER: u32 = 0xc000_0080;
+pub(super) const IA32_EFER: u32 = 0xc000_0080;
 
 /// Boot GDT selectors.
 const BOOT_CODE_SELECTOR: u16 = 0x8;
@@ -146,6 +146,7 @@ global_asm!(
     ".short gdt64end - gdt64 - 1",
     ".quad gdt64",
     ".balign 4096",
+    ".globl p4table",
     "p4table: .space 4096",
     "p3table: .space 4096",
     "p2table: .space 4096",

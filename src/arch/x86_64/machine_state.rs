@@ -38,7 +38,7 @@ pub struct MachineState {
     /// The stack pointer of the copy `onfault` serves.
     pub(super) onfault_stack: AtomicUsize,
     /// Where its kernel stack starts; set as the stack is attached.
-    stack_top: AtomicUsize,
+    pub(super) stack_top: AtomicUsize,
     /// Its floating-point state's buffer, once it first uses the FPU.
     pub(super) fpu: AtomicPtr<u8>,
 }

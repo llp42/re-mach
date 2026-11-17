@@ -492,6 +492,11 @@ impl MachinePhysMap for PhysMap {
 }
 
 impl PhysMap {
+    /// Its PML4 table.
+    pub(super) const fn pml4(&self) -> PhysAddr {
+        self.pml4
+    }
+
     /// The page table that maps user `address`, found from the PML4 through
     /// the direct map, a table from `spares` linked in where one is missing;
     /// only the lock's holder passes any. `Err` with how many are missing
@@ -719,8 +724,8 @@ pub unsafe fn bootstrap() {
 ///
 /// # Safety
 ///
-/// Runs on the boot CPU only, while no mapping uses entries 4 to 7.
-unsafe fn set_page_attributes() {
+/// Runs once on each CPU, while no mapping uses entries 4 to 7.
+pub(super) unsafe fn set_page_attributes() {
     if !cpuid::features().has_pat() {
         return;
     }

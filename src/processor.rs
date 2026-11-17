@@ -215,6 +215,20 @@ impl Processor {
             .map(Thread::scheduled_priority)
     }
 
+    /// Its first thread bound to it, which `dequeue` takes first, left on
+    /// its run queues.
+    pub(super) fn first_bound(&self) -> Option<&'static Thread> {
+        let queues = self.run_queues();
+        let thread = queues
+            .lists
+            .iter()
+            .flat_map(RunQueue::iter)
+            .find(|thread| thread.bound().is_some())?;
+        // SAFETY: `enqueue` takes only `&'static Thread`, so each thread on a
+        // run queue is one.
+        Some(unsafe { &*ptr::from_ref(thread) })
+    }
+
     /// Takes the best of its threads bound to it, or if none the best of
     /// all; the first to become runnable among equals.
     ///

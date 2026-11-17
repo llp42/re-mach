@@ -74,7 +74,8 @@ static KERNEL_COMMAND_LINE: OnceLock<&'static CStr> = OnceLock::new();
 static BOOT_MODULES: OnceLock<&'static [BootModule]> = OnceLock::new();
 
 unsafe extern "C" {
-    /// The image's first byte, in `.boot`, which runs where it is loaded.
+    /// The boot entry, in `.boot`'s first page, which runs where it is
+    /// loaded.
     safe static boot_start: u8;
     /// The text's first byte, at the kernel map base.
     safe static text_start: u8;
@@ -363,6 +364,10 @@ impl Machine for X86_64 {
         set_warm_boot();
         hpet::init();
         counter::init();
+    }
+
+    fn start_other_cpus() {
+        ap_boot::start_other_cpus();
     }
 
     fn start_clock() {
