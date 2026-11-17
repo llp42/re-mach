@@ -184,7 +184,7 @@ impl PerCpu {
 
     /// Takes this CPU's lowest pending vector, if any, noting when none is
     /// left; with interrupts off.
-    fn take_pending(&self) -> Option<usize> {
+    pub(super) fn take_pending(&self) -> Option<usize> {
         let vector = self
             .pending_interrupts
             .iter()

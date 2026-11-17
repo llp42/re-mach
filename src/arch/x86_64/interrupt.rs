@@ -9,6 +9,7 @@ use core::mem::offset_of;
 use x86_64::VirtAddr;
 
 use x86_64::PrivilegeLevel;
+use x86_64::instructions::interrupts;
 use x86_64::structures::idt::InterruptStackFrameValue;
 
 use super::per_cpu::{KERNEL_STACK, PerCpu};
@@ -118,7 +119,8 @@ extern "sysv64" fn user_interrupt(frame: &TrapFrame) -> ! {
 }
 
 /// Holds the interrupt back inside a critical section, and handles it in
-/// one otherwise; a shootdown is never held back.
+/// one otherwise, with interrupts on, then any held back; a shootdown is
+/// never held back.
 extern "sysv64" fn interrupt(frame: &TrapFrame) {
     let cpu = PerCpu::current();
     let _interrupt = cpu.common().enter_interrupt();
@@ -141,16 +143,29 @@ extern "sysv64" fn interrupt(frame: &TrapFrame) {
     if cpu.hold(frame.vector) {
         return;
     }
-    let _section = CriticalSection::enter();
-    handle(frame.vector, Some(frame));
+    let mut vector = frame.vector;
+    loop {
+        // The count before `sti`, and `cli` before it drops, so another
+        // interrupt is held, not nested, and none nests at the end.
+        let section = CriticalSection::enter();
+        interrupts::enable();
+        handle(vector, Some(frame));
+        interrupts::disable();
+        drop(section);
+        // What is held runs too, with this interrupt's state.
+        let Some(next) = cpu.take_pending() else {
+            return;
+        };
+        vector = next;
+    }
 }
 
-/// Runs `vector`'s handler, in a critical section, with the state it
-/// interrupted unless it was held back; the timer's is the clock's, and
-/// no other source is unmasked yet.
+/// Runs `vector`'s handler, in a critical section, with the state of the
+/// interrupt whose end ran it, or none when a thread's section's end ran
+/// it. The timer's is the clock's, and no other source is unmasked yet.
 pub fn handle(vector: usize, frame: Option<&TrapFrame>) {
     if vector == apic::TIMER_VECTOR {
-        // A tick held back interrupted the kernel.
+        // A tick a thread's section's end ran interrupted the kernel.
         let mode = match frame {
             Some(frame) if frame.interrupted.code_segment.rpl() != PrivilegeLevel::Ring0 => {
                 Mode::User

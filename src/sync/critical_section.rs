@@ -47,7 +47,7 @@ pub(super) fn crit_enter() {
 }
 
 /// Lowers it; leaving the outermost runs the interrupts held back, unless
-/// in an interrupt handler, where they wait for the context it interrupted.
+/// in an interrupt handler, whose interrupt runs them as it ends.
 pub(super) fn crit_exit() {
     let cpu = arch::PerCpu::current();
     if cpu.common().leave_critical() && !cpu.common().in_interrupt() {
