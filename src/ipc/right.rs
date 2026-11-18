@@ -195,10 +195,13 @@ fn check<'a>(state: &SpaceState, entry: &'a Entry) -> SpinlockGuard<'a, PortStat
 ///
 /// # Panics
 ///
-/// If the space is dead, `name` has no entry, or a dead name has no user
-/// references, a request, an object or a message-accepted request. If a
-/// dead name has more than one user reference, for a send or send-once
-/// right, or for any other right: not yet. As `SpaceState::deallocate`.
+/// If the space is dead, `name` has no entry, a dead name has no user
+/// references, a request, an object or a message-accepted request, or a
+/// send right has no user references, no port or a port with no send
+/// right. If a dead name or a send right has more than one user reference,
+/// a send right has a dead-name or message-accepted request, or for a
+/// send-once or any other right: not yet. As `check` and
+/// `SpaceState::deallocate`.
 pub(super) fn deallocate(mut state: SleepLockWriteGuard<'_, SpaceState>, name: PortName) {
     assert!(state.active, "ipc_right_dealloc: a dead space");
     let entry = state
@@ -223,7 +226,44 @@ pub(super) fn deallocate(mut state: SleepLockWriteGuard<'_, SpaceState>, name: P
     } else if rights == Rights::SEND_ONCE.bits() {
         panic!("ipc_right_dealloc: MACH_PORT_TYPE_SEND_ONCE, not yet");
     } else if rights == Rights::SEND.bits() {
-        panic!("ipc_right_dealloc: MACH_PORT_TYPE_SEND, not yet");
+        assert!(
+            entry.bits.user_references > 0,
+            "ipc_right_dealloc: a send right with no user references"
+        );
+        let mut port_state = check(&state, entry);
+        assert!(
+            entry.bits.user_references == 1,
+            "ipc_right_dealloc: a send right's user references above 1, not yet"
+        );
+        port_state.send_rights = port_state
+            .send_rights
+            .checked_sub(1)
+            .expect("ipc_right_dealloc: a port with no send right");
+        // No call makes a no-senders request yet: the last sender leaves none.
+        assert!(
+            entry.request == 0,
+            "ipc_right_dealloc: ipc_right_dncancel, not yet"
+        );
+        assert!(
+            !entry.bits.message_accepted,
+            "ipc_right_dealloc: ipc_marequest_cancel, not yet"
+        );
+        drop(port_state);
+        let SpaceState {
+            map, reverse_map, ..
+        } = &mut *state;
+        let entry = map
+            .get_mut(name.key())
+            .expect("ipc_right_dealloc: no entry");
+        // The entry's reference, ours now.
+        let Some(Object::Port(port)) = entry.object.take() else {
+            panic!("ipc_right_dealloc: a send right with no port");
+        };
+        reverse_map.remove(key(&port));
+        state.deallocate(name);
+        drop(state);
+        // As ip_release, once nothing borrows the port.
+        drop(port);
     } else if rights == (Rights::SEND | Rights::RECEIVE).bits() {
         panic!("ipc_right_dealloc: MACH_PORT_TYPE_SEND_RECEIVE, not yet");
     } else {
