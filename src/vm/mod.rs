@@ -36,6 +36,7 @@ bitflags::bitflags! {
 bitflags::bitflags! {
     /// What wiring a whole map covers, as Mach's interface numbers it; none
     /// unwires it.
+    #[derive(Clone, Copy)]
     pub struct Wire: u32 {
         /// What it maps now.
         const CURRENT = 1;

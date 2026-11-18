@@ -15,7 +15,7 @@ use crate::arch::PAGE_SIZE;
 use crate::error::Error;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
-use crate::vm::map::{MapCopy, Placement};
+use crate::vm::map::{MapCopy, Placement, RangeCheck};
 use crate::vm::{self, Protection};
 
 /// The names `space` holds rights under and their types, as
@@ -55,9 +55,11 @@ pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
             .unwrap_or_else(|_| panic!("mach_port_names: no more room in ipc_kernel_map, not yet"));
         // Wired, so filling them can't fault while the space is locked.
         for array in [names, types] {
-            if let Err(error) =
-                map.pageable(array..array + size, Protection::READ | Protection::WRITE)
-            {
+            if let Err(error) = map.pageable(
+                array..array + size,
+                Protection::READ | Protection::WRITE,
+                RangeCheck::Checked,
+            ) {
                 panic!("mach_port_names: vm_map_pageable failed: {error:?}");
             }
         }
@@ -98,7 +100,11 @@ pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
     let size_used = (actual * size_of::<PortName>()).next_multiple_of(PAGE_SIZE);
     // Pageable again, to be copied in.
     for array in [names, types] {
-        if let Err(error) = map.pageable(array..array + size_used, Protection::empty()) {
+        if let Err(error) = map.pageable(
+            array..array + size_used,
+            Protection::empty(),
+            RangeCheck::Checked,
+        ) {
             panic!("mach_port_names: vm_map_pageable failed: {error:?}");
         }
     }

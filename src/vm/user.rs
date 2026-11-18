@@ -173,21 +173,21 @@ pub fn protect(
 ///
 /// `InvalidHost` unless `host` is the host's privileged port, alive,
 /// `InvalidTask` for no map, `InvalidArgument` if `flags` hold a bit
-/// `Wire` lacks.
+/// `Wire` lacks, and as `Map::pageable_all`.
 ///
 /// # Panics
 ///
-/// Past those checks: not yet.
+/// As `Map::pageable_all`.
 pub fn wire_all(host: &Port, map: Option<&Map>, flags: u32) -> Result<(), Error> {
     if !matches!(host.kernel_object(), Some(KernelObject::HostPrivileged(_))) {
         return Err(Error::InvalidHost);
     }
-    if map.is_none() {
+    let Some(map) = map else {
         return Err(Error::InvalidTask);
-    }
-    if Wire::from_bits(flags).is_none() {
+    };
+    let Some(flags) = Wire::from_bits(flags) else {
         return Err(Error::InvalidArgument);
-    }
+    };
     // Maps hold no projected buffers.
-    panic!("vm_wire_all: vm_map_pageable_all, not yet")
+    map.pageable_all(flags)
 }

@@ -16,7 +16,7 @@ use super::fault;
 use super::object::{self, Flags, Object, ObjectState, Offset};
 use super::page;
 use super::phys_map::MachinePhysMap as _;
-use super::{Inheritance, Protection, VirtualAddress};
+use super::{Inheritance, Protection, VirtualAddress, Wire};
 use crate::arch::{PAGE_SIZE, PhysMap};
 use crate::collections::ArrayVec;
 use crate::error::Error;
@@ -63,6 +63,8 @@ struct Contents {
     size: usize,
     /// How much of it is wired, in bytes.
     size_wired: usize,
+    /// Whether what it maps from now on is wired.
+    wiring_required: bool,
     /// Its version, moved on by every write lock.
     timestamp: u32,
 }
@@ -86,6 +88,7 @@ impl Map {
                 first_free: None,
                 size: 0,
                 size_wired: 0,
+                wiring_required: false,
                 timestamp: 0,
             }),
         }
@@ -129,9 +132,9 @@ impl Map {
     /// # Panics
     ///
     /// If `max_protection` is none, the next entry could be extended over
-    /// the range, or the entry grown over it could merge with the next: not
-    /// yet. As `object::coalesce`, and for `Placement::Anywhere` as
-    /// `Contents::find_anywhere`.
+    /// the range, the entry grown over it could merge with the next, or a
+    /// new entry is due to be wired: not yet. As `object::coalesce`, and for
+    /// `Placement::Anywhere` as `Contents::find_anywhere`.
     #[expect(
         clippy::too_many_lines,
         reason = "vm_map_enter's steps, in GNU Mach's order"
@@ -278,6 +281,10 @@ impl Map {
         if follows_first_free {
             contents.first_free = Some(entry);
         }
+        assert!(
+            !contents.wiring_required,
+            "vm_map_enter: wiring_required, not yet"
+        );
         drop(contents);
         Ok(range)
     }
@@ -398,8 +405,9 @@ impl Map {
     /// # Panics
     ///
     /// If `range` splits an entry, an entry would merge with the one before
-    /// it, one has wired access or is wired, or for `Change::Maximum`: not
-    /// yet. As `MachinePhysMap::protect`.
+    /// it, one is in transition, has wired access or is wired, the map wires
+    /// what it maps, or for `Change::Maximum`: not yet. As
+    /// `MachinePhysMap::protect`.
     pub fn protect(
         &self,
         range: Range<VirtualAddress>,
@@ -424,6 +432,10 @@ impl Map {
             if matches!(entry.backing, Backing::Submap(_)) {
                 return Err(Error::InvalidArgument);
             }
+            assert!(
+                !entry.in_transition.load(Ordering::Relaxed),
+                "vm_map_protect: vm_map_entry_wait, not yet"
+            );
             if !entry.max_protection.contains(protection) {
                 return Err(Error::ProtectionFailure);
             }
@@ -444,6 +456,10 @@ impl Map {
             assert!(
                 new.is_empty() || entry.wired_access().is_empty(),
                 "vm_map_protect: an entry with wired access, not yet"
+            );
+            assert!(
+                new.is_empty() || !contents.wiring_required,
+                "vm_map_protect: wiring_required, not yet"
             );
             if new != old {
                 self.phys_map
@@ -472,42 +488,129 @@ impl Map {
 
     /// Sets what the entries of `range`, cut to the map's bounds, allow
     /// while wired to `access`, splitting them at its end, then unwires
-    /// those given none and wires those newly given some; the range holds
-    /// no hole, and each entry allows `access`.
+    /// those given none and wires those newly given some; with
+    /// `RangeCheck::Checked`, the range holds no hole, and each entry allows
+    /// `access`.
     ///
     /// # Errors
     ///
-    /// `NoSpace` if no entry holds the range's start, a hole lies in the
-    /// range, or an entry there doesn't allow `access`; an entry split before
-    /// that stays split.
+    /// As `Map::pageable_locked`.
     ///
     /// # Panics
     ///
-    /// If no entry can be allocated. If the range starts inside an entry, a
-    /// wired entry allows nothing, an entry to wire is a submap, or wiring
-    /// faults are due and the map is not over the kernel's physical map: not
-    /// yet. As `Contents::clip_end`, `object::allocate`, `fault::unwire` and
-    /// `fault::wire`.
+    /// If no entry can be allocated. As `Map::pageable_locked`.
+    pub fn pageable(
+        &self,
+        range: Range<VirtualAddress>,
+        access: Protection,
+        check: RangeCheck,
+    ) -> Result<(), Error> {
+        // Taken before the lock, for the splits to use.
+        let mut reservation = EntryReservation::new();
+        let contents = self.lock();
+        self.pageable_locked(contents, range, access, check, &mut reservation)
+            .map_err(|(contents, error)| {
+                drop(contents);
+                error
+            })
+    }
+
+    /// Wires all the map maps now, as `flags` say, for reading and writing
+    /// even where an entry allows less, and what it maps from now on; for
+    /// none, unwires it all and stops wiring what it maps from now on.
+    ///
+    /// # Errors
+    ///
+    /// As `Map::pageable_locked`; with `Wire::FUTURE`, whether the map wires
+    /// what it maps from now on is restored.
+    ///
+    /// # Panics
+    ///
+    /// If no entry can be allocated. For an empty map with `Wire::CURRENT`
+    /// or none: not yet. As `Map::pageable_locked`.
+    pub fn pageable_all(&self, flags: Wire) -> Result<(), Error> {
+        // Taken before the lock, for the splits, which the whole map never
+        // needs.
+        let mut reservation = EntryReservation::new();
+        let mut contents = self.lock();
+        let wiring_required = contents.wiring_required;
+        let access = if flags.is_empty() {
+            contents.wiring_required = false;
+            Protection::empty()
+        } else {
+            if flags.contains(Wire::FUTURE) {
+                contents.wiring_required = true;
+            }
+            if !flags.contains(Wire::CURRENT) {
+                drop(contents);
+                return Ok(());
+            }
+            Protection::READ | Protection::WRITE
+        };
+        // vm_map_pageable_current: from the first entry's start to the last
+        // entry's end, unchecked.
+        let start = contents.entries.front().get().map(Entry::start);
+        let end = contents.entries.back().get().map(Entry::end);
+        let (Some(start), Some(end)) = (start, end) else {
+            panic!("vm_map_pageable_current: an empty map, not yet");
+        };
+        self.pageable_locked(
+            contents,
+            start..end,
+            access,
+            RangeCheck::Unchecked,
+            &mut reservation,
+        )
+        .map_err(|(mut contents, error)| {
+            if flags.contains(Wire::FUTURE) {
+                contents.wiring_required = wiring_required;
+            }
+            drop(contents);
+            error
+        })
+    }
+
+    /// `Map::pageable` with `guard`, the map's contents under its write
+    /// lock, which it drops on success, and `reservation` for the splits,
+    /// taken before the lock.
+    ///
+    /// # Errors
+    ///
+    /// `NoSpace`, with `guard` back, if no entry holds the range's start,
+    /// and with `RangeCheck::Checked` if a hole lies in the range or an
+    /// entry there doesn't allow `access`; an entry split before that stays
+    /// split.
+    ///
+    /// # Panics
+    ///
+    /// If the range starts inside an entry, an entry there is in transition,
+    /// a wired entry allows nothing, or an entry to wire is a submap: not
+    /// yet. As `Contents::clip_end`,
+    /// `object::allocate`, `fault::unwire` and `fault::wire`.
     #[expect(
         clippy::too_many_lines,
         reason = "vm_map_pageable's and vm_map_pageable_scan's steps, in GNU Mach's order"
     )]
-    pub fn pageable(&self, range: Range<VirtualAddress>, access: Protection) -> Result<(), Error> {
-        // Taken before the lock, for the splits to use.
-        let mut reservation = EntryReservation::new();
-        let mut guard = self.lock();
+    fn pageable_locked<G: DerefMut<Target = Contents>>(
+        &self,
+        mut guard: G,
+        range: Range<VirtualAddress>,
+        access: Protection,
+        check: RangeCheck,
+        reservation: &mut EntryReservation,
+    ) -> Result<(), (G, Error)> {
         let contents = &mut *guard;
         let end = range.end.min(self.bounds.end);
         let start = range.start.max(self.bounds.start).min(end);
         let Some(first) = contents.find(start).map(Entry::start) else {
-            return Err(Error::NoSpace);
+            return Err((guard, Error::NoSpace));
         };
         assert!(
             first == start,
             "vm_map_clip_start: splitting an entry, not yet"
         );
-        // Pass 1: the last entry is split at the end; no hole, and every
-        // entry allows `access`.
+        // Pass 1: the last entry is split at the end; if checked, no hole,
+        // and every entry allows `access`.
         let mut address = start;
         while let Some(entry) = contents
             .entries
@@ -515,18 +618,23 @@ impl Map {
             .clone_pointer()
             .filter(|entry| entry.start() < end)
         {
+            assert!(
+                !entry.in_transition.load(Ordering::Relaxed),
+                "vm_map_pageable: vm_map_entry_wait, not yet"
+            );
             if end < entry.end() {
-                contents.clip_end(&entry, end, &mut reservation);
+                contents.clip_end(&entry, end, reservation);
             }
             let next = contents
                 .entries
                 .lower_bound(Bound::Included(&entry.end()))
                 .get()
                 .map(Entry::start);
-            if (entry.end() < end && next.is_none_or(|next| next > entry.end()))
-                || !entry.protection().contains(access)
+            if matches!(check, RangeCheck::Checked)
+                && ((entry.end() < end && next.is_none_or(|next| next > entry.end()))
+                    || !entry.protection().contains(access))
             {
-                return Err(Error::NoSpace);
+                return Err((guard, Error::NoSpace));
             }
             address = entry.end();
         }
@@ -586,16 +694,9 @@ impl Map {
         }
         // Pass 2: faults lock the map, so it is unlocked meanwhile, its
         // entries in transition.
-        assert!(
-            ptr::eq(self.phys_map, PhysMap::kernel()),
-            "vm_map_pageable_scan: vm_map_lock_set_recursive, not yet"
-        );
         let mut cursor = contents.entries.lower_bound(Bound::Included(&start));
+        // Pass 1 found none of them in transition.
         while let Some(entry) = cursor.get().filter(|entry| entry.end() <= end) {
-            assert!(
-                !entry.in_transition.load(Ordering::Relaxed),
-                "vm_map_pageable_scan: an entry in transition"
-            );
             // Nothing waits for an entry in transition yet.
             entry.in_transition.store(true, Ordering::Relaxed);
             cursor.move_next();
@@ -623,11 +724,10 @@ impl Map {
         let contents = self.lock();
         let mut cursor = contents.entries.lower_bound(Bound::Included(&start));
         while let Some(entry) = cursor.get().filter(|entry| entry.end() <= end) {
-            assert!(
-                entry.in_transition.load(Ordering::Relaxed),
-                "vm_map_pageable_scan: an entry out of transition"
-            );
-            entry.in_transition.store(false, Ordering::Relaxed);
+            // An entry linked into a hole while the map was unlocked never was.
+            if entry.in_transition.load(Ordering::Relaxed) {
+                entry.in_transition.store(false, Ordering::Relaxed);
+            }
             cursor.move_next();
         }
         drop(contents);
@@ -839,8 +939,8 @@ impl Map {
     ///
     /// # Panics
     ///
-    /// If the copy holds an object or pages, or a wired entry: not yet. As
-    /// `Contents::find_anywhere`.
+    /// If the copy holds an object or pages, or a wired entry, or the map
+    /// wires what it maps: not yet. As `Contents::find_anywhere`.
     pub fn copy_out(
         &self,
         mut copy: CacheBox<MapCopy>,
@@ -916,6 +1016,10 @@ impl Map {
         let address = start + (copy.offset - copy_start);
         // vm_map_copy_insert frees the header.
         drop(copy);
+        assert!(
+            !contents.wiring_required,
+            "vm_map_copyout: wiring_required, not yet"
+        );
         drop(contents);
         Ok(address)
     }
@@ -981,6 +1085,15 @@ impl Map {
         contents.timestamp = contents.timestamp.wrapping_add(1);
         contents
     }
+}
+
+/// Whether `Map::pageable` checks its range.
+#[derive(Clone, Copy)]
+pub enum RangeCheck {
+    /// It holds no hole, and each entry allows the access.
+    Checked,
+    /// It is taken as it is.
+    Unchecked,
 }
 
 /// Which of its protections `Map::protect` sets on each entry.
@@ -1209,8 +1322,9 @@ impl Contents {
         // `ENTRY_CACHE`'s boxes (`link`, `clip_end`). Besides its trees, the
         // free space hint and the caller's pointer, an entry is reached only
         // under the map's lock, which the caller holds for writing, or by
-        // `Map::pageable` while it is in transition; the caller's contract
-        // rules out the others, so out of the trees, it is the box's alone.
+        // `Map::pageable_locked` while it is in transition; the caller's
+        // contract rules out the others, so out of the trees, it is the box's
+        // alone.
         unsafe { CacheBox::from_raw(&ENTRY_CACHE, entry) }
     }
 
