@@ -536,6 +536,26 @@ impl Thread {
         send
     }
 
+    /// Gives a new send right for its port, with its reference, as
+    /// `retrieve_thread_self_fast` does.
+    ///
+    /// # Panics
+    ///
+    /// If it has no port. If it hands out a right for another port: not
+    /// yet. As `Port::copy_send`.
+    pub(super) fn retrieve_self(&self) -> Reference<Port> {
+        let port = NonNull::new(self.self_port.load(Ordering::Acquire))
+            .expect("retrieve_thread_self_fast: no thread port");
+        assert!(
+            ptr::eq(self.self_send.load(Ordering::Acquire), port.as_ptr()),
+            "retrieve_thread_self_fast: an interposed port, not yet"
+        );
+        // SAFETY: the slot keeps its port's reference, never dropped yet,
+        // which this handle borrows and never drops.
+        let port = mem::ManuallyDrop::new(unsafe { Reference::from_raw(port) });
+        Port::copy_send(&port)
+    }
+
     /// Records that it runs on the current CPU, as the CPU switches to it.
     pub fn run_here(&'static self) {
         let cpu = smp::current();
