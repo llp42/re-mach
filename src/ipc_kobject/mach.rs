@@ -40,6 +40,7 @@ mig::subsystem! {
     );
     27 vm_write(target_task = task::map_of, address: VirtualAddress, data: OutOfLine<u8>);
     61 thread_create(parent_task = task::of) -> (child_thread: Port);
+    63 thread_resume(target_thread = thread::of);
     89 vm_map(
         target_task = task::map_of,
         address: VirtualAddress,
@@ -230,6 +231,24 @@ fn thread_create(task: Option<&Reference<Task>>) -> Result<Reference<Port>, Erro
     // Its first run returns to user mode, as thread_bootstrap_return.
     thread.start(arch::MachineState::return_to_user);
     Ok(Thread::convert_to_port(thread))
+}
+
+/// Serves `thread_resume`: lifts one stop users asked for on `thread`.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no thread; as `Thread::resume`.
+///
+/// # Panics
+///
+/// As `sched::make_runnable`, through `Thread::resume`.
+fn thread_resume(thread: Option<&Reference<Thread>>) -> Result<(), Error> {
+    let Some(thread) = thread else {
+        return Err(Error::InvalidArgument);
+    };
+    // SAFETY: the handle keeps the thread alive through the call, and its
+    // own reference after; threads are never freed yet.
+    unsafe { Reference::as_ptr(thread).as_ref() }.resume()
 }
 
 /// Serves `vm_map`: `size` bytes of `memory_object` from `offset`, or a
