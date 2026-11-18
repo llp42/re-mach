@@ -4,12 +4,12 @@
 //! Memory objects' kernel side.
 
 use core::mem::ManuallyDrop;
-use core::ops::Add;
+use core::ops::{Add, Range};
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use intrusive_collections::{
-    LinkedList, LinkedListAtomicLink, RBTree, UnsafeRef, intrusive_adapter,
+    Bound, LinkedList, LinkedListAtomicLink, RBTree, UnsafeRef, intrusive_adapter,
 };
 
 use super::STATISTICS;
@@ -21,12 +21,9 @@ use crate::reference::{Count, Counted, Reference};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{Token, TokenGuard};
 
-/// The kernel's side of a memory object; so far only its size, references
-/// and name port, its place in the list of persisting objects and its state.
+/// The kernel's side of a memory object; so far only its references and
+/// name port, its place in the list of persisting objects and its state.
 pub struct Object {
-    /// Its size, in bytes.
-    #[expect(dead_code, reason = "vm_object_coalesce and the pager calls read it")]
-    size: usize,
     /// How many references it has.
     references: Count,
     /// Its name port, which names it to `vm_region`, as a reference given
@@ -63,9 +60,12 @@ impl Add<usize> for Offset {
     }
 }
 
-/// What an object's token guards; so far only its pages, where the last
-/// one went in, its paging under way, its pager and its first values.
+/// What an object's token guards; so far only its size, its pages, where
+/// the last one went in, its paging under way, its pager and its first
+/// values.
 pub struct ObjectState {
+    /// Its size, in bytes.
+    size: usize,
     /// Its resident pages.
     pages: Pages,
     /// The offset its last page went in at.
@@ -142,11 +142,11 @@ impl Object {
     /// A new object of `size` bytes, with one reference.
     const fn new(size: usize) -> Self {
         Self {
-            size,
             references: Count::new(1),
             pager_name: AtomicPtr::new(ptr::null_mut()),
             persisting_link: LinkedListAtomicLink::new(),
             state: Token::new(ObjectState {
+                size,
                 pages: Pages {
                     tree: RBTree::new(PageTreeAdapter::NEW),
                     count: 0,
@@ -250,6 +250,35 @@ impl ObjectState {
     pub(super) fn lookup(&self, offset: usize) -> Option<&'static Page> {
         self.pages.tree.find(&offset).clone_pointer()
     }
+
+    /// Collapses it with its shadow, as `vm_object_collapse` does; nothing
+    /// if it had a pager, has paging under way or has no shadow.
+    ///
+    /// # Panics
+    ///
+    /// If it has a shadow: not yet.
+    fn collapse(&self) {
+        if self.flags.contains(Flags::PAGER_CREATED) || self.paging_in_progress != 0 {
+            return;
+        }
+        assert!(
+            self.shadow.is_none(),
+            "vm_object_collapse: a shadow object, not yet"
+        );
+    }
+
+    /// Removes its pages in `range`, as `vm_object_page_remove` does.
+    ///
+    /// # Panics
+    ///
+    /// If it has a page there: not yet.
+    fn remove_pages(&self, range: Range<usize>) {
+        let first = self.pages.tree.lower_bound(Bound::Included(&range.start));
+        assert!(
+            first.get().is_none_or(|page| page.offset() >= range.end),
+            "vm_object_page_remove: freeing a page, not yet"
+        );
+    }
 }
 
 /// The object all wired kernel memory belongs to, at the offset of its
@@ -312,26 +341,61 @@ pub fn allocate(size: usize) -> Reference<Object> {
     object
 }
 
-/// The object and offset two adjoining ranges backed by `previous` and
-/// `next`, none for no object, have once joined, with a reference to that
-/// object for the range they make.
+/// The object and offset two adjoining ranges, `previous_size` bytes of
+/// `previous` from `previous_offset` and `next_size` bytes of `next` from
+/// `next_offset`, none for no object, have once joined, with a reference
+/// to that object for the range they make, as `vm_object_coalesce` gives
+/// them; none if they can't join.
 ///
 /// # Panics
 ///
-/// Unless neither has an object: not yet.
+/// If they are the same object and contiguous, or only `next` has one and it
+/// would take the range before it: not yet. As `ObjectState::collapse` and
+/// `ObjectState::remove_pages`.
 pub fn coalesce(
     previous: Option<&Reference<Object>>,
     next: Option<&Reference<Object>>,
-) -> (Option<Reference<Object>>, Offset) {
-    match (previous, next) {
+    previous_offset: Offset,
+    next_offset: Offset,
+    previous_size: usize,
+    next_size: usize,
+) -> Option<(Option<Reference<Object>>, Offset)> {
+    let object = match (previous, next) {
         // Neither exists, so the offsets don't matter.
-        (None, None) => (None, Offset::from(0)),
+        (None, None) => return Some((None, Offset::from(0))),
         (Some(previous), Some(next)) if Reference::as_ptr(previous) == Reference::as_ptr(next) => {
-            panic!("vm_object_coalesce: the same object, not yet")
+            assert!(
+                previous_offset + previous_size != next_offset,
+                "vm_object_coalesce: the same object, not yet"
+            );
+            return None;
         }
-        (Some(_), Some(_)) => panic!("vm_object_coalesce: two different objects, not yet"),
-        _ => panic!("vm_object_coalesce: one object, not yet"),
+        // Two different objects don't merge.
+        (Some(_), Some(_)) => return None,
+        (Some(object), None) | (None, Some(object)) => object,
+    };
+    let mut state = object.lock();
+    state.collapse();
+    // Refused if pages outside these ranges may be in use.
+    if object.references() > 1
+        || state.flags.contains(Flags::PAGER_CREATED)
+        || state.shadow.is_some()
+        || state.copy.is_some()
+        || state.paging_in_progress != 0
+    {
+        return None;
     }
+    assert!(
+        previous.is_some(),
+        "vm_object_coalesce: the next object, not yet"
+    );
+    // Pages left from an earlier deallocation go, then it grows over the
+    // range.
+    let end = usize::from(previous_offset + previous_size);
+    state.remove_pages(end..end + next_size);
+    state.size = state.size.max(end + next_size);
+    drop(state);
+    Some((Some(object.clone()), previous_offset))
 }
 
 /// The object of the memory object `pager`, of `size` bytes, made and set

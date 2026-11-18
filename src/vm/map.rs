@@ -122,7 +122,7 @@ impl Map {
     /// now and at most `max_protection`, and giving child tasks
     /// `inheritance`; returns where. The entry takes `object`'s reference,
     /// which drops on failure. The entry right before them grows over them
-    /// if it maps alike.
+    /// if it maps alike and their objects coalesce.
     ///
     /// # Errors
     ///
@@ -133,7 +133,7 @@ impl Map {
     ///
     /// # Panics
     ///
-    /// If `max_protection` is none, the next entry could be extended over
+    /// If `max_protection` is none, the next entry would be extended over
     /// the range, the entry grown over it could merge with the next, or a
     /// new entry is due to be wired: not yet. As `object::coalesce`, and for
     /// `Placement::Anywhere` as `Contents::find_anywhere`.
@@ -228,16 +228,24 @@ impl Map {
             .filter(|previous| previous.end() == range.start && extends(previous))
             && let Backing::Object {
                 object: slot,
-                offset,
+                offset: previous_offset,
             } = &previous.backing
+            && let Some((joined, object_offset)) = object::coalesce(
+                NonNull::new(slot.load(Ordering::Relaxed))
+                    .map(|previous| {
+                        // SAFETY: the entry holds a reference on its object, or
+                        // it is the kernel object, whose own reference never
+                        // drops; this handle borrows it and never drops it.
+                        ManuallyDrop::new(unsafe { Reference::from_raw(previous) })
+                    })
+                    .as_deref(),
+                object.as_ref(),
+                Offset::from(previous_offset.load(Ordering::Relaxed)),
+                offset,
+                previous.end() - previous.start(),
+                range.end - range.start,
+            )
         {
-            let held = NonNull::new(slot.load(Ordering::Relaxed)).map(|previous| {
-                // SAFETY: the entry holds a reference on its object, or it is
-                // the kernel object, whose own reference never drops; this
-                // handle borrows it and never drops it.
-                ManuallyDrop::new(unsafe { Reference::from_raw(previous) })
-            });
-            let (joined, object_offset) = object::coalesce(held.as_deref(), object.as_ref());
             // The grown entry holds the joined object's reference, in place
             // of its own; `object`'s drops.
             let old = slot.swap(
@@ -251,7 +259,7 @@ impl Map {
                 drop(unsafe { Reference::from_raw(old) });
             }
             drop(object);
-            offset.store(usize::from(object_offset), Ordering::Relaxed);
+            previous_offset.store(usize::from(object_offset), Ordering::Relaxed);
             contents.size = size;
             previous
                 .end
@@ -281,12 +289,32 @@ impl Map {
             drop(entry);
             return Ok(range);
         }
-        assert!(
-            !above
-                .get()
-                .is_some_and(|next| next.start() == range.end && extends(next)),
-            "vm_map_enter: vm_object_coalesce with the next entry, not yet"
-        );
+        // The entry after would grow back over the range if their objects
+        // coalesce.
+        if let Some(next) = above
+            .get()
+            .filter(|next| next.start() == range.end && extends(next))
+            && let Backing::Object {
+                object: slot,
+                offset: next_offset,
+            } = &next.backing
+            && object::coalesce(
+                object.as_ref(),
+                NonNull::new(slot.load(Ordering::Relaxed))
+                    .map(|next| {
+                        // SAFETY: as for the entry before.
+                        ManuallyDrop::new(unsafe { Reference::from_raw(next) })
+                    })
+                    .as_deref(),
+                offset,
+                Offset::from(next_offset.load(Ordering::Relaxed)),
+                range.end - range.start,
+                next.end() - next.start(),
+            )
+            .is_some()
+        {
+            panic!("vm_map_enter: extending the next entry, not yet");
+        }
         entry
             .start
             .store(usize::from(range.start), Ordering::Relaxed);
