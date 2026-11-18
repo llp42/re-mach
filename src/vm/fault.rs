@@ -3,7 +3,8 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Page faults.
 
-use core::ptr;
+use core::mem::ManuallyDrop;
+use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 
 use super::map::{Backing, Entry, Lookup, Map};
@@ -14,6 +15,7 @@ use super::{Protection, STATISTICS, VirtualAddress};
 use crate::arch::PAGE_SIZE;
 use crate::device::pager::{self, Pager};
 use crate::error::Error;
+use crate::reference::Reference;
 use crate::smp;
 use crate::sync::TokenGuard;
 
@@ -37,11 +39,11 @@ pub enum Purpose {
 ///
 /// # Panics
 ///
-/// As `Map::lookup`, `device`, `fault_page`, `MachinePhysMap::enter`,
-/// `Page::activate` and `Object::deallocate`. If a lookup after a change to
-/// the map fails or finds another page, the object's copy changed, a wired
-/// page lost the access it asked for, or for `Purpose::ChangeWiring` if
-/// the entry is not wired: not yet.
+/// As `Map::lookup`, `device`, `fault_page`, `MachinePhysMap::enter` and
+/// `Page::activate`, and at the object's last reference as its free. If a
+/// lookup after a change to the map fails or finds another page, the
+/// object's copy changed, a wired page lost the access it asked for, or for
+/// `Purpose::ChangeWiring` if the entry is not wired: not yet.
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the lookups' and vm_fault_page's guards are moved out and dropped first"
@@ -58,8 +60,7 @@ pub fn fault(map: &Map, address: usize, access: Protection, purpose: Purpose) ->
         lookup.wired || matches!(purpose, Purpose::Access),
         "vm_fault: unwiring through vm_fault_page's must_be_resident, not yet"
     );
-    // A reference of its own keeps the object while the map changes.
-    lookup.object.reference();
+    // The lookup's reference keeps the object while the map changes.
     lookup.state.begin_paging();
     if let Some(Kind::Device(pager)) = &lookup.state.kind {
         let pager = pager.clone();
@@ -67,7 +68,7 @@ pub fn fault(map: &Map, address: usize, access: Protection, purpose: Purpose) ->
         return Ok(());
     }
     let found = fault_page(
-        lookup.object,
+        &lookup.object,
         lookup.state,
         usize::from(lookup.offset),
         Residency::Optional,
@@ -75,7 +76,7 @@ pub fn fault(map: &Map, address: usize, access: Protection, purpose: Purpose) ->
     let (mut protection, mut wired, mut version) =
         (lookup.protection, lookup.wired, lookup.version);
     // With no shadows, the page's object is the lookup's.
-    let old_copy = found.state.copy.map(ptr::from_ref);
+    let old_copy = found.state.copy.as_ref().map(Reference::as_ptr);
     drop(found.state);
     let verified = loop {
         if let Some(verified) = map.verify(version) {
@@ -90,7 +91,8 @@ pub fn fault(map: &Map, address: usize, access: Protection, purpose: Purpose) ->
         drop(retry.state);
         let state = lookup.object.lock();
         assert!(
-            ptr::eq(retry.object, lookup.object) && retry.offset == lookup.offset,
+            Reference::as_ptr(&retry.object) == Reference::as_ptr(&lookup.object)
+                && retry.offset == lookup.offset,
             "vm_fault: another page after vm_map_verify, RetryFault not yet"
         );
         protection &= retry.protection;
@@ -99,7 +101,7 @@ pub fn fault(map: &Map, address: usize, access: Protection, purpose: Purpose) ->
     };
     let state = lookup.object.lock();
     assert!(
-        state.copy.map(ptr::from_ref) == old_copy,
+        state.copy.as_ref().map(Reference::as_ptr) == old_copy,
         "vm_fault: the copy object changed, not yet"
     );
     assert!(
@@ -131,7 +133,8 @@ pub fn fault(map: &Map, address: usize, access: Protection, purpose: Purpose) ->
     found.page.clear_busy();
     state.end_paging();
     drop(state);
-    lookup.object.deallocate();
+    // vm_object_deallocate.
+    drop(lookup.object);
     Ok(())
 }
 
@@ -146,7 +149,7 @@ pub fn fault(map: &Map, address: usize, access: Protection, purpose: Purpose) ->
 /// If no thread runs on the CPU. If the entry is wired, `access` writes,
 /// the object has a copy or its pager is not ready, the device refuses the
 /// frame, or the map changed since the lookup: not yet. As
-/// `MachinePhysMap::enter` and `Object::deallocate`.
+/// `MachinePhysMap::enter`, and at the object's last reference as its free.
 fn device(map: &Map, address: usize, access: Protection, lookup: Lookup, pager: &Pager) {
     let task = smp::current()
         .active_thread()
@@ -181,7 +184,8 @@ fn device(map: &Map, address: usize, access: Protection, lookup: Lookup, pager: 
     let mut state = lookup.object.lock();
     state.end_paging();
     drop(state);
-    lookup.object.deallocate();
+    // vm_object_deallocate.
+    drop(lookup.object);
 }
 
 /// Wires the pages of `entry` in `map`, while the map is unlocked and the
@@ -225,22 +229,22 @@ fn wire_fast(map: &Map, address: usize, entry: &Entry) -> Result<(), Error> {
     let Backing::Object { object, offset } = &entry.backing else {
         return Err(Error::Failure);
     };
-    // SAFETY: the entry holds a reference on its object, which lives until
-    // vm_object_deallocate frees it.
-    let object =
-        unsafe { object.load(Ordering::Relaxed).as_ref() }.expect("vm_fault_wire_fast: no object");
+    let held = NonNull::new(object.load(Ordering::Relaxed)).expect("vm_fault_wire_fast: no object");
+    // SAFETY: the entry, in transition, stays with its reference on its
+    // object, which this handle borrows and never drops.
+    let held = ManuallyDrop::new(unsafe { Reference::from_raw(held) });
     let offset = offset.load(Ordering::Relaxed) + (address - usize::from(entry.start()));
     let protection = entry.protection();
-    let mut state = object.lock();
+    let mut state = held.lock();
     // A reference of its own keeps the object meanwhile.
-    object.reference();
+    let object = Reference::clone(&held);
     state.begin_paging();
     // With no pager, never absent, in error or locked.
     let Some(page) = state.lookup(offset).filter(|page| !page.is_busy()) else {
         // Given up: the slow way finds the page.
         state.end_paging();
         drop(state);
-        object.deallocate();
+        drop(object);
         return Err(Error::Failure);
     };
     page.wire();
@@ -257,7 +261,7 @@ fn wire_fast(map: &Map, address: usize, entry: &Entry) -> Result<(), Error> {
     page.clear_busy();
     state.end_paging();
     drop(state);
-    object.deallocate();
+    drop(object);
     Ok(())
 }
 
@@ -325,7 +329,7 @@ enum Residency {
 /// and is not, `object` has a pager, a shadow or a copy, or if no page is
 /// free: not yet.
 fn fault_page(
-    object: &'static Object,
+    object: &Object,
     mut state: TokenGuard<'static, ObjectState>,
     offset: usize,
     residency: Residency,

@@ -3,6 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Address maps.
 
+use core::mem::ManuallyDrop;
 use core::ops::{DerefMut, Range};
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -20,7 +21,7 @@ use super::{Inheritance, Protection, VirtualAddress, Wire};
 use crate::arch::{PAGE_SIZE, PhysMap};
 use crate::collections::ArrayVec;
 use crate::error::Error;
-use crate::reference::{Count, Counted};
+use crate::reference::{Count, Counted, Reference};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{OnceLock, SleepLock, TokenGuard};
 
@@ -120,9 +121,9 @@ impl Map {
     /// Maps `size` bytes of `object` from `offset`, or with nothing behind
     /// them yet for none, placed as `placement` says, allowing `protection`
     /// now and at most `max_protection`, and giving child tasks
-    /// `inheritance`; returns where. On success the entry takes the
-    /// caller's reference on `object`. The entry right before them grows
-    /// over them if it maps alike.
+    /// `inheritance`; returns where. The entry takes `object`'s reference,
+    /// which drops on failure. The entry right before them grows over them
+    /// if it maps alike.
     ///
     /// # Errors
     ///
@@ -146,7 +147,7 @@ impl Map {
         &self,
         placement: Placement,
         size: usize,
-        object: Option<&'static Object>,
+        object: Option<Reference<Object>>,
         offset: Offset,
         protection: Protection,
         max_protection: Protection,
@@ -156,7 +157,7 @@ impl Map {
             return Err(Error::InvalidArgument);
         }
         // Allocated before the lock, its range set once placed; a failed
-        // check frees it after.
+        // check frees it after. It holds `object`'s reference once linked.
         let entry = ENTRY_CACHE.allocate(Entry {
             tree_link: RBTreeAtomicLink::new(),
             gap_link: RBTreeAtomicLink::new(),
@@ -169,7 +170,9 @@ impl Map {
             inheritance,
             backing: Backing::Object {
                 object: AtomicPtr::new(
-                    object.map_or(ptr::null_mut(), |object| ptr::from_ref(object).cast_mut()),
+                    object
+                        .as_ref()
+                        .map_or(ptr::null_mut(), |object| Reference::as_ptr(object).as_ptr()),
                 ),
                 offset: AtomicUsize::new(usize::from(offset)),
             },
@@ -229,14 +232,26 @@ impl Map {
                 offset,
             } = &previous.backing
         {
-            // SAFETY: the entry holds a reference on its object, which lives
-            // until vm_object_deallocate frees it.
-            let (object, object_offset) =
-                object::coalesce(unsafe { slot.load(Ordering::Relaxed).as_ref() }, object);
-            slot.store(
-                object.map_or(ptr::null_mut(), |object| ptr::from_ref(object).cast_mut()),
+            let held = NonNull::new(slot.load(Ordering::Relaxed)).map(|previous| {
+                // SAFETY: the entry holds a reference on its object, or it is
+                // the kernel object, whose own reference never drops; this
+                // handle borrows it and never drops it.
+                ManuallyDrop::new(unsafe { Reference::from_raw(previous) })
+            });
+            let (joined, object_offset) = object::coalesce(held.as_deref(), object.as_ref());
+            // The grown entry holds the joined object's reference, in place
+            // of its own; `object`'s drops.
+            let old = slot.swap(
+                joined.map_or(ptr::null_mut(), |joined| {
+                    Reference::into_raw(joined).as_ptr()
+                }),
                 Ordering::Relaxed,
             );
+            if let Some(old) = NonNull::new(old) {
+                // SAFETY: the slot held that reference.
+                drop(unsafe { Reference::from_raw(old) });
+            }
+            drop(object);
             offset.store(usize::from(object_offset), Ordering::Relaxed);
             contents.size = size;
             previous
@@ -278,6 +293,10 @@ impl Map {
             .store(usize::from(range.start), Ordering::Relaxed);
         entry.end.store(usize::from(range.end), Ordering::Relaxed);
         entry.gap.store(next - range.end, Ordering::Relaxed);
+        // Its slot, set above, now holds the reference.
+        if let Some(object) = object {
+            Reference::into_raw(object);
+        }
         // The free space hint moves on to an entry right at its end.
         let follows_first_free = contents
             .first_free
@@ -353,7 +372,8 @@ impl Map {
     /// Maps `size` bytes wherever they fit at a multiple of `align`, a
     /// multiple of the page size, wired, allowing `protection` now and at
     /// most `max_protection`; returns where. They are backed by `object` at
-    /// the offset of their address in the map, or by nothing.
+    /// the offset of their address in the map, or by nothing; the entry
+    /// counts no reference on `object`, the kernel object, which never goes.
     ///
     /// # Errors
     ///
@@ -680,7 +700,8 @@ impl Map {
                 };
                 if object.load(Ordering::Relaxed).is_null() {
                     let new = object::allocate(entry.end() - entry.start());
-                    object.store(ptr::from_ref(new).cast_mut(), Ordering::Relaxed);
+                    // The entry holds its reference.
+                    object.store(Reference::into_raw(new).as_ptr(), Ordering::Relaxed);
                     offset.store(0, Ordering::Relaxed);
                 }
             }
@@ -792,9 +813,10 @@ impl Map {
             let Backing::Object { object, .. } = &entry.backing else {
                 panic!("vm_map_entry_delete: a submap, not yet");
             };
-            // SAFETY: the entry holds a reference on its object, which lives
-            // until vm_object_deallocate frees it.
-            if let Some(object) = unsafe { object.load(Ordering::Relaxed).as_ref() } {
+            if let Some(pointer) = NonNull::new(object.load(Ordering::Relaxed)) {
+                // SAFETY: the entry holds a reference on its object, which
+                // lives until that reference drops below.
+                let object = unsafe { pointer.as_ref() };
                 assert!(
                     entry.wire_count() == 0,
                     "vm_map_entry_delete: vm_fault_unwire, not yet"
@@ -815,7 +837,9 @@ impl Map {
                     "vm_map_entry_delete: vm_object_page_remove, not yet"
                 );
                 drop(state);
-                object.deallocate();
+                // vm_object_deallocate: the entry's reference goes.
+                // SAFETY: the entry held it, and goes too.
+                drop(unsafe { Reference::from_raw(pointer) });
             }
             contents.size -= entry.end() - entry.start();
             // SAFETY: the hint moved off the range above, the entry is not in
@@ -917,18 +941,23 @@ impl Map {
                 wired_access: AtomicU32::new(Protection::empty().bits()),
                 in_transition: AtomicBool::new(false),
             };
-            // SAFETY: the entry holds a reference on its object, which lives
-            // until vm_object_deallocate frees it.
-            let object = unsafe { object.as_ref() };
+            let held = NonNull::new(object).map(|object| {
+                // SAFETY: the entry holds a reference on its object, or it is
+                // the kernel object, whose own reference never drops; this
+                // handle borrows it and never drops it.
+                ManuallyDrop::new(unsafe { Reference::from_raw(object) })
+            });
             // The source goes, so a temporary object's reference moves to the
             // copy; GNU Mach's use_shared_copy is set only by vm_map_fork.
             assert!(
-                object.is_none_or(|object| object.lock().flags.contains(Flags::TEMPORARY)),
+                held.as_ref()
+                    .is_none_or(|object| object.lock().flags.contains(Flags::TEMPORARY)),
                 "vm_map_copyin: vm_object_copy_temporary, not yet"
             );
-            // Another reference, as deleting the source drops its own.
-            if let Some(object) = object {
-                object.reference();
+            // Another reference, held by the copy's entry, as deleting the
+            // source drops its own.
+            if let Some(object) = &held {
+                Reference::into_raw(Reference::clone(object));
             }
             let copied = new.end();
             let new = CacheBox::into_raw(new).as_ptr();
@@ -1048,9 +1077,9 @@ impl Map {
     }
 
     /// Finds what `address` maps for a fault asking for `access`: the object
-    /// behind it, locked, made first if its entry has none, where `address`
-    /// is in it, what the entry allows, whether it is wired, and the map's
-    /// version.
+    /// behind it, locked, made first if its entry has none, with a reference
+    /// taken under the map's lock for the fault, where `address` is in it,
+    /// what the entry allows, whether it is wired, and the map's version.
     ///
     /// # Errors
     ///
@@ -1064,11 +1093,19 @@ impl Map {
         let contents = self.contents.read();
         let entry = contents.find(address).ok_or(Error::InvalidAddress)?;
         let (object, offset) = entry.checked_backing(access);
-        // SAFETY: the entry holds a reference on its object, which lives
-        // until vm_object_deallocate frees it.
-        if let Some(object) = unsafe { object.load(Ordering::Relaxed).as_ref() } {
+        if let Some(object) = NonNull::new(object.load(Ordering::Relaxed)) {
+            // SAFETY: the entry holds a reference on its object, which the
+            // map's lock keeps, or it is the kernel object, whose own
+            // reference never drops; this handle borrows it and never drops
+            // it.
+            let held = ManuallyDrop::new(unsafe { Reference::from_raw(object) });
+            // vm_fault's reference: the entry's keeps the object only while
+            // the map is locked.
+            let object = Reference::clone(&held);
             // The object's token, under the map's lock.
-            let state = object.lock();
+            // SAFETY: the lookup's reference keeps the object while its guard
+            // lives.
+            let state = unsafe { Reference::as_ptr(&object).as_ref() }.lock();
             let offset = Offset::from(offset.load(Ordering::Relaxed));
             let lookup = entry.found(address, object, state, offset, contents.timestamp);
             drop(contents);
@@ -1080,15 +1117,21 @@ impl Map {
         let contents = self.lock();
         let entry = contents.find(address).ok_or(Error::InvalidAddress)?;
         let (slot, offset) = entry.checked_backing(access);
-        // SAFETY: as above.
-        let object = unsafe { slot.load(Ordering::Relaxed).as_ref() }.unwrap_or_else(|| {
-            let object = object::allocate(entry.end() - entry.start());
-            slot.store(ptr::from_ref(object).cast_mut(), Ordering::Relaxed);
-            offset.store(0, Ordering::Relaxed);
-            object
-        });
+        let object = NonNull::new(slot.load(Ordering::Relaxed)).map_or_else(
+            || {
+                let object = object::allocate(entry.end() - entry.start());
+                let lookup = Reference::clone(&object);
+                // The entry holds the first reference.
+                slot.store(Reference::into_raw(object).as_ptr(), Ordering::Relaxed);
+                offset.store(0, Ordering::Relaxed);
+                lookup
+            },
+            // SAFETY: as above.
+            |object| Reference::clone(&ManuallyDrop::new(unsafe { Reference::from_raw(object) })),
+        );
         // The object's token, under the map's lock.
-        let state = object.lock();
+        // SAFETY: as above.
+        let state = unsafe { Reference::as_ptr(&object).as_ref() }.lock();
         let offset = Offset::from(offset.load(Ordering::Relaxed));
         let lookup = entry.found(address, object, state, offset, contents.timestamp);
         drop(contents);
@@ -1138,20 +1181,21 @@ pub enum Placement {
     Anywhere,
 }
 
-/// What `Map::lookup` finds for an address.
+/// What `Map::lookup` finds for an address; `object` must outlive `state`.
 pub struct Lookup {
-    /// The object behind it.
-    pub object: &'static Object,
-    /// The object's state, locked.
-    pub state: TokenGuard<'static, ObjectState>,
+    /// The object's state, locked; it drops before `object`, whose
+    /// reference keeps it.
+    pub(super) state: TokenGuard<'static, ObjectState>,
+    /// The object behind it, with a reference of the lookup's.
+    pub(super) object: Reference<Object>,
     /// Where the address is in the object.
-    pub offset: Offset,
+    pub(super) offset: Offset,
     /// What the entry allows.
-    pub protection: Protection,
+    pub(super) protection: Protection,
     /// Whether the entry is wired.
-    pub wired: bool,
+    pub(super) wired: bool,
     /// The map's version at the lookup.
-    pub version: u32,
+    pub(super) version: u32,
 }
 
 // SAFETY: its count is its own, and `free` frees nothing yet.
@@ -1401,10 +1445,13 @@ impl Contents {
             self.gap_inserts += 1;
             self.gaps.insert(new);
         }
-        // SAFETY: the entry holds a reference on its object, which lives
-        // until vm_object_deallocate frees it.
-        if let Some(object) = unsafe { object.load(Ordering::Relaxed).as_ref() } {
-            object.reference();
+        if let Some(object) = NonNull::new(object.load(Ordering::Relaxed)) {
+            // SAFETY: the entry holds a reference on its object, or it is the
+            // kernel object, whose own reference never drops; this handle
+            // borrows it and never drops it.
+            let held = ManuallyDrop::new(unsafe { Reference::from_raw(object) });
+            // Another, held by the new entry.
+            Reference::into_raw(Reference::clone(&held));
         }
     }
 }
@@ -1543,18 +1590,19 @@ impl Entry {
     }
 
     /// What a lookup of `address` in it finds, with `object` behind it from
-    /// `offset`, its `state` locked, at the map's `version`.
+    /// `offset`, with a reference, its `state` locked, at the map's
+    /// `version`.
     fn found(
         &self,
         address: VirtualAddress,
-        object: &'static Object,
+        object: Reference<Object>,
         state: TokenGuard<'static, ObjectState>,
         offset: Offset,
         version: u32,
     ) -> Lookup {
         Lookup {
-            object,
             state,
+            object,
             offset: offset + (address - self.start()),
             protection: self.protection(),
             wired: self.wire_count() != 0,
@@ -1593,8 +1641,9 @@ pub enum Backing {
     /// A map of its own over the same physical map, such as the kernel's
     /// IPC buffers.
     Submap(#[expect(dead_code, reason = "vm_map_lookup descends into it")] &'static Map),
-    /// An object from `offset` on; null until it has one. Both change only
-    /// under the map's write lock.
+    /// An object from `offset` on, whose reference it holds as
+    /// `Reference::into_raw` gave it up, unless it is the kernel object;
+    /// null until it has one. Both change only under the map's write lock.
     Object {
         object: AtomicPtr<Object>,
         offset: AtomicUsize,

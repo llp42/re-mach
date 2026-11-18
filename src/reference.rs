@@ -15,6 +15,11 @@ impl Count {
     pub const fn new(references: u32) -> Self {
         Self(AtomicU32::new(references))
     }
+
+    /// How many references it counts, which may change at once.
+    pub fn get(&self) -> u32 {
+        self.0.load(Ordering::Relaxed)
+    }
 }
 
 /// An object that counts its references, freed when the last one drops.
@@ -46,6 +51,25 @@ impl<T: Counted> Reference<T> {
     /// The caller holds a reference to `object`, which the handle takes.
     pub const unsafe fn from_raw(object: NonNull<T>) -> Self {
         Self(object)
+    }
+
+    /// The handle of a new reference to `object`, unless its last one
+    /// dropped and it is being freed, as `Weak::upgrade` takes one.
+    ///
+    /// # Safety
+    ///
+    /// `object` stays allocated through the call.
+    pub unsafe fn upgrade(object: NonNull<T>) -> Option<Self> {
+        // SAFETY: the caller keeps the object allocated.
+        let count = T::references(unsafe { object.as_ref() });
+        // Never from zero: the free may be under way.
+        count
+            .0
+            .try_update(Ordering::Acquire, Ordering::Relaxed, |references| {
+                (references != 0).then(|| references + 1)
+            })
+            .ok()?;
+        Some(Self(object))
     }
 
     /// Gives up the handle, keeping its reference, which `from_raw` takes

@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Ports.
 
-use core::mem::ManuallyDrop;
+use core::mem::{self, ManuallyDrop};
 use core::ops::Deref;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -152,9 +152,10 @@ impl Port {
         self.state.lock().kernel_object = Some(object);
     }
 
-    /// Makes it stand for `object`; gives what it stood for, alive or not.
-    pub fn replace_kernel_object(&self, object: KernelObject) -> Option<KernelObject> {
-        self.state.lock().kernel_object.replace(object)
+    /// Makes it stand for `object`, or nothing for none; gives what it stood
+    /// for, alive or not.
+    pub fn replace_kernel_object(&self, object: Option<KernelObject>) -> Option<KernelObject> {
+        mem::replace(&mut self.state.lock().kernel_object, object)
     }
 
     /// What it stands for, while it is alive.
@@ -206,23 +207,22 @@ impl Port {
     }
 
     /// Releases a send right for `port`, which the caller gives with its
-    /// reference, as `ipc_port_release_send` does.
+    /// reference, as `ipc_port_release_send` does: a dead port keeps no
+    /// count.
     ///
     /// # Panics
     ///
-    /// If `port` has no send right. If it is dead, or the right is its last
-    /// send right: not yet.
+    /// If `port` is alive and has no send right.
     pub fn release_send(port: Reference<Self>) {
         let mut state = port.state.lock();
-        assert!(state.active, "ipc_port_release_send: a dead port, not yet");
-        state.send_rights = state
-            .send_rights
-            .checked_sub(1)
-            .expect("ipc_port_release_send: no send right");
-        assert!(
-            state.send_rights != 0,
-            "ipc_port_release_send: no senders left, not yet"
-        );
+        if state.active {
+            state.send_rights = state
+                .send_rights
+                .checked_sub(1)
+                .expect("ipc_port_release_send: no send right");
+            // With no no-senders request, the last sender's release does no
+            // more.
+        }
         drop(state);
         drop(port);
     }
@@ -276,6 +276,28 @@ impl Port {
         );
         drop(state);
         // ipc_target_terminate does nothing.
+    }
+
+    /// Destroys the port, alive and the kernel's, as `ipc_port_dealloc_kernel`
+    /// does: no longer the kernel's, its receiver cleared, then dead. The
+    /// caller then drops the reference GNU Mach's call consumes.
+    ///
+    /// # Panics
+    ///
+    /// If it is dead or not the kernel's. As `PortState::clear_receiver`
+    /// and `Port::destroy`.
+    pub fn deallocate_kernel(&self) {
+        let mut state = self.state.lock();
+        assert!(state.active, "ipc_port_dealloc_special: a dead port");
+        assert!(
+            state.receiver_name != PortName::NULL
+                && state.receiver == Receiver::Space(NonNull::from(&space::KERNEL_SPACE)),
+            "ipc_port_dealloc_special: not the kernel's"
+        );
+        // Its receiver goes; `destroy` marks it dead.
+        state.receiver_name = PortName::NULL;
+        state.clear_receiver();
+        self.destroy(state);
     }
 }
 

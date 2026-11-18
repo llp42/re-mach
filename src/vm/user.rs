@@ -66,8 +66,7 @@ pub fn allocate(map: &Map, placement: Placement, size: usize) -> Result<VirtualA
 /// # Panics
 ///
 /// If `memory_object` stands for no memory object, or for `Mapping::Copy`
-/// of one: not yet. As `object::enter`, `enter` and, if mapping it fails,
-/// `Object::deallocate`.
+/// of one: not yet. As `object::enter` and `enter`.
 #[expect(clippy::too_many_arguments, reason = "vm_map's parameters")]
 pub fn map(
     map: &Map,
@@ -103,6 +102,7 @@ pub fn map(
         matches!(mapping, Mapping::Object),
         "vm_map: vm_object_copy_strategically, not yet"
     );
+    // A failure drops the object's reference, as vm_object_deallocate.
     enter(
         map,
         placement,
@@ -114,17 +114,13 @@ pub fn map(
         max_protection,
         inheritance,
     )
-    .inspect_err(|_| {
-        if let Some(object) = object {
-            object.deallocate();
-        }
-    })
 }
 
 /// Maps `size` bytes of `object` from `offset`, or with nothing behind them
 /// yet for none, into `map`, as `placement` says, a fixed address rounded
 /// down to a page and with no bit of `mask` set, `size` rounded up to
-/// pages, as `Map::enter`; returns where they start.
+/// pages, as `Map::enter`, which takes `object`'s reference; returns where
+/// they start.
 ///
 /// # Errors
 ///
@@ -140,7 +136,7 @@ fn enter(
     placement: Placement,
     size: usize,
     mask: usize,
-    object: Option<&'static Object>,
+    object: Option<Reference<Object>>,
     offset: Offset,
     protection: Protection,
     max_protection: Protection,

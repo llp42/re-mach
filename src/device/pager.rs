@@ -2,10 +2,10 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The device pager, which backs memory objects mapped from devices; so
-//! far only its records, their making and their setting up, and the
+//! far only its records, their making, setting up and termination, and the
 //! frames they map.
 
-use core::ptr;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
@@ -31,7 +31,7 @@ static CACHE: Cache<Pager> = Cache::new("dev_pager");
 
 /// A device's memory from an offset, as one memory object: its device,
 /// offset and protection, its port, its object's rights, and its place in
-/// its device's pager list.
+/// its device's pager list, which owns it.
 pub struct Pager {
     /// Its device, which it holds a reference to.
     device: Reference<Device>,
@@ -155,4 +155,68 @@ pub fn map_page(pager: &Pager, offset: Offset) -> Option<PhysAddr> {
     match pager.device.kind {
         Kind::Time => time::map(offset, pager.protection),
     }
+}
+
+/// Terminates `record`, the pager of an object being terminated, whose
+/// port is `pager`, as the kernel's `memory_object_terminate` reaches
+/// `device_pager_terminate`: off its device's list, the send rights it
+/// kept released, its object's request and name ports, whose receive
+/// rights `request` and `name` it takes, destroyed, its own port
+/// destroyed, then freed with its device's reference.
+///
+/// # Safety
+///
+/// Nothing uses `record` after.
+///
+/// # Panics
+///
+/// If `pager` is not its port, or it serves another client. As
+/// `Port::deallocate_kernel`.
+pub unsafe fn terminate(
+    record: UnsafeRef<Pager>,
+    pager: &Port,
+    request: Reference<Port>,
+    name: Reference<Port>,
+) {
+    // dev_pager_hash_lookup's record, which its port stood for.
+    assert!(
+        Reference::as_ptr(&record.port) == NonNull::from(pager),
+        "device_pager_terminate: another pager"
+    );
+    assert!(
+        record.client_count.load(Ordering::Relaxed) == 1
+            && record.request.load(Ordering::Relaxed) == Reference::as_ptr(&request).as_ptr()
+            && record.name.load(Ordering::Relaxed) == Reference::as_ptr(&name).as_ptr(),
+        "device_pager_terminate: another client"
+    );
+    // dev_pager_hash_delete and dev_device_hash_delete: the list lets it go.
+    let address = UnsafeRef::into_raw(record);
+    // SAFETY: the record stays allocated while listed.
+    let device = unsafe { &(*address).device };
+    let mut state = device.state.lock();
+    // SAFETY: the record is on its device's list.
+    let record = unsafe { state.pagers.cursor_mut_from_ptr(address) }
+        .remove()
+        .expect("device_pager_terminate: not listed");
+    drop(state);
+    // The send rights device_pager_init_pager kept.
+    // SAFETY: each slot holds the reference its right gave up, taken here.
+    let saved = |slot: &AtomicPtr<Port>| unsafe {
+        Reference::from_raw(NonNull::new(slot.swap(ptr::null_mut(), Ordering::Acquire)).unwrap())
+    };
+    Port::release_send(saved(&record.request));
+    Port::release_send(saved(&record.name));
+    // ipc_port_release_receive on the request and name ports.
+    request.deallocate_kernel();
+    drop(request);
+    name.deallocate_kernel();
+    drop(name);
+    // ipc_port_dealloc_kernel: the kernel's right for its own port; the
+    // record's reference goes with it below.
+    record.port.deallocate_kernel();
+    // dev_pager_deallocate; its device's reference goes with it, as
+    // mach_device_deallocate.
+    // SAFETY: records are `CACHE` boxes `setup` gave up with `into_raw`, and
+    // off its list nothing else uses this one.
+    drop(unsafe { CacheBox::from_raw(&CACHE, NonNull::new(UnsafeRef::into_raw(record)).unwrap()) });
 }

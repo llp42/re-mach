@@ -17,7 +17,7 @@ use super::page::{Page, PageTreeAdapter};
 use crate::arch::{MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE};
 use crate::device::pager::{self, Pager};
 use crate::ipc::port::{KernelObject, Port};
-use crate::reference::Reference;
+use crate::reference::{Count, Counted, Reference};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{Token, TokenGuard};
 
@@ -28,8 +28,9 @@ pub struct Object {
     #[expect(dead_code, reason = "vm_object_coalesce and the pager calls read it")]
     size: usize,
     /// How many references it has.
-    references: AtomicU32,
-    /// Its name port, which names it to `vm_region`; null until it has one.
+    references: Count,
+    /// Its name port, which names it to `vm_region`, as a reference given
+    /// up by `into_raw`; null until it has one.
     pager_name: AtomicPtr<Port>,
     /// Its place in the list of persisting objects.
     persisting_link: LinkedListAtomicLink,
@@ -70,9 +71,9 @@ pub struct ObjectState {
     /// The offset its last page went in at.
     last_alloc: usize,
     /// The object its pages are copied into before they change; none yet.
-    pub(super) copy: Option<&'static Object>,
+    pub(super) copy: Option<Reference<Object>>,
     /// The object behind it, whose pages show where it has none; none yet.
-    pub(super) shadow: Option<&'static Object>,
+    pub(super) shadow: Option<Reference<Object>>,
     /// How many paging operations on it are under way.
     pub(super) paging_in_progress: u32,
     /// Its `Flags`.
@@ -142,7 +143,7 @@ impl Object {
     const fn new(size: usize) -> Self {
         Self {
             size,
-            references: AtomicU32::new(1),
+            references: Count::new(1),
             pager_name: AtomicPtr::new(ptr::null_mut()),
             persisting_link: LinkedListAtomicLink::new(),
             state: Token::new(ObjectState {
@@ -163,36 +164,47 @@ impl Object {
         }
     }
 
-    /// Takes a reference on it.
-    pub fn reference(&self) {
-        self.references.fetch_add(1, Ordering::Relaxed);
-    }
-
     /// How many references it has.
     pub(super) fn references(&self) -> u32 {
-        self.references.load(Ordering::Relaxed)
-    }
-
-    /// Drops a reference on it, which is not its last.
-    ///
-    /// # Panics
-    ///
-    /// On its last reference: not yet.
-    pub fn deallocate(&self) {
-        // Only the last reference's drop needs the token.
-        assert!(
-            self.references
-                .try_update(Ordering::Release, Ordering::Relaxed, |references| {
-                    (references > 1).then(|| references - 1)
-                })
-                .is_ok(),
-            "vm_object_deallocate: the last reference, not yet"
-        );
+        self.references.get()
     }
 
     /// Takes its token.
     pub fn lock(&self) -> TokenGuard<'_, ObjectState> {
         self.state.lock()
+    }
+}
+
+// SAFETY: its count is its own, and every object but the kernel object,
+// whose own reference never drops, is a box of `CACHE`, which `free` takes
+// back.
+unsafe impl Counted for Object {
+    fn references(&self) -> &Count {
+        &self.references
+    }
+
+    /// Terminates `object`, as `vm_object_deallocate` does at its last
+    /// reference.
+    ///
+    /// # Panics
+    ///
+    /// If it may persist with pages, or its pager is not yet initialized:
+    /// not yet. As `terminate`.
+    unsafe fn free(object: NonNull<Self>) {
+        // SAFETY: nothing else uses it, and it stays allocated until
+        // `terminate` frees it.
+        let state = unsafe { object.as_ref() }.lock();
+        assert!(
+            !state.flags.contains(Flags::CAN_PERSIST) || state.pages.count == 0,
+            "vm_object_deallocate: vm_object_cache_add, not yet"
+        );
+        assert!(
+            !state.flags.contains(Flags::PAGER_CREATED)
+                || state.flags.contains(Flags::PAGER_INITIALIZED),
+            "vm_object_deallocate: waiting for its pager's initialization, not yet"
+        );
+        // SAFETY: the caller's contract, and `state` is its state.
+        unsafe { terminate(object, state) };
     }
 }
 
@@ -283,16 +295,15 @@ pub fn init() {
 /// # Panics
 ///
 /// If the object or its port can't be allocated.
-pub fn allocate(size: usize) -> &'static Object {
+pub fn allocate(size: usize) -> Reference<Object> {
     let object = CACHE
         .allocate(Object::new(size))
         .unwrap_or_else(|error| panic!("vm_object_allocate: {error:?}"));
-    // SAFETY: an object lives until vm_object_deallocate frees it, which
-    // comes later.
-    let object = unsafe { CacheBox::into_raw(object).as_ref() };
+    // SAFETY: a new object's box holds its first reference, given up here.
+    let object = unsafe { Reference::from_raw(CacheBox::into_raw(object)) };
     let port =
         Port::allocate_kernel().unwrap_or_else(|error| panic!("vm_object_allocate: {error:?}"));
-    port.set_kernel_object(KernelObject::PagerName(NonNull::from(object)));
+    port.set_kernel_object(KernelObject::PagerName(Reference::as_ptr(&object)));
     // The slot keeps its reference.
     object.pager_name.store(
         Reference::into_raw(Reference::from(port)).as_ptr(),
@@ -302,19 +313,20 @@ pub fn allocate(size: usize) -> &'static Object {
 }
 
 /// The object and offset two adjoining ranges backed by `previous` and
-/// `next`, none for no object, have once joined.
+/// `next`, none for no object, have once joined, with a reference to that
+/// object for the range they make.
 ///
 /// # Panics
 ///
 /// Unless neither has an object: not yet.
 pub fn coalesce(
-    previous: Option<&'static Object>,
-    next: Option<&'static Object>,
-) -> (Option<&'static Object>, Offset) {
+    previous: Option<&Reference<Object>>,
+    next: Option<&Reference<Object>>,
+) -> (Option<Reference<Object>>, Offset) {
     match (previous, next) {
         // Neither exists, so the offsets don't matter.
         (None, None) => (None, Offset::from(0)),
-        (Some(previous), Some(next)) if ptr::eq(previous, next) => {
+        (Some(previous), Some(next)) if Reference::as_ptr(previous) == Reference::as_ptr(next) => {
             panic!("vm_object_coalesce: the same object, not yet")
         }
         (Some(_), Some(_)) => panic!("vm_object_coalesce: two different objects, not yet"),
@@ -332,7 +344,7 @@ pub fn coalesce(
 /// If `pager` has an object, another call made one meanwhile, or `pager`
 /// is a user's: not yet. If no request port can be allocated. As
 /// `allocate` and `pager::init_pager`.
-pub fn enter(pager: &Reference<Port>, size: usize) -> Option<&'static Object> {
+pub fn enter(pager: &Reference<Port>, size: usize) -> Option<Reference<Object>> {
     // A device pager's record, or none for a user's pager.
     let record = match pager.kernel_object() {
         Some(KernelObject::DevicePager(record)) => Some(record),
@@ -347,7 +359,7 @@ pub fn enter(pager: &Reference<Port>, size: usize) -> Option<&'static Object> {
     let object = allocate(size);
     assert!(
         matches!(
-            pager.replace_kernel_object(KernelObject::Pager(NonNull::from(object))),
+            pager.replace_kernel_object(Some(KernelObject::Pager(Reference::as_ptr(&object)))),
             Some(KernelObject::DevicePager(_)) | None
         ),
         "vm_object_enter: an object made meanwhile, not yet"
@@ -358,7 +370,7 @@ pub fn enter(pager: &Reference<Port>, size: usize) -> Option<&'static Object> {
         Port::allocate_kernel()
             .unwrap_or_else(|error| panic!("vm_object_enter: pager request alloc: {error:?}")),
     );
-    request.set_kernel_object(KernelObject::PagingRequest(NonNull::from(object)));
+    request.set_kernel_object(KernelObject::PagingRequest(Reference::as_ptr(&object)));
     let mut state = object.lock();
     state.flags.insert(Flags::PAGER_CREATED);
     state.pager = Some(pager);
@@ -388,25 +400,26 @@ pub fn enter(pager: &Reference<Port>, size: usize) -> Option<&'static Object> {
 }
 
 /// The object whose request port `port` is, with a reference taken, as
-/// `vm_object_lookup` gives it; none if it is no request port.
+/// `vm_object_lookup` gives it; none if it is no request port, or its last
+/// reference dropped and it is being terminated, which takes it off the
+/// port next.
 ///
 /// # Panics
 ///
-/// If the object has no reference: not yet.
-fn lookup(port: &Port) -> Option<&'static Object> {
-    port.with_kernel_object(|kernel_object| match kernel_object {
-        Some(&KernelObject::PagingRequest(object)) => {
-            // SAFETY: an object outlives its request port's standing for it.
-            let object = unsafe { object.as_ref() };
-            assert!(
-                object.references() != 0,
-                "vm_object_lookup: vm_object_cache_remove, not yet"
-            );
-            object.reference();
-            Some(object)
-        }
+/// If the object is dead.
+fn lookup(port: &Port) -> Option<Reference<Object>> {
+    let object = port.with_kernel_object(|kernel_object| match kernel_object {
+        // SAFETY: the port stands for its object until `terminate` clears
+        // it, under the port's lock, before freeing the object.
+        Some(&KernelObject::PagingRequest(object)) => unsafe { Reference::upgrade(object) },
         _ => None,
-    })
+    })?;
+    // Its reference keeps `terminate` off.
+    assert!(
+        object.lock().flags.contains(Flags::ALIVE),
+        "vm_object_lookup: a dead object"
+    );
+    Some(object)
 }
 
 /// Readies the object whose request port `request` is, as its pager's
@@ -415,8 +428,8 @@ fn lookup(port: &Port) -> Option<&'static Object> {
 ///
 /// # Panics
 ///
-/// If `request` is no object's request port: not yet. As `lookup` and
-/// `Object::deallocate`.
+/// If `request` is no object's request port: not yet. As `lookup` and, at
+/// the object's last reference, `terminate`.
 pub fn ready(request: &Port, copy_strategy: CopyStrategy) {
     let object = lookup(request)
         .unwrap_or_else(|| panic!("memory_object_ready: KERN_INVALID_ARGUMENT, not yet"));
@@ -426,5 +439,106 @@ pub fn ready(request: &Port, copy_strategy: CopyStrategy) {
     state.flags.insert(Flags::PAGER_READY);
     state.copy_strategy = copy_strategy;
     drop(state);
-    object.deallocate();
+    // vm_object_deallocate.
+    drop(object);
+}
+
+/// Terminates `object`, whose last reference dropped, `state` its state
+/// locked, as `vm_object_terminate` does: dead, unknown to its ports, then,
+/// unlocked, its pager terminated with the rights it held, and freed.
+///
+/// # Safety
+///
+/// `object` is a box of `CACHE` given up by `into_raw`, which nothing uses
+/// after.
+///
+/// # Panics
+///
+/// If it is dead, or one of its ports stands for something else. If it has
+/// a shadow, paging under way or pages, or no pager or a user's: not yet.
+/// As `pager::terminate`.
+unsafe fn terminate(object: NonNull<Object>, mut state: TokenGuard<'_, ObjectState>) {
+    assert!(
+        state.flags.contains(Flags::ALIVE),
+        "vm_object_terminate: a dead object"
+    );
+    state.flags.remove(Flags::ALIVE);
+    // vm_object_remove: no lookup finds it now. Its pager's port stands for
+    // nothing in place of IKOT_PAGER_TERMINATING; vm_object_enter's wait on
+    // it is not yet.
+    if let Some(pager) = &state.pager {
+        assert!(
+            matches!(
+                pager.replace_kernel_object(None),
+                Some(KernelObject::Pager(_)) | None
+            ),
+            "vm_object_remove: bad object port"
+        );
+    }
+    if let Some(request) = &state.pager_request {
+        assert!(
+            matches!(
+                request.replace_kernel_object(None),
+                Some(KernelObject::PagingRequest(_)) | None
+            ),
+            "vm_object_remove: bad request port"
+        );
+    }
+    // SAFETY: the caller's contract.
+    let pager_name = &unsafe { object.as_ref() }.pager_name;
+    // SAFETY: the slot holds its port's reference, borrowed here.
+    if let Some(name) = unsafe { pager_name.load(Ordering::Acquire).as_ref() } {
+        assert!(
+            matches!(
+                name.replace_kernel_object(None),
+                Some(KernelObject::PagerName(_)) | None
+            ),
+            "vm_object_remove: bad name port"
+        );
+    }
+    assert!(
+        state.shadow.is_none(),
+        "vm_object_terminate: a shadow object, not yet"
+    );
+    assert!(
+        state.paging_in_progress == 0,
+        "vm_object_terminate: vm_object_paging_wait, not yet"
+    );
+    assert!(
+        state.pages.count == 0,
+        "vm_object_terminate: freeing its pages, not yet"
+    );
+    if !state.flags.contains(Flags::INTERNAL) {
+        EXTERNAL_COUNT.fetch_sub(1, Ordering::Relaxed);
+    }
+    let (kind, pager, request) = (
+        state.kind.take(),
+        state.pager.take(),
+        state.pager_request.take(),
+    );
+    drop(state);
+    // SAFETY: the slot held its port's reference, taken here.
+    let name = NonNull::new(pager_name.swap(ptr::null_mut(), Ordering::Acquire))
+        .map(|name| unsafe { Reference::from_raw(name) });
+    let Some(pager) = pager else {
+        panic!("vm_object_terminate: ipc_port_dealloc_kernel(pager_name), not yet");
+    };
+    let Some(Kind::Device(record)) = kind else {
+        panic!("memory_object_terminate: a user pager, not yet");
+    };
+    // memory_object_release: memory_object_terminate, served by the kernel's
+    // own pager, called directly; nothing waits for the pager's port.
+    // SAFETY: the object served by the record is terminating.
+    unsafe {
+        pager::terminate(
+            record,
+            &pager,
+            request.expect("device_pager_terminate: no request port"),
+            name.expect("device_pager_terminate: no name port"),
+        );
+    }
+    // The request's destination right, as ipc_kobject_server releases it.
+    Port::release_send(pager);
+    // SAFETY: the caller's contract.
+    drop(unsafe { CacheBox::from_raw(&CACHE, object) });
 }
