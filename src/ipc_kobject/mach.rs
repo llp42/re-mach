@@ -23,6 +23,7 @@ mig::subsystem! {
     base 2000;
     17 thread_get_state(target_thread = thread::of, flavor: i32)
         -> (old_state: [u32; ..1024], CountInOut);
+    18 thread_set_state(target_thread = thread::of, flavor: i32, new_state: [u32; ..1024]);
     21 vm_allocate(
         target_task = task::map_of,
         address: VirtualAddress,
@@ -73,6 +74,27 @@ fn thread_get_state(
     // are never freed yet.
     let thread = thread.map(|thread| unsafe { Reference::as_ptr(thread).as_ref() });
     Thread::read_state(thread, flavor, state)
+}
+
+/// Serves `thread_set_state`: sets `thread`'s machine state of `flavor`
+/// from `state`.
+///
+/// # Errors
+///
+/// As `Thread::write_state`.
+///
+/// # Panics
+///
+/// As `Thread::write_state`.
+fn thread_set_state(
+    thread: Option<&Reference<Thread>>,
+    flavor: i32,
+    state: &[u32],
+) -> Result<(), Error> {
+    // SAFETY: the handle keeps the thread alive through the call; threads
+    // are never freed yet.
+    let thread = thread.map(|thread| unsafe { Reference::as_ptr(thread).as_ref() });
+    Thread::write_state(thread, flavor, state)
 }
 
 /// Serves `vm_allocate`: `size` bytes of zero-filled memory mapped into

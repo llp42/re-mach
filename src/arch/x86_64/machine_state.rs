@@ -9,8 +9,9 @@ use core::ops::Range;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU16, AtomicUsize, Ordering};
 
-use x86_64::VirtAddr;
 use x86_64::instructions::interrupts;
+use x86_64::structures::gdt::SegmentSelector;
+use x86_64::{PrivilegeLevel, VirtAddr};
 
 use super::fpu;
 use super::memory_layout::MAX_USER_ADDRESS;
@@ -47,8 +48,8 @@ pub struct MachineState {
     pub(super) init_control: AtomicU16,
 }
 
-// SAFETY: only its thread, or the CPU as that thread traps, writes its user
-// registers; others read them only while it is stopped.
+// SAFETY: its thread, or the CPU as that thread traps, writes its user
+// registers; others read or write them only while it is stopped.
 unsafe impl Sync for MachineState {}
 
 /// What a user stack pointer is aligned to, as the System V ABI asks.
@@ -250,8 +251,9 @@ impl MachineThread for MachineState {
             .active_thread()
             .expect("thread_exception_return: no current thread");
         // SAFETY: the thread's user registers, which a trap from user mode
-        // saved or `set_user_registers` set; the kernel stack holds nothing
-        // live past here, and interrupts stay off until iretq.
+        // saved or `set_user_registers` or `write_state` set; the kernel
+        // stack holds nothing live past here, and interrupts stay off until
+        // iretq.
         unsafe {
             asm!(
                 "movq {user}, %rsp",
@@ -299,11 +301,59 @@ impl MachineThread for MachineState {
                 Ok(UserRegisters::COUNT)
             }
             Ok(StateFlavor::Debug) => panic!("thread_getstatus: i386_DEBUG_STATE, not yet"),
+            Ok(StateFlavor::FsGsBase) => {
+                panic!("thread_getstatus: i386_FSGS_BASE_STATE, not yet")
+            }
             Err(flavor) => panic!("thread_getstatus: flavor {flavor}, not yet"),
         }
     }
 
     fn reads_own_state(flavor: i32) -> bool {
         matches!(StateFlavor::try_from(flavor), Ok(StateFlavor::Debug))
+    }
+
+    unsafe fn write_state(&self, flavor: i32, state: &[u32]) -> Result<(), Error> {
+        match StateFlavor::try_from(flavor) {
+            Ok(StateFlavor::RegistersAndSegments) => {
+                let Some(words) = state.first_chunk::<{ UserRegisters::COUNT }>() else {
+                    return Err(Error::InvalidArgument);
+                };
+                // SAFETY: `words` holds a `UserRegisters`'s bytes, and any
+                // bytes make one.
+                let mut registers = unsafe {
+                    ptr::from_ref(words)
+                        .cast::<UserRegisters>()
+                        .read_unaligned()
+                };
+                // Only the selectors' low 16 bits count; each must be a user
+                // one, not null.
+                registers.cs &= 0xffff;
+                registers.ss &= 0xffff;
+                let user = |selector: u32| {
+                    selector != 0
+                        && SegmentSelector(u16::try_from(selector).unwrap()).rpl()
+                            == PrivilegeLevel::Ring3
+                };
+                if !(user(registers.cs) && user(registers.ss)) {
+                    return Err(Error::InvalidArgument);
+                }
+                // SAFETY: guaranteed by the caller: its thread is stopped, so
+                // nothing else reads or writes its user registers.
+                unsafe { &mut *self.user.get() }.set_registers(&registers);
+                Ok(())
+            }
+            Ok(StateFlavor::Debug) => panic!("thread_setstatus: i386_DEBUG_STATE, not yet"),
+            Ok(StateFlavor::FsGsBase) => {
+                panic!("thread_setstatus: i386_FSGS_BASE_STATE, not yet")
+            }
+            Err(flavor) => panic!("thread_setstatus: flavor {flavor}, not yet"),
+        }
+    }
+
+    fn writes_own_state(flavor: i32) -> bool {
+        matches!(
+            StateFlavor::try_from(flavor),
+            Ok(StateFlavor::Debug | StateFlavor::FsGsBase)
+        )
     }
 }

@@ -410,6 +410,29 @@ impl KernelMessage {
         unsafe { self.start::<T>().as_mut() }
     }
 
+    /// Its message as a `T`, to change in place, and the rest of its buffer
+    /// as `E`s.
+    ///
+    /// # Safety
+    ///
+    /// As `layout`; `E` is aligned to at most 8 bytes, and any bytes make
+    /// one.
+    ///
+    /// # Panics
+    ///
+    /// As `layout`.
+    pub unsafe fn split_layout_mut<T, E>(&mut self) -> (&mut T, &[E]) {
+        let mut start = self.start::<T>();
+        let count = (self.size() - OVERHEAD - size_of::<T>()) / size_of::<E>();
+        // SAFETY: as in `layout`, and the caller's for `E`; the `E`s fill the
+        // buffer past the `T`, apart from it, 8-aligned as a `T`'s size is a
+        // multiple of its alignment, 8 for its `Header`.
+        unsafe {
+            let rest = start.add(1).cast::<E>();
+            (start.as_mut(), slice::from_raw_parts(rest.as_ptr(), count))
+        }
+    }
+
     /// Where its message starts, for a `T` there.
     ///
     /// # Panics

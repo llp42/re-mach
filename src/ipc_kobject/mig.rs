@@ -132,9 +132,10 @@ impl<T: Element> OutOfLine<T> {
     }
 }
 
-/// The bits of an out-of-line item's type word MIG's stub checks: all but
-/// the number, `msgt_deallocate` and `msgt_unused`, as `_Xvm_write`.
-pub(super) const OUT_OF_LINE_CHECKED: u64 = !((0xffff_ffff << 32) | (1 << 31) | (0x1f << 24));
+/// The bits of an out-of-line item's or an inline array's type word MIG's
+/// stub checks: all but the number, `msgt_deallocate` and `msgt_unused`, as
+/// `_Xvm_write` and `_Xthread_set_state`.
+pub(super) const ARRAY_CHECKED: u64 = !((0xffff_ffff << 32) | (1 << 31) | (0x1f << 24));
 
 /// A boolean, MIG's `boolean_t`: true unless 0.
 #[derive(Clone, Copy)]
@@ -340,6 +341,16 @@ macro_rules! subsystem {
             [$($($rest)*)?] $out_list
         );
     };
+    // An inline variable array in, last: its elements follow the request's
+    // fields.
+    (
+        @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*]
+        [$in:ident: [$element:ty; ..$max:literal]] $out_list:tt
+    ) => {
+        $crate::ipc_kobject::mig::subsystem!(
+            @sort $name $head [$($ins)* ($in array $element, $max)] [$($outs)*] [] $out_list
+        );
+    };
     // An in-argument.
     (
         @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*]
@@ -430,12 +441,13 @@ macro_rules! subsystem {
             ///
             /// On a request MIG refuses: not yet; as the routine.
             pub fn serve(request: &mut KernelMessage, reply: &mut KernelMessage) {
-                // SAFETY: `Request` is `repr(C)`, a `Header`, then `Inline` data, or
-                // copies' or ports' addresses, only.
-                let $request = unsafe { request.layout_mut::<Request>() };
+                mig::subsystem! { @layout request $request $(($in $in_kind $($in_parameter)*))* }
                 // Complex if it carries a right or memory.
                 assert!(
-                    usize::try_from($request.header.size) == Ok(size_of::<Request>())
+                    usize::try_from($request.header.size)
+                        == Ok(mig::subsystem!(
+                            @request_size $request $(($in $in_kind $($in_parameter)*))*
+                        ))
                         && $request.header.bits.is_complex()
                             == mig::subsystem!(@complex $($in_kind)*)
                         $(&& mig::subsystem!(@check $request $in $in_kind $($in_parameter)*))*,
@@ -465,6 +477,38 @@ macro_rules! subsystem {
                 mig::subsystem! { @reply $reply result $(($out $out_kind $($out_parameter)*))* }
             }
         }
+    };
+    // The request in place: its fields; with an inline array, last, also the
+    // rest of the buffer, the array's room.
+    (@layout $message:ident $request:ident) => {
+        // SAFETY: `Request` is `repr(C)`, a `Header`, then `Inline` data, or
+        // copies' or ports' addresses, only.
+        let $request = unsafe { $message.layout_mut::<Request>() };
+    };
+    (@layout $message:ident $request:ident ($in:ident array $element:ty, $max:literal)) => {
+        // SAFETY: `Request` is `repr(C)`, a `Header`, then `Inline` data,
+        // type words, or copies' or ports' addresses, only; the array's
+        // elements are `Element`s.
+        let ($request, $in) = unsafe { $message.split_layout_mut::<Request, $element>() };
+    };
+    (
+        @layout $message:ident $request:ident ($in:ident $kind:ident $($parameter:tt)*)
+        $($rest:tt)*
+    ) => {
+        mig::subsystem! { @layout $message $request $($rest)* }
+    };
+    // The request's size: its fields, then an inline array's elements, padded
+    // to 8 bytes.
+    (@request_size $request:ident) => { size_of::<Request>() };
+    (@request_size $request:ident ($in:ident array $element:ty, $max:literal)) => {
+        size_of::<Request>()
+            + (size_of::<$element>() * usize::try_from($request.$in.word >> 32).unwrap())
+                .next_multiple_of(8)
+    };
+    (
+        @request_size $request:ident ($in:ident $kind:ident $($parameter:tt)*) $($rest:tt)*
+    ) => {
+        mig::subsystem!(@request_size $request $($rest)*)
     };
     // The request port as the routine gets it: through its intran, or raw.
     (@port $request_port:ident intran $intran:path) => { $intran($request_port) };
@@ -512,6 +556,7 @@ macro_rules! subsystem {
     (@field request inline $type:ty) => { mig::Argument<$type> };
     (@field request count $element:ty, $max:literal) => { mig::Argument<u32> };
     (@field request out_of_line $element:ty) => { mig::Argument<usize> };
+    (@field request array $element:ty, $max:literal) => { mig::Argument<[$element; 0]> };
     (@field reply inline $type:ty) => { mig::Argument<$type> };
     (@field reply count $element:ty, $max:literal) => { mig::Argument<[$element; $max]> };
     (@field reply out_of_line $element:ty) => { mig::Argument<usize> };
@@ -527,12 +572,16 @@ macro_rules! subsystem {
         $request.$in.word == <u32 as mig::Inline>::WORD
     };
     (@check $request:ident $in:ident out_of_line $element:ty) => {
-        $request.$in.word & mig::OUT_OF_LINE_CHECKED
+        $request.$in.word & mig::ARRAY_CHECKED
             == <$element as mig::Element>::out_of_line_word(0)
+    };
+    (@check $request:ident $in:ident array $element:ty, $max:literal) => {
+        $request.$in.word & mig::ARRAY_CHECKED == <$element as mig::Element>::word(0)
+            && $request.$in.word >> 32 <= $max
     };
     // What the routine gets: the data; for a right, its intran's value, or
     // its port's reference; for a count, the reply's array, cut to it; for
-    // out-of-line memory, its handle.
+    // out-of-line memory, its handle; for an inline array, its elements.
     (@pass $request:ident $reply:ident $in:ident send_right $intran:path) => {
         $in.as_deref().and_then($intran).as_deref()
     };
@@ -544,6 +593,9 @@ macro_rules! subsystem {
         &mut $reply.$in.data[..usize::try_from($request.$in.data).unwrap().min($max)]
     };
     (@pass $request:ident $reply:ident $in:ident out_of_line $element:ty) => { $in };
+    (@pass $request:ident $reply:ident $in:ident array $element:ty, $max:literal) => {
+        &$in[..usize::try_from($request.$in.word >> 32).unwrap()]
+    };
     // What the routine gives: the data; for a count array, how many it
     // filled; for an out-of-line array, its copy; for a send right, its
     // port's reference.

@@ -321,6 +321,25 @@ pub trait MachineThread: Sized {
     /// Whether a thread reads its own state of `flavor` directly, without
     /// being stopped.
     fn reads_own_state(flavor: i32) -> bool;
+    /// Sets its thread's user state of `flavor` from `state`, whose length
+    /// is the count given.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` if `state` is too short for the flavor, or holds
+    /// values the flavor refuses.
+    ///
+    /// # Panics
+    ///
+    /// For a flavor, or values, not written here: not yet.
+    ///
+    /// # Safety
+    ///
+    /// Its thread is stopped.
+    unsafe fn write_state(&self, flavor: i32, state: &[u32]) -> Result<(), Error>;
+    /// Whether a thread writes its own state of `flavor` directly, without
+    /// being stopped.
+    fn writes_own_state(flavor: i32) -> bool;
 }
 
 /// Where a new thread begins, before its function: it dispatches `old`, the
@@ -856,6 +875,45 @@ impl Thread {
         thread.wait_until_stopped();
         // SAFETY: stopped above, and held so until the release.
         let result = unsafe { thread.machine_state.read_state(flavor, state) };
+        thread.release();
+        result
+    }
+
+    /// Sets `thread`'s machine state of `flavor` from `state`, as
+    /// `thread_set_state` does, with `thread` stopped meanwhile; `state`'s
+    /// length is the count given.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` for no thread or the current one; as
+    /// `MachineThread::write_state`.
+    ///
+    /// # Panics
+    ///
+    /// For a state the current thread writes directly: not yet. As
+    /// `wait_until_stopped`, `MachineThread::write_state` and `release`.
+    pub(super) fn write_state(
+        thread: Option<&'static Self>,
+        flavor: i32,
+        state: &[u32],
+    ) -> Result<(), Error> {
+        let Some(thread) = thread else {
+            return Err(Error::InvalidArgument);
+        };
+        if smp::current()
+            .active_thread()
+            .is_some_and(|current| ptr::eq(current, thread))
+        {
+            assert!(
+                !arch::MachineState::writes_own_state(flavor),
+                "thread_set_state: the current thread's own state, not yet"
+            );
+            return Err(Error::InvalidArgument);
+        }
+        thread.hold();
+        thread.wait_until_stopped();
+        // SAFETY: stopped above, and held so until the release.
+        let result = unsafe { thread.machine_state.write_state(flavor, state) };
         thread.release();
         result
     }

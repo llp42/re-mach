@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
-//! Threads' user state, as `thread_get_state` gives it.
+//! Threads' user state, as `thread_get_state` gives it and
+//! `thread_set_state` takes it.
 
 /// A thread state's flavor, as Mach numbers it on x86; only those written
 /// so far.
@@ -10,6 +11,8 @@ pub(super) enum StateFlavor {
     RegistersAndSegments,
     /// `i386_DEBUG_STATE`: the debug registers.
     Debug,
+    /// `i386_FSGS_BASE_STATE`: the FS and GS bases.
+    FsGsBase,
 }
 
 impl TryFrom<i32> for StateFlavor {
@@ -20,13 +23,15 @@ impl TryFrom<i32> for StateFlavor {
         match number {
             5 => Ok(Self::RegistersAndSegments),
             6 => Ok(Self::Debug),
+            7 => Ok(Self::FsGsBase),
             _ => Err(number),
         }
     }
 }
 
 /// `i386_thread_state`, as Mach lays it out on `x86_64`: a thread's user
-/// registers and segments; its padding is fields, zero.
+/// registers and segments; its padding is fields, zero as given, ignored as
+/// taken.
 #[repr(C)]
 pub(super) struct UserRegisters {
     pub(super) r8: u64,

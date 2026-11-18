@@ -13,6 +13,7 @@ use x86_64::VirtAddr;
 use x86_64::instructions::interrupts;
 use x86_64::registers::control::{Cr2, Cr4, Cr4Flags};
 use x86_64::registers::rflags::RFlags;
+use x86_64::structures::gdt::SegmentSelector;
 use x86_64::structures::idt::{ExceptionVector, InterruptStackFrameValue, PageFaultErrorCode};
 
 use super::memory_layout::{MAX_USER_ADDRESS, PAGE_SIZE};
@@ -239,6 +240,46 @@ impl From<&TrapFrame> for UserRegisters {
             ss: u32::from(interrupted.stack_segment.0),
             ss_padding: 0,
         }
+    }
+}
+
+impl TrapFrame {
+    /// Sets the user registers and segments it saved from `registers`, as
+    /// `thread_setstatus` does: rsp left out, the flags without IOPL, NT and
+    /// RF, and with interrupts on.
+    ///
+    /// # Panics
+    ///
+    /// If a selector is past 16 bits. If an address is not canonical: not
+    /// yet.
+    pub(super) fn set_registers(&mut self, registers: &UserRegisters) {
+        let address = |value| {
+            VirtAddr::try_new(value)
+                .unwrap_or_else(|_| panic!("thread_setstatus: a non-canonical address, not yet"))
+        };
+        self.r8 = registers.r8;
+        self.r9 = registers.r9;
+        self.r10 = registers.r10;
+        self.r11 = registers.r11;
+        self.r12 = registers.r12;
+        self.r13 = registers.r13;
+        self.r14 = registers.r14;
+        self.r15 = registers.r15;
+        self.rdi = registers.rdi;
+        self.rsi = registers.rsi;
+        self.rbp = registers.rbp;
+        self.rbx = registers.rbx;
+        self.rdx = registers.rdx;
+        self.rcx = registers.rcx;
+        self.rax = registers.rax;
+        let interrupted = &mut self.interrupted;
+        interrupted.instruction_pointer = address(registers.rip);
+        interrupted.code_segment = SegmentSelector(u16::try_from(registers.cs).unwrap());
+        interrupted.cpu_flags = (RFlags::from_bits_retain(registers.rflags)
+            - (RFlags::IOPL_HIGH | RFlags::IOPL_LOW | RFlags::NESTED_TASK | RFlags::RESUME_FLAG))
+            | RFlags::INTERRUPT_FLAG;
+        interrupted.stack_pointer = address(registers.user_rsp);
+        interrupted.stack_segment = SegmentSelector(u16::try_from(registers.ss).unwrap());
     }
 }
 
