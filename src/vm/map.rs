@@ -404,7 +404,7 @@ impl Map {
     /// multiple of the page size, wired, allowing `protection` now and at
     /// most `max_protection`; returns where. They are backed by `object` at
     /// the offset of their address in the map, or by nothing; the entry
-    /// counts no reference on `object`, the kernel object, which never goes.
+    /// holds a reference on `object`, the kernel object.
     ///
     /// # Errors
     ///
@@ -447,6 +447,13 @@ impl Map {
             in_transition: AtomicBool::new(false),
             needs_copy: AtomicBool::new(false),
         })?;
+        if let Some(object) = object {
+            // SAFETY: it is the kernel object, whose own reference never
+            // drops; this handle borrows it and never drops it.
+            let held = ManuallyDrop::new(unsafe { Reference::from_raw(NonNull::from(object)) });
+            // vm_object_reference: another, held by the entry.
+            Reference::into_raw(Reference::clone(&held));
+        }
         // The free space hint moves on to it.
         contents.first_free = Some(contents.link(self.bounds.start, previous, entry));
         drop(contents);
@@ -2047,8 +2054,8 @@ pub enum Backing {
     /// IPC buffers.
     Submap(#[expect(dead_code, reason = "vm_map_lookup descends into it")] &'static Map),
     /// An object from `offset` on, whose reference it holds as
-    /// `Reference::into_raw` gave it up, unless it is the kernel object;
-    /// null until it has one. Both change only under the map's write lock.
+    /// `Reference::into_raw` gave it up; null until it has one. Both change
+    /// only under the map's write lock.
     Object {
         object: AtomicPtr<Object>,
         offset: AtomicUsize,
