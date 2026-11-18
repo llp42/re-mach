@@ -67,13 +67,14 @@ pub trait MachinePhysMap {
     /// address. For `Wiring::Wired`: not yet.
     fn change_wiring(&self, address: usize, wiring: Wiring);
 
-    /// Removes the mappings of kernel `range` from the kernel's physical
-    /// map, skipping the pages and tables not there.
+    /// Removes the mappings of `range`, kernel addresses in the kernel's
+    /// physical map and user ones in another, skipping the pages and tables
+    /// not there; tables stay.
     ///
     /// # Panics
     ///
-    /// If `range` is not kernel addresses. In another physical map, or if
-    /// another CPU runs: not yet.
+    /// In the kernel's, if `range` is not kernel addresses. In another, if
+    /// it is active on another CPU: not yet.
     fn remove(&self, range: Range<usize>);
 
     /// Cuts the mappings of user `range` down to `protection`, skipping the

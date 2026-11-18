@@ -345,10 +345,47 @@ impl MachinePhysMap for PhysMap {
     }
 
     fn remove(&self, range: Range<usize>) {
-        assert!(
-            ptr::eq(self, Self::kernel()),
-            "pmap_remove: a user pmap, not yet"
-        );
+        if !ptr::eq(self, Self::kernel()) {
+            let tables = self.lock.lock();
+            let current = smp::current().id();
+            let active = self.active_cpus.contains(current);
+            let mut address = range.start;
+            while address < range.end {
+                // The end of the page table's span, or of the range.
+                let next = address
+                    .checked_add(LARGE_PAGE_SIZE)
+                    .map_or(range.end, |next| {
+                        (next & !(LARGE_PAGE_SIZE - 1)).min(range.end)
+                    });
+                // Page tables stay until the physical map goes.
+                if let Ok(table) = self.expand(address, &mut []) {
+                    let entries = page::lookup(table)
+                        .expect("pmap_remove: a page table outside the page array")
+                        .table_lock
+                        .lock();
+                    for page in (address..next).step_by(PAGE_SIZE) {
+                        let entry = table_entry(table, index(page, PAGE_SIZE));
+                        // Atomic, as the CPU sets accessed and dirty bits;
+                        // they are kept nowhere yet.
+                        if entry.swap(0, Ordering::SeqCst) != 0 {
+                            self.resident.fetch_sub(1, Ordering::Relaxed);
+                            if active {
+                                tlb::flush(VirtAddr::new(u64::try_from(page).unwrap()));
+                            }
+                        }
+                    }
+                    drop(entries);
+                }
+                address = next;
+            }
+            // After the entries change, as in `protect`.
+            assert!(
+                !self.active_cpus.contains_other(current),
+                "PMAP_UPDATE_TLBS: signal_cpus, not yet"
+            );
+            drop(tables);
+            return;
+        }
         assert!(
             range.start >= MIN_KERNEL_ADDRESS,
             "pmap_remove_range: {:#x} is not a kernel address",
