@@ -16,6 +16,12 @@ use crate::vm::{self, Inheritance, Protection, VirtualAddress};
 
 mig::subsystem! {
     base 2000;
+    21 vm_allocate(
+        target_task = task::map_of,
+        address: VirtualAddress,
+        size: usize,
+        anywhere: Boolean
+    ) -> (address: VirtualAddress);
     23 vm_deallocate(target_task = task::map_of, address: VirtualAddress, size: usize);
     89 vm_map(
         target_task = task::map_of,
@@ -30,6 +36,33 @@ mig::subsystem! {
         max_protection: u32,
         inheritance: u32
     ) -> (address: VirtualAddress);
+}
+
+/// Serves `vm_allocate`: `size` bytes of zero-filled memory mapped into
+/// `map` at `address` or anywhere; gives where.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no map; as `vm::user::allocate`.
+///
+/// # Panics
+///
+/// As `vm::user::allocate`.
+fn vm_allocate(
+    map: Option<&Reference<Map>>,
+    address: VirtualAddress,
+    size: usize,
+    anywhere: Boolean,
+) -> Result<VirtualAddress, Error> {
+    let Some(map) = map else {
+        return Err(Error::InvalidArgument);
+    };
+    let placement = if bool::from(anywhere) {
+        Placement::Anywhere
+    } else {
+        Placement::Fixed(address)
+    };
+    vm::user::allocate(map, placement, size)
 }
 
 /// Serves `vm_deallocate`: `size` bytes of `map` from `address` removed.
