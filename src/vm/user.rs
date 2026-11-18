@@ -175,6 +175,24 @@ fn enter(
     Ok(range.start)
 }
 
+/// Removes `size` bytes of `map` from `address`, rounded out to pages;
+/// nothing for no bytes.
+///
+/// # Panics
+///
+/// As `Map::remove`.
+pub fn deallocate(map: &Map, address: VirtualAddress, size: usize) {
+    if size == 0 {
+        return;
+    }
+    // GNU Mach's rounding, which wraps past the top.
+    let end = usize::from(address)
+        .wrapping_add(size)
+        .wrapping_add(PAGE_SIZE - 1)
+        & !(PAGE_SIZE - 1);
+    map.remove(address.align_down(PAGE_SIZE)..VirtualAddress::from(end));
+}
+
 /// Sets what `size` bytes of `map` from `address`, rounded out to pages,
 /// allow to `protection`, as `change` says.
 ///

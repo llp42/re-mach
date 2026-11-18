@@ -824,6 +824,22 @@ impl Map {
         }
     }
 
+    /// Removes the entries of `range`, cut to the map's bounds, from the map,
+    /// and their pages from its physical map.
+    ///
+    /// # Panics
+    ///
+    /// If no entry can be allocated. As `Map::delete`.
+    pub fn remove(&self, range: Range<VirtualAddress>) {
+        // Taken before the lock, for the splits.
+        let mut reservation = EntryReservation::new();
+        let mut guard = self.lock();
+        let end = range.end.min(self.bounds.end);
+        let start = range.start.max(self.bounds.start).min(end);
+        self.delete(&mut guard, start..end, &mut reservation);
+        drop(guard);
+    }
+
     /// Moves `range` out of the map into a new copy, holding its entries,
     /// which take their objects' references: `vm_map_copyin` destroying its
     /// source.
