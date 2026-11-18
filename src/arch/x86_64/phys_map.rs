@@ -303,16 +303,30 @@ impl MachinePhysMap for PhysMap {
 
     fn change_wiring(&self, address: usize, wiring: Wiring) {
         assert!(
-            ptr::eq(self, Self::kernel()),
-            "pmap_change_wiring: a user pmap, not yet"
+            matches!(wiring, Wiring::Pageable),
+            "pmap_change_wiring: wiring down, not yet"
         );
+        if !ptr::eq(self, Self::kernel()) {
+            let tables = self.lock.lock();
+            let table = self
+                .expand(address, &mut [])
+                .unwrap_or_else(|_| panic!("pmap_change_wiring: pte missing"));
+            // The page table's lock, before the physical map's drops.
+            let entries = page::lookup(table)
+                .expect("pmap_change_wiring: a page table outside the page array")
+                .table_lock
+                .lock();
+            drop(tables);
+            // Atomic, as the CPU sets accessed and dirty bits; it ignores
+            // this one, so no TLB needs flushing.
+            table_entry(table, index(address, PAGE_SIZE))
+                .fetch_and(!WIRED.bits(), Ordering::Relaxed);
+            drop(entries);
+            return;
+        }
         assert!(
             address >= MIN_KERNEL_ADDRESS,
             "pmap_change_wiring: {address:#x} is not a kernel address"
-        );
-        assert!(
-            matches!(wiring, Wiring::Pageable),
-            "pmap_change_wiring: wiring down, not yet"
         );
         // Kernel space's PML4 entries are always there.
         for level in [2, 1] {
