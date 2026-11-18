@@ -183,6 +183,7 @@ impl Map {
             wired_access: AtomicU32::new(Protection::empty().bits()),
             in_transition: AtomicBool::new(false),
             needs_copy: AtomicBool::new(false),
+            kernel_stack: false,
         })?;
         let mut contents = self.lock();
         let range = match placement {
@@ -391,6 +392,7 @@ impl Map {
             wired_access: AtomicU32::new(Protection::empty().bits()),
             in_transition: AtomicBool::new(false),
             needs_copy: AtomicBool::new(false),
+            kernel_stack: false,
         })?;
         let entry = contents.link(self.bounds.start, previous, entry);
         if follows_first_free {
@@ -406,7 +408,7 @@ impl Map {
     /// the offset of their address in the map, or by nothing; the entry
     /// holds a reference on `object`, the kernel object. They count in the
     /// map's wired size, with an object or without (GNU Mach leaves them
-    /// out).
+    /// out). `usage` tags a kernel stack's entry (no GNU Mach counterpart).
     ///
     /// # Errors
     ///
@@ -419,6 +421,7 @@ impl Map {
         protection: Protection,
         max_protection: Protection,
         object: Option<&'static Object>,
+        usage: Usage,
     ) -> Result<Range<VirtualAddress>, Error> {
         let mut contents = self.lock();
         let (previous, start) = contents.find_space(self.bounds.start, size, align)?;
@@ -448,6 +451,7 @@ impl Map {
             wired_access: AtomicU32::new((Protection::READ | Protection::WRITE).bits()),
             in_transition: AtomicBool::new(false),
             needs_copy: AtomicBool::new(false),
+            kernel_stack: matches!(usage, Usage::KernelStack),
         })?;
         if let Some(object) = object {
             // SAFETY: it is the kernel object, whose own reference never
@@ -1009,8 +1013,8 @@ impl Map {
             };
             let object = object.load(Ordering::Relaxed);
             let wired = entry.wire_count() != 0;
-            // vm_map_entry_copy: unwired, out of transition, and needing a
-            // copy if the source does.
+            // vm_map_entry_copy: unwired, out of transition, no kernel stack,
+            // and needing a copy if the source does.
             let mut new = reservation.take();
             *new = Entry {
                 tree_link: RBTreeAtomicLink::new(),
@@ -1030,6 +1034,7 @@ impl Map {
                 wired_access: AtomicU32::new(Protection::empty().bits()),
                 in_transition: AtomicBool::new(false),
                 needs_copy: AtomicBool::new(entry.needs_copy.load(Ordering::Relaxed)),
+                kernel_stack: false,
             };
             let held = NonNull::new(object).map(|object| {
                 // SAFETY: the entry holds a reference on its object, or it is
@@ -1491,6 +1496,15 @@ pub enum Placement {
     Anywhere,
 }
 
+/// What an entry `Map::enter_anywhere` makes is for.
+#[derive(Clone, Copy)]
+pub enum Usage {
+    /// Memory, wired throughout.
+    Memory,
+    /// A kernel stack, above a guard page that is never wired.
+    KernelStack,
+}
+
 /// What `Map::lookup` finds for an address; `object` must outlive `state`.
 pub struct Lookup {
     /// The object's state, locked; it drops before `object`, whose
@@ -1758,6 +1772,7 @@ impl Contents {
             wired_access: AtomicU32::new(entry.wired_access().bits()),
             in_transition: AtomicBool::new(entry.in_transition.load(Ordering::Relaxed)),
             needs_copy: AtomicBool::new(entry.needs_copy.load(Ordering::Relaxed)),
+            kernel_stack: entry.kernel_stack,
         };
         offset.store(
             offset.load(Ordering::Relaxed) + (start - entry.start()),
@@ -1826,6 +1841,7 @@ impl Contents {
             wired_access: AtomicU32::new(entry.wired_access().bits()),
             in_transition: AtomicBool::new(entry.in_transition.load(Ordering::Relaxed)),
             needs_copy: AtomicBool::new(entry.needs_copy.load(Ordering::Relaxed)),
+            kernel_stack: entry.kernel_stack,
         };
         entry.end.store(usize::from(end), Ordering::Relaxed);
         // Linked after it: the free space after it moves to the new entry.
@@ -1889,6 +1905,7 @@ impl EntryReservation {
                     wired_access: AtomicU32::new(Protection::empty().bits()),
                     in_transition: AtomicBool::new(false),
                     needs_copy: AtomicBool::new(false),
+                    kernel_stack: false,
                 })
                 .unwrap_or_else(|error| panic!("vm_map_entry_create: {error:?}"));
             entries.push(entry);
@@ -1949,6 +1966,9 @@ pub struct Entry {
     /// Whether a copy shares its object, which is then shadowed before it
     /// is written; changed only under the map's write lock.
     needs_copy: AtomicBool,
+    /// Whether it is a kernel stack, whose first page, its guard, is never
+    /// wired; GNU Mach's stacks have no guard.
+    pub(super) kernel_stack: bool,
 }
 
 impl Entry {
@@ -2046,6 +2066,7 @@ fn coalesce(cursor: &Cursor<'_, EntryAdapter>) {
         || previous.max_protection() != entry.max_protection()
         || previous.needs_copy.load(Ordering::Relaxed) != entry.needs_copy.load(Ordering::Relaxed)
         || previous.wire_count() != entry.wire_count()
+        || previous.kernel_stack != entry.kernel_stack
     {
         return;
     }

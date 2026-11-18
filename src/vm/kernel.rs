@@ -5,7 +5,7 @@
 
 use core::ptr::{self, NonNull};
 
-use super::map::{Map, Placement};
+use super::map::{Map, Placement, Usage};
 use super::object::{KERNEL_OBJECT, Offset};
 use super::page::{self, Page};
 use super::phys_map::MachinePhysMap as _;
@@ -90,6 +90,7 @@ pub fn map_device(physical: PhysAddr, size: usize) -> Result<NonNull<u8>, Error>
         Protection::READ | Protection::WRITE,
         Protection::all(),
         None,
+        Usage::Memory,
     )?;
     let range = usize::from(range.start)..usize::from(range.end);
     arch::PhysMap::enter_device(range.clone(), PhysAddr(physical.0 - offset));
@@ -115,6 +116,7 @@ pub fn allocate_wired(size: usize) -> Result<NonNull<u8>, Error> {
         Protection::READ | Protection::WRITE,
         Protection::all(),
         Some(&KERNEL_OBJECT),
+        Usage::Memory,
     )?;
     let range = usize::from(range.start)..usize::from(range.end);
     fill(range.clone())?;
@@ -142,6 +144,7 @@ pub fn allocate_aligned(size: usize) -> Result<NonNull<u8>, Error> {
         Protection::READ | Protection::WRITE,
         Protection::all(),
         Some(&KERNEL_OBJECT),
+        Usage::Memory,
     )?;
     let range = usize::from(range.start)..usize::from(range.end);
     fill(range.clone())?;
@@ -207,6 +210,7 @@ pub fn allocate_stack() -> Result<KernelStack, Error> {
         Protection::READ | Protection::WRITE,
         Protection::all(),
         Some(&KERNEL_OBJECT),
+        Usage::KernelStack,
     )?;
     let range = usize::from(range.start)..usize::from(range.end);
     fill(range.start + PAGE_SIZE..range.end)?;

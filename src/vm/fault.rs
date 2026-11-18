@@ -268,7 +268,8 @@ fn wire_fast(map: &Map, address: usize, entry: &Entry) -> Result<(), Error> {
 
 /// Unwires the pages of `entry` in `map`, while the map is write-locked: each
 /// loses its mapping's wiring, then `fault_page` finds it, resident, to
-/// unwire it.
+/// unwire it. A kernel stack's first page, its guard, is skipped (no GNU
+/// Mach counterpart).
 ///
 /// # Panics
 ///
@@ -287,7 +288,12 @@ pub(super) fn unwire(map: &Map, entry: &Entry) {
     let object = unsafe { object.load(Ordering::Relaxed).as_ref() }
         .expect("vm_fault_unwire: vm_fault with no object, not yet");
     let start = usize::from(entry.start());
-    for address in (start..usize::from(entry.end())).step_by(PAGE_SIZE) {
+    let first = if entry.kernel_stack {
+        start + PAGE_SIZE
+    } else {
+        start
+    };
+    for address in (first..usize::from(entry.end())).step_by(PAGE_SIZE) {
         map.phys_map().change_wiring(address, Wiring::Pageable);
         let mut state = object.lock();
         state.begin_paging();
