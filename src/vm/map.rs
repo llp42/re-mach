@@ -1174,6 +1174,149 @@ impl Map {
         Ok(address)
     }
 
+    /// Writes `copy`'s memory over the map from `address`, as
+    /// `vm_map_copy_overwrite` does: the destination's entry takes the copy's
+    /// object, offset and need of a copy, and its old pages leave the
+    /// physical map. Consumes the copy; nothing for none.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` if the copy's start or size, or `address`, is not
+    /// page-aligned, `InvalidAddress` if no entry holds `address`, and
+    /// `ProtectionFailure` if its entry doesn't allow writing.
+    ///
+    /// # Panics
+    ///
+    /// If the copy holds an object or pages. If an entry can't be allocated. If
+    /// the destination's entry is in transition, ends before the copy's
+    /// memory, differs from the copy's entry in size, is a submap, is wired,
+    /// or holds an object that is not temporary: not yet. On an error, as
+    /// discarding a copy holding entries: not yet. As `Contents::clip_start`,
+    /// `MachinePhysMap::protect` and freeing the old object at its last
+    /// reference.
+    pub fn copy_overwrite(
+        &self,
+        address: VirtualAddress,
+        copy: Option<CacheBox<MapCopy>>,
+    ) -> Result<(), Error> {
+        let Some(mut copy) = copy else {
+            return Ok(());
+        };
+        assert!(
+            matches!(copy.kind, CopyKind::Entries),
+            "vm_map_copy_overwrite: not an entry list"
+        );
+        if !usize::from(copy.offset).is_multiple_of(PAGE_SIZE)
+            || !copy.size.is_multiple_of(PAGE_SIZE)
+            || !usize::from(address).is_multiple_of(PAGE_SIZE)
+        {
+            return Err(Error::InvalidArgument);
+        }
+        let size = copy.size;
+        if size == 0 {
+            // vm_map_copy_discard.
+            drop(copy);
+            return Ok(());
+        }
+        // Taken before the lock, for the split.
+        let mut reservation = EntryReservation::new();
+        // Pass 1: the destination allows writing.
+        let mut guard = self.lock();
+        let contents = &mut *guard;
+        let Some(entry) = contents
+            .entries
+            .upper_bound(Bound::Included(&address))
+            .clone_pointer()
+            .filter(|entry| address < entry.end())
+        else {
+            drop(guard);
+            return Err(Error::InvalidAddress);
+        };
+        if address > entry.start() {
+            contents.clip_start(&entry, address, &mut reservation);
+        }
+        if !entry.protection().contains(Protection::WRITE) {
+            drop(guard);
+            return Err(Error::ProtectionFailure);
+        }
+        assert!(
+            !entry.in_transition.load(Ordering::Relaxed),
+            "vm_map_copy_overwrite: vm_map_entry_wait, not yet"
+        );
+        let entry_size = entry.end() - entry.start();
+        assert!(
+            size <= entry_size,
+            "vm_map_copy_overwrite: several entries, not yet"
+        );
+        // Pass 2, over the copy's one entry, as the destination's is one.
+        let copy_entry = copy.entries.front().clone_pointer().unwrap();
+        let copy_size = copy_entry.end() - copy_entry.start();
+        assert!(
+            copy_size >= entry_size,
+            "vm_map_copy_overwrite: vm_map_clip_end, not yet"
+        );
+        assert!(
+            entry_size >= copy_size,
+            "vm_map_copy_overwrite: vm_map_copy_clip_end, not yet"
+        );
+        let Backing::Object { object, offset } = &entry.backing else {
+            panic!("vm_map_copy_overwrite: a submap, not yet");
+        };
+        let old = NonNull::new(object.load(Ordering::Relaxed));
+        // Entries are shared only by vm_map_fork, not yet: temporary memory is
+        // thrown away and the copy's put in its place.
+        assert!(
+            old.is_none_or(|old| {
+                // SAFETY: the entry holds a reference on its object, which the
+                // map's lock keeps.
+                unsafe { old.as_ref() }
+                    .lock()
+                    .flags
+                    .contains(Flags::TEMPORARY)
+            }),
+            "vm_map_copy_overwrite: vm_fault_copy, not yet"
+        );
+        let Backing::Object {
+            object: copy_object,
+            offset: copy_offset,
+        } = &copy_entry.backing
+        else {
+            panic!("vm_map_copy_overwrite: a copy's submap");
+        };
+        object.store(copy_object.load(Ordering::Relaxed), Ordering::Relaxed);
+        offset.store(copy_offset.load(Ordering::Relaxed), Ordering::Relaxed);
+        entry.needs_copy.store(
+            copy_entry.needs_copy.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        assert!(
+            entry.wire_count() == 0,
+            "vm_map_entry_reset_wired: a wired entry, not yet"
+        );
+        // The copy's entry goes; its reference is now the entry's.
+        let copy_entry = copy.entries.front_mut().remove().unwrap();
+        let copy_entry = NonNull::new(UnsafeRef::into_raw(copy_entry)).unwrap();
+        // SAFETY: a copy's entries come from `CacheBox::into_raw` of
+        // `ENTRY_CACHE`'s boxes (`Map::copy_in`), and its tree held the only
+        // pointer to each; out of the tree, it is the box's alone.
+        drop(unsafe { CacheBox::from_raw(&ENTRY_CACHE, copy_entry) });
+        if let Some(old) = old {
+            // vm_object_pmap_protect to none: the old pages leave the
+            // physical map.
+            self.phys_map.protect(
+                usize::from(entry.start())..usize::from(entry.end()),
+                Protection::empty(),
+            );
+            // vm_object_deallocate: the entry's old reference goes.
+            // SAFETY: the entry held it, and now holds the copy's.
+            drop(unsafe { Reference::from_raw(old) });
+        }
+        drop(guard);
+        // vm_map_copy_discard: the copy is empty.
+        drop(copy);
+        Ok(())
+    }
+
     /// Finds what `address` maps for a fault asking for `access`: the object
     /// behind it, locked, made first if its entry has none, with a reference
     /// taken under the map's lock for the fault, where `address` is in it,

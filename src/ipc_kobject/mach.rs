@@ -4,7 +4,7 @@
 //! Mach's calls' server routines, as MIG makes them from `mach`'s
 //! definitions; only those written so far.
 
-use super::mig::{self, Boolean};
+use super::mig::{self, Boolean, OutOfLine};
 use crate::error::Error;
 use crate::ipc::port::Port;
 use crate::reference::Reference;
@@ -30,6 +30,7 @@ mig::subsystem! {
         set_maximum: Boolean,
         new_protection: u32
     );
+    27 vm_write(target_task = task::map_of, address: VirtualAddress, data: OutOfLine<u8>);
     89 vm_map(
         target_task = task::map_of,
         address: VirtualAddress,
@@ -125,6 +126,28 @@ fn vm_protect(
         change,
         Protection::from_bits_retain(protection),
     )
+}
+
+/// Serves `vm_write`: the memory `data` holds written over `map` from
+/// `address`.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no map; as `vm::user::write`.
+///
+/// # Panics
+///
+/// For no map, as discarding a copy holding entries: not yet. As
+/// `vm::user::write`.
+fn vm_write(
+    map: Option<&Reference<Map>>,
+    address: VirtualAddress,
+    data: Option<OutOfLine<u8>>,
+) -> Result<(), Error> {
+    let Some(map) = map else {
+        return Err(Error::InvalidArgument);
+    };
+    vm::user::write(map, address, data.map(OutOfLine::into_copy))
 }
 
 /// Serves `vm_map`: `size` bytes of `memory_object` from `offset`, or a

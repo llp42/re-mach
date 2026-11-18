@@ -3,13 +3,14 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The virtual memory calls of Mach's interface.
 
-use super::map::{Change, Map, Placement};
+use super::map::{Change, Map, MapCopy, Placement};
 use super::object::{self, Object, Offset};
 use super::{Inheritance, Protection, VirtualAddress, Wire};
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
 use crate::ipc::port::{KernelObject, Port};
 use crate::reference::Reference;
+use crate::slab::CacheBox;
 
 /// What `map` maps of a memory object.
 pub enum Mapping {
@@ -187,6 +188,23 @@ pub fn deallocate(map: &Map, address: VirtualAddress, size: usize) {
         .wrapping_add(PAGE_SIZE - 1)
         & !(PAGE_SIZE - 1);
     map.remove(address.align_down(PAGE_SIZE)..VirtualAddress::from(end));
+}
+
+/// Writes `copy`'s memory over `map` from `address`; nothing for none.
+///
+/// # Errors
+///
+/// As `Map::copy_overwrite`.
+///
+/// # Panics
+///
+/// As `Map::copy_overwrite`.
+pub fn write(
+    map: &Map,
+    address: VirtualAddress,
+    copy: Option<CacheBox<MapCopy>>,
+) -> Result<(), Error> {
+    map.copy_overwrite(address, copy)
 }
 
 /// Sets what `size` bytes of `map` from `address`, rounded out to pages,

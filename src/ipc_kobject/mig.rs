@@ -92,8 +92,8 @@ pub(super) unsafe trait Element: Copy {
     }
 }
 
-/// An out-of-line array a routine gives: the copy holding it, and how many
-/// elements.
+/// An out-of-line array a routine gives or gets: the copy holding it, and
+/// how many elements.
 pub(super) struct OutOfLine<T> {
     /// The copy holding it.
     copy: CacheBox<MapCopy>,
@@ -125,7 +125,16 @@ impl<T: Element> OutOfLine<T> {
             CacheBox::into_raw(self.copy).as_ptr().expose_provenance(),
         )
     }
+
+    /// The copy holding it.
+    pub(super) fn into_copy(self) -> CacheBox<MapCopy> {
+        self.copy
+    }
 }
+
+/// The bits of an out-of-line item's type word MIG's stub checks: all but
+/// the number, `msgt_deallocate` and `msgt_unused`, as `_Xvm_write`.
+pub(super) const OUT_OF_LINE_CHECKED: u64 = !((0xffff_ffff << 32) | (1 << 31) | (0x1f << 24));
 
 /// A boolean, MIG's `boolean_t`: true unless 0.
 #[derive(Clone, Copy)]
@@ -223,6 +232,12 @@ unsafe impl Inline for DeviceName {
 }
 
 // SAFETY: a primitive.
+unsafe impl Element for u8 {
+    const NAME: MessageType = MessageType::Byte;
+    const SIZE: u16 = 8;
+}
+
+// SAFETY: a primitive.
 unsafe impl Element for i32 {
     const NAME: MessageType = MessageType::Integer32;
     const SIZE: u16 = 32;
@@ -309,6 +324,16 @@ macro_rules! subsystem {
             @sort $name $head [$($ins)* ($in send_right)] [$($outs)*] [$($($rest)*)?] $out_list
         );
     };
+    // Out-of-line memory in.
+    (
+        @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*]
+        [$in:ident: OutOfLine<$element:ty> $(, $($rest:tt)*)?] $out_list:tt
+    ) => {
+        $crate::ipc_kobject::mig::subsystem!(
+            @sort $name $head [$($ins)* ($in out_of_line $element)] [$($outs)*]
+            [$($($rest)*)?] $out_list
+        );
+    };
     // An in-argument.
     (
         @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*]
@@ -392,16 +417,17 @@ macro_rules! subsystem {
             }
 
             /// Serves `request`, as MIG's stub does; the request's send rights
-            /// are taken out of it, and released as the call ends.
+            /// and out-of-line memory are taken out of it, the rights released
+            /// as the call ends, the memory given to the routine.
             ///
             /// # Panics
             ///
             /// On a request MIG refuses: not yet; as the routine.
             pub fn serve(request: &mut KernelMessage, reply: &mut KernelMessage) {
-                // SAFETY: `Request` is `repr(C)`, a `Header`, then `Inline` data or
-                // ports' addresses only.
+                // SAFETY: `Request` is `repr(C)`, a `Header`, then `Inline` data, or
+                // copies' or ports' addresses, only.
                 let $request = unsafe { request.layout_mut::<Request>() };
-                // Complex if it carries a right.
+                // Complex if it carries a right or memory.
                 assert!(
                     usize::try_from($request.header.size) == Ok(size_of::<Request>())
                         && $request.header.bits.is_complex()
@@ -439,9 +465,10 @@ macro_rules! subsystem {
     (@port $request_port:ident raw) => { $request_port };
     (@port_pass $port:ident intran) => { $port.as_ref() };
     (@port_pass $port:ident raw) => { $port };
-    // Whether the request is complex: if any in is a right.
+    // Whether the request is complex: if any in is a right or memory.
     (@complex) => { false };
     (@complex send_right $($rest:ident)*) => { true };
+    (@complex out_of_line $($rest:ident)*) => { true };
     (@complex $kind:ident $($rest:ident)*) => { mig::subsystem!(@complex $($rest)*) };
     // A right's handle takes it out of the request, its slot cleared; null
     // gives none.
@@ -456,11 +483,29 @@ macro_rules! subsystem {
             $crate::ipc::port::SendRight::new(port)
         });
     };
+    // Out-of-line memory's handle takes its copy out of the request, its
+    // slot cleared, with the word's number; null gives none.
+    (@take $request:ident $in:ident out_of_line $element:ty) => {
+        let $in = core::ptr::NonNull::new(core::ptr::with_exposed_provenance_mut::<
+            $crate::vm::map::MapCopy,
+        >(core::mem::take(&mut $request.$in.data)))
+        .map(|copy| {
+            // SAFETY: copied in, out-of-line memory's data is the exposed
+            // address of a `COPY_CACHE` box from `CacheBox::into_raw`, which
+            // the message alone holds and the handle takes.
+            let copy = unsafe {
+                $crate::slab::CacheBox::from_raw(&$crate::vm::map::COPY_CACHE, copy)
+            };
+            let count = usize::try_from($request.$in.word >> 32).unwrap();
+            mig::OutOfLine::<$element>::new(copy, count)
+        });
+    };
     (@take $request:ident $in:ident $kind:ident $($parameter:tt)*) => {};
     // Each kind's field: in the request, then in the reply.
     (@field request send_right $($intran:path)?) => { mig::Argument<usize> };
     (@field request inline $type:ty) => { mig::Argument<$type> };
     (@field request count $element:ty, $max:literal) => { mig::Argument<u32> };
+    (@field request out_of_line $element:ty) => { mig::Argument<usize> };
     (@field reply inline $type:ty) => { mig::Argument<$type> };
     (@field reply count $element:ty, $max:literal) => { mig::Argument<[$element; $max]> };
     (@field reply out_of_line $element:ty) => { mig::Argument<usize> };
@@ -475,8 +520,13 @@ macro_rules! subsystem {
     (@check $request:ident $in:ident count $element:ty, $max:literal) => {
         $request.$in.word == <u32 as mig::Inline>::WORD
     };
+    (@check $request:ident $in:ident out_of_line $element:ty) => {
+        $request.$in.word & mig::OUT_OF_LINE_CHECKED
+            == <$element as mig::Element>::out_of_line_word(0)
+    };
     // What the routine gets: the data; for a right, its intran's value, or
-    // its port's reference; for a count, the reply's array, cut to it.
+    // its port's reference; for a count, the reply's array, cut to it; for
+    // out-of-line memory, its handle.
     (@pass $request:ident $reply:ident $in:ident send_right $intran:path) => {
         $in.as_deref().and_then($intran).as_deref()
     };
@@ -487,6 +537,7 @@ macro_rules! subsystem {
     (@pass $request:ident $reply:ident $in:ident count $element:ty, $max:literal) => {
         &mut $reply.$in.data[..usize::try_from($request.$in.data).unwrap().min($max)]
     };
+    (@pass $request:ident $reply:ident $in:ident out_of_line $element:ty) => { $in };
     // What the routine gives: the data; for a count array, how many it
     // filled; for an out-of-line array, its copy; for a send right, its
     // port's reference.
