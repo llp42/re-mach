@@ -206,7 +206,8 @@ fn run_command(module: &'static BootModule, task: &'static Task, line: &[u8], ar
         done = info.done.lock();
     }
     drop(done);
-    thread.deallocate();
+    // SAFETY: the reference its creation gave the caller, dropped here.
+    drop(unsafe { Reference::from_raw(NonNull::from(thread)) });
     print!("\n");
 }
 

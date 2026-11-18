@@ -23,7 +23,7 @@ use crate::ipc::port::{KernelObject, Port};
 use crate::machine::Mode;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, Processor, ProcessorSet};
-use crate::reference::Reference;
+use crate::reference::{Count, Counted, Reference};
 use crate::sched::{self, Event, Policy, Preemption, Priority, SCHEDULER_SCALE, WaitResult};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{CriticalSection, OnceLock};
@@ -85,7 +85,7 @@ pub struct Thread {
     /// Its place in the queue of a port it waits on.
     ipc_link: LinkedListAtomicLink,
     /// How many references it has.
-    references: AtomicU32,
+    references: Count,
     /// Its task.
     task: UnsafeRef<Task>,
     /// What it is doing, as `ThreadState` bits.
@@ -320,11 +320,11 @@ pub fn init() {
 }
 
 impl Thread {
-    /// A new thread of `task`, suspended, with the kernel stack it keeps for
-    /// life, in its task's set, or the default set if that one is not in use,
-    /// at its task's priority aged by a full share of a processor, with a port
-    /// and a send right for it; a thread made in a set with no processor is
-    /// suspended once more.
+    /// A new thread of `task`, with a reference for the caller, suspended,
+    /// with the kernel stack it keeps for life, in its task's set, or the
+    /// default set if that one is not in use, at its task's priority aged by a
+    /// full share of a processor, with a port and a send right for it; a
+    /// thread made in a set with no processor is suspended once more.
     ///
     /// # Errors
     ///
@@ -346,7 +346,8 @@ impl Thread {
             task_link: LinkedListAtomicLink::new(),
             set_link: LinkedListAtomicLink::new(),
             ipc_link: LinkedListAtomicLink::new(),
-            references: AtomicU32::new(2),
+            // One for being alive, one for the caller.
+            references: Count::new(2),
             // SAFETY: a task lives while it has threads.
             task: unsafe { UnsafeRef::from_raw(task) },
             state: AtomicU32::new(ThreadState::SUSPENDED.bits()),
@@ -737,23 +738,6 @@ impl Thread {
         Ok(())
     }
 
-    /// Drops a reference on it, which is not its last.
-    ///
-    /// # Panics
-    ///
-    /// On its last reference: not yet.
-    pub(super) fn deallocate(&self) {
-        // Only the last reference's drop takes the set's and task's tokens.
-        assert!(
-            self.references
-                .try_update(Ordering::Release, Ordering::Relaxed, |references| {
-                    (references > 1).then(|| references - 1)
-                })
-                .is_ok(),
-            "thread_deallocate: the last reference, not yet"
-        );
-    }
-
     /// Its task, which lives while it has threads.
     pub(super) fn task(&self) -> &Task {
         &self.task
@@ -857,6 +841,22 @@ impl Thread {
     }
 }
 
+// SAFETY: its count is its own, and `free` frees nothing yet.
+unsafe impl Counted for Thread {
+    fn references(&self) -> &Count {
+        &self.references
+    }
+
+    /// Frees `thread`, as `thread_deallocate` does at zero.
+    ///
+    /// # Panics
+    ///
+    /// Always: not yet.
+    unsafe fn free(_thread: NonNull<Self>) {
+        panic!("thread_deallocate: the last reference, not yet");
+    }
+}
+
 /// Sets the current thread's base priority to `priority`, its highest
 /// raised to it if need be, and its scheduled priority from its use.
 ///
@@ -924,7 +924,9 @@ pub fn set_own_timeout(ticks: u64) {
 /// If it cannot be resumed: a new thread always can.
 pub fn kernel_thread(task: &'static Task, start: fn() -> !) -> Result<(), Error> {
     let thread = Thread::create(task)?;
-    thread.deallocate();
+    // SAFETY: the reference its creation gave the caller, dropped here; its
+    // own keeps it alive.
+    drop(unsafe { Reference::from_raw(NonNull::from(thread)) });
     thread.start(start);
     // Never run, it waits on no run queue.
     let priority = u32::from(sched::SYSTEM_PRIORITY);
