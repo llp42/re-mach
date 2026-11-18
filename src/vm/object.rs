@@ -72,8 +72,10 @@ pub struct ObjectState {
     last_alloc: usize,
     /// The object its pages are copied into before they change; none yet.
     pub(super) copy: Option<Reference<Object>>,
-    /// The object behind it, whose pages show where it has none; none yet.
+    /// The object behind it, whose pages show where it has none.
     pub(super) shadow: Option<Reference<Object>>,
+    /// Where it starts in its shadow.
+    shadow_offset: Offset,
     /// How many paging operations on it are under way.
     pub(super) paging_in_progress: u32,
     /// Its `Flags`.
@@ -156,6 +158,7 @@ impl Object {
                 last_alloc: 0,
                 copy: None,
                 shadow: None,
+                shadow_offset: Offset(0),
                 paging_in_progress: 0,
                 flags: Flags::INTERNAL.union(Flags::TEMPORARY).union(Flags::ALIVE),
                 kind: None,
@@ -358,6 +361,24 @@ pub fn copy_temporary(object: &Reference<Object>) -> Option<Reference<Object>> {
     state.flags.insert(Flags::SHADOWED);
     drop(state);
     Some(copy)
+}
+
+/// A new internal, temporary object of `size` bytes, with one reference
+/// and a name port, in front of `source` from `offset`, as
+/// `vm_object_shadow` makes it: its pages show where it has none. It takes
+/// `source`'s reference.
+///
+/// # Panics
+///
+/// As `allocate`.
+pub fn shadow(source: Reference<Object>, offset: Offset, size: usize) -> Reference<Object> {
+    let object = allocate(size);
+    let mut state = object.lock();
+    // The reference moves: `source`'s count stays.
+    state.shadow = Some(source);
+    state.shadow_offset = offset;
+    drop(state);
+    object
 }
 
 /// The object and offset two adjoining ranges, `previous_size` bytes of

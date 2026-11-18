@@ -1318,7 +1318,8 @@ impl Map {
     }
 
     /// Finds what `address` maps for a fault asking for `access`: the object
-    /// behind it, locked, made first if its entry has none, with a reference
+    /// behind it, locked, shadowed first if `access` writes and its entry
+    /// needs a copy, or made first if its entry has none, with a reference
     /// taken under the map's lock for the fault, where `address` is in it,
     /// what the entry allows, whether it is wired, and the map's version.
     ///
@@ -1328,13 +1329,15 @@ impl Map {
     ///
     /// # Panics
     ///
-    /// If its object can't be made. For a submap or an entry that doesn't
-    /// allow `access` or needs a copy: not yet.
+    /// If its object or shadow can't be made. For a submap or an entry that
+    /// doesn't allow `access`: not yet.
     pub fn lookup(&self, address: VirtualAddress, access: Protection) -> Result<Lookup, Error> {
         let contents = self.contents.read();
         let entry = contents.find(address).ok_or(Error::InvalidAddress)?;
         let (object, offset) = entry.checked_backing(access);
-        if let Some(object) = NonNull::new(object.load(Ordering::Relaxed)) {
+        let shadows =
+            access.contains(Protection::WRITE) && entry.needs_copy.load(Ordering::Relaxed);
+        if !shadows && let Some(object) = NonNull::new(object.load(Ordering::Relaxed)) {
             // SAFETY: the entry holds a reference on its object, which the
             // map's lock keeps, or it is the kernel object, whose own
             // reference never drops; this handle borrows it and never drops
@@ -1354,10 +1357,29 @@ impl Map {
         }
         drop(contents);
         // The read lock is lost: the lookup runs again under the write lock,
-        // which makes the object if the entry still has none.
+        // which moves the map's version on, shadows the object if a write
+        // still needs a copy, and makes it if the entry still has none.
         let contents = self.lock();
         let entry = contents.find(address).ok_or(Error::InvalidAddress)?;
         let (slot, offset) = entry.checked_backing(access);
+        if access.contains(Protection::WRITE) && entry.needs_copy.load(Ordering::Relaxed) {
+            // A copy shares the object, so there is one.
+            let source = NonNull::new(slot.load(Ordering::Relaxed)).unwrap();
+            // SAFETY: an entry that needs a copy shares an object `copy_in`
+            // took from an unwired entry (it refuses a wired one), so not the
+            // kernel object: it holds the object's reference, as `into_raw`
+            // gave it up. That reference moves into the shadow.
+            let source = unsafe { Reference::from_raw(source) };
+            let shadow = object::shadow(
+                source,
+                Offset::from(offset.load(Ordering::Relaxed)),
+                entry.end() - entry.start(),
+            );
+            // The entry holds the shadow's first reference, from its start.
+            slot.store(Reference::into_raw(shadow).as_ptr(), Ordering::Relaxed);
+            offset.store(0, Ordering::Relaxed);
+            entry.needs_copy.store(false, Ordering::Relaxed);
+        }
         let object = NonNull::new(slot.load(Ordering::Relaxed)).map_or_else(
             || {
                 let object = object::allocate(entry.end() - entry.start());
@@ -1439,7 +1461,7 @@ pub struct Lookup {
     pub(super) object: Reference<Object>,
     /// Where the address is in the object.
     pub(super) offset: Offset,
-    /// What the entry allows.
+    /// What the entry allows, less writing while it needs a copy.
     pub(super) protection: Protection,
     /// Whether the entry is wired.
     pub(super) wired: bool,
@@ -1926,7 +1948,7 @@ impl Entry {
     ///
     /// # Panics
     ///
-    /// If it is a submap, doesn't allow `access` or needs a copy: not yet.
+    /// If it is a submap or doesn't allow `access`: not yet.
     fn checked_backing(&self, access: Protection) -> (&AtomicPtr<Object>, &AtomicUsize) {
         let Backing::Object { object, offset } = &self.backing else {
             panic!("vm_map_lookup: a submap, not yet");
@@ -1934,10 +1956,6 @@ impl Entry {
         assert!(
             self.protection().contains(access),
             "vm_map_lookup: KERN_PROTECTION_FAILURE, not yet"
-        );
-        assert!(
-            !self.needs_copy.load(Ordering::Relaxed),
-            "vm_map_lookup: needs_copy, not yet"
         );
         (object, offset)
     }
@@ -1953,11 +1971,16 @@ impl Entry {
         offset: Offset,
         version: u32,
     ) -> Lookup {
+        // Reading what a copy shares: writing would need a shadow first.
+        let mut protection = self.protection();
+        if self.needs_copy.load(Ordering::Relaxed) {
+            protection -= Protection::WRITE;
+        }
         Lookup {
             state,
             object,
             offset: offset + (address - self.start()),
-            protection: self.protection(),
+            protection,
             wired: self.wire_count() != 0,
             version,
         }
