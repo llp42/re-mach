@@ -75,7 +75,7 @@ pub struct ObjectState {
     /// The object behind it, whose pages show where it has none.
     pub(super) shadow: Option<Reference<Object>>,
     /// Where it starts in its shadow.
-    shadow_offset: Offset,
+    pub(super) shadow_offset: Offset,
     /// How many paging operations on it are under way.
     pub(super) paging_in_progress: u32,
     /// Its `Flags`.
@@ -262,7 +262,7 @@ impl ObjectState {
     /// # Panics
     ///
     /// If it has a shadow: not yet.
-    fn collapse(&self) {
+    pub(super) fn collapse(&self) {
         if self.flags.contains(Flags::PAGER_CREATED) || self.paging_in_progress != 0 {
             return;
         }

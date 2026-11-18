@@ -114,6 +114,8 @@ struct Statistics {
     zero_fill_count: AtomicU32,
     /// Pages asked of a pager on a fault.
     pageins: AtomicU32,
+    /// Pages copied up from a shadow object on a write fault.
+    cow_faults: AtomicU32,
     /// Lookups of a memory object's object.
     lookups: AtomicU32,
     /// Lookups that found an object.
@@ -126,6 +128,7 @@ static STATISTICS: Statistics = Statistics {
     faults: AtomicU32::new(0),
     zero_fill_count: AtomicU32::new(0),
     pageins: AtomicU32::new(0),
+    cow_faults: AtomicU32::new(0),
     lookups: AtomicU32::new(0),
     hits: AtomicU32::new(0),
 };

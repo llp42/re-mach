@@ -50,6 +50,8 @@ pub struct Task {
     pub(super) zero_fills: AtomicUsize,
     /// Its pages asked of a pager on a fault.
     pub(super) pageins: AtomicUsize,
+    /// Its pages copied up from a shadow object on a write fault.
+    pub(super) cow_faults: AtomicUsize,
     /// The messages it sent.
     pub(super) messages_sent: AtomicUsize,
     /// The messages it received.
@@ -398,6 +400,7 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
         faults: AtomicUsize::new(0),
         zero_fills: AtomicUsize::new(0),
         pageins: AtomicUsize::new(0),
+        cow_faults: AtomicUsize::new(0),
         messages_sent: AtomicUsize::new(0),
         messages_received: AtomicUsize::new(0),
         members: Token::new(TaskMembers {

@@ -219,6 +219,21 @@ impl Page {
         }
     }
 
+    /// Fills it with a copy of `source`, another page.
+    ///
+    /// # Safety
+    ///
+    /// Nothing else may use its memory meanwhile, nor write `source`'s.
+    pub(super) unsafe fn copy_from(&'static self, source: &'static Self) {
+        // SAFETY: the caller has the page to itself and `source` unchanged,
+        // two frames the direct map reaches all of.
+        unsafe {
+            self.address()
+                .direct_map_ptr::<u8>()
+                .copy_from_nonoverlapping(source.address().direct_map_ptr(), PAGE_SIZE);
+        }
+    }
+
     /// Where the page is.
     ///
     /// # Panics

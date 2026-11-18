@@ -71,11 +71,12 @@ pub fn fault(map: &Map, address: usize, access: Protection, purpose: Purpose) ->
         &lookup.object,
         lookup.state,
         usize::from(lookup.offset),
+        access,
         Residency::Optional,
     );
     let (mut protection, mut wired, mut version) =
         (lookup.protection, lookup.wired, lookup.version);
-    // With no shadows, the page's object is the lookup's.
+    // The page's object is the lookup's: a read through a shadow is not yet.
     let old_copy = found.state.copy.as_ref().map(Reference::as_ptr);
     drop(found.state);
     let verified = loop {
@@ -291,7 +292,13 @@ pub(super) fn unwire(map: &Map, entry: &Entry) {
         let mut state = object.lock();
         state.begin_paging();
         let offset = offset.load(Ordering::Relaxed) + (address - start);
-        let Found { page, mut state } = fault_page(object, state, offset, Residency::Required);
+        let Found { page, mut state } = fault_page(
+            object,
+            state,
+            offset,
+            Protection::empty(),
+            Residency::Required,
+        );
         page.unwire();
         page.clear_busy();
         state.end_paging();
@@ -319,19 +326,22 @@ enum Residency {
 }
 
 /// Finds the page at `offset` in `object`, whose `state` is locked and
-/// holds a paging operation for the call; so far one resident there, or,
-/// as `residency` allows, one `object` lacks, which it fills with zeros
-/// there.
+/// holds a paging operation for the call, for `access`; so far one
+/// resident there, or, as `residency` allows, one `object` lacks, which it
+/// fills there with zeros or, for a write, with a copy of its shadow's
+/// page.
 ///
 /// # Panics
 ///
-/// If no thread runs on the CPU. If the page is busy, it must be resident
-/// and is not, `object` has a pager, a shadow or a copy, or if no page is
-/// free: not yet.
+/// If no thread runs on the CPU. If a page is busy, it must be resident and
+/// is not, an object has a pager or a copy, the shadow lacks the page or
+/// it is read, or if no page is free: not yet. As `Page::deactivate` and
+/// `ObjectState::collapse`.
 fn fault_page(
     object: &Object,
     mut state: TokenGuard<'static, ObjectState>,
     offset: usize,
+    access: Protection,
     residency: Residency,
 ) -> Found {
     let task = smp::current()
@@ -365,14 +375,62 @@ fn fault_page(
         !state.flags.contains(Flags::PAGER_CREATED),
         "vm_fault_page: a pager (look_for_page), not yet"
     );
-    assert!(
-        state.shadow.is_none(),
-        "vm_fault_page: a shadow object, not yet"
-    );
-    // SAFETY: the page was free and nothing maps it, so it is ours alone.
-    unsafe { page.zero_fill() };
-    STATISTICS.zero_fill_count.fetch_add(1, Ordering::Relaxed);
-    task.zero_fills.fetch_add(1, Ordering::Relaxed);
+    let state = if let Some(shadow) = &state.shadow {
+        // SAFETY: the object, which the caller keeps, holds a reference on
+        // its shadow, and the call's paging operation keeps `collapse` from
+        // changing it until the walk is done.
+        let shadow: &Object = unsafe { Reference::as_ptr(shadow).as_ref() };
+        let shadow_offset = offset + usize::from(state.shadow_offset);
+        let token = TokenGuard::mutex(&state);
+        // One token at a time: the busy placeholder keeps the place.
+        drop(state);
+        let mut shadow_state = shadow.lock();
+        shadow_state.begin_paging();
+        let Some(source) = shadow_state.lookup(shadow_offset) else {
+            assert!(
+                !shadow_state.flags.contains(Flags::PAGER_CREATED),
+                "vm_fault_page: a pager (look_for_page), not yet"
+            );
+            assert!(
+                shadow_state.shadow.is_some(),
+                "vm_fault_page: zero fill at a shadow chain's end, not yet"
+            );
+            panic!("vm_fault_page: the next object in a shadow chain, not yet");
+        };
+        assert!(!source.is_busy(), "vm_fault_page: a busy page, not yet");
+        source.set_busy();
+        assert!(
+            access.contains(Protection::WRITE),
+            "vm_fault_page: a read through a shadow object, not yet"
+        );
+        // Unlocked for the copy: both pages are busy.
+        drop(shadow_state);
+        // SAFETY: the placeholder is busy and nothing maps it, so it is ours
+        // alone; the busy source stays, and copy-on-write maps it nowhere
+        // writable.
+        unsafe { page.copy_from(source) };
+        let mut shadow_state = shadow.lock();
+        // Left mapped, as DragonFly leaves it: entering the copy replaces
+        // the faulting address's mapping.
+        source.deactivate();
+        source.clear_busy();
+        shadow_state.end_paging();
+        drop(shadow_state);
+        STATISTICS.cow_faults.fetch_add(1, Ordering::Relaxed);
+        task.cow_faults.fetch_add(1, Ordering::Relaxed);
+        // The copy is the placeholder, in its place already.
+        let mut state = token.lock();
+        state.end_paging();
+        state.collapse();
+        state.begin_paging();
+        state
+    } else {
+        // SAFETY: the page was free and nothing maps it, so it is ours alone.
+        unsafe { page.zero_fill() };
+        STATISTICS.zero_fill_count.fetch_add(1, Ordering::Relaxed);
+        task.zero_fills.fetch_add(1, Ordering::Relaxed);
+        state
+    };
     assert!(
         state.copy.is_none(),
         "vm_fault_page: a copy object, not yet"
