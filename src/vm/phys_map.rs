@@ -78,12 +78,11 @@ pub trait MachinePhysMap {
     fn remove(&self, range: Range<usize>);
 
     /// Cuts the mappings of user `range` down to `protection`, skipping the
-    /// pages and tables not there.
+    /// pages and tables not there; without reading, removes them.
     ///
     /// # Panics
     ///
-    /// If it is the kernel's, `protection` lacks reading, or it is active on
-    /// another CPU: not yet.
+    /// If it is the kernel's, or it is active on another CPU: not yet.
     fn protect(&self, range: Range<usize>, protection: Protection);
 
     /// Maps kernel `address` to the page at `physical`, read-write.

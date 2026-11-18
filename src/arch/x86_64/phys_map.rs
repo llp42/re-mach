@@ -441,10 +441,10 @@ impl MachinePhysMap for PhysMap {
             !ptr::eq(self, Self::kernel()),
             "pmap_protect: the kernel pmap, not yet"
         );
-        assert!(
-            protection.contains(Protection::READ),
-            "pmap_protect: pmap_remove, not yet"
-        );
+        // Not even reading: the mappings go.
+        if !protection.contains(Protection::READ) {
+            return self.remove(range);
+        }
         // Rights only go: writing, and running as no-execute.
         let clear = if protection.contains(Protection::WRITE) {
             PageTableFlags::empty()
