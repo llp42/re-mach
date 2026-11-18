@@ -267,13 +267,12 @@ impl MachinePhysMap for PhysMap {
         if !protection.contains(Protection::EXECUTE) {
             flags |= *NO_EXECUTE.get().expect("pmap: not bootstrapped");
         }
-        assert!(
-            matches!(wiring, Wiring::Pageable),
-            "pmap_enter: wired, not yet"
-        );
+        if matches!(wiring, Wiring::Wired) {
+            flags |= WIRED;
+        }
         if old != 0 && entry_address(old) == physical {
-            // The protection changes in place, D kept; atomic, as the CPU
-            // sets it.
+            // The protection and wiring change in place, D kept; atomic, as
+            // the CPU sets it.
             entry.update(Ordering::SeqCst, Ordering::Relaxed, |value| {
                 frame(physical).as_u64() | flags.bits() | (value & PageTableFlags::DIRTY.bits())
             });
