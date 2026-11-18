@@ -421,7 +421,7 @@ fn fault_page(
         // The copy is the placeholder, in its place already.
         let mut state = token.lock();
         state.end_paging();
-        state.collapse();
+        ObjectState::collapse(&mut state, object);
         state.begin_paging();
         state
     } else {

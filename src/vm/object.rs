@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Memory objects' kernel side.
 
-use core::mem::ManuallyDrop;
+use core::mem::{self, ManuallyDrop};
 use core::ops::{Add, Range};
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
@@ -256,20 +256,76 @@ impl ObjectState {
         self.pages.tree.find(&offset).clone_pointer()
     }
 
-    /// Collapses it with its shadow, as `vm_object_collapse` does; nothing
-    /// if it had a pager, has paging under way or has no shadow.
+    /// Collapses `object`, whose state `state` is, with its shadow, as
+    /// `vm_object_collapse` does: bypasses a shadow none of whose pages
+    /// shows through it, unlocking `state` to drop the shadow's reference.
+    /// Nothing if `object` had a pager, has paging under way or has no
+    /// shadow, or its shadow is external, has paging under way, had a pager
+    /// or shows a page.
     ///
     /// # Panics
     ///
-    /// If it has a shadow: not yet.
-    pub(super) fn collapse(&self) {
-        if self.flags.contains(Flags::PAGER_CREATED) || self.paging_in_progress != 0 {
-            return;
+    /// If the shadow's token is held, the shadow has a shadow, or `object`
+    /// holds the shadow's only reference: not yet. At the shadow's last
+    /// reference, as its free.
+    pub(super) fn collapse(state: &mut TokenGuard<'_, Self>, object: &Object) {
+        loop {
+            // No page is ever absent.
+            if state.flags.contains(Flags::PAGER_CREATED) || state.paging_in_progress != 0 {
+                return;
+            }
+            let Some(backing) = &state.shadow else {
+                return;
+            };
+            // SAFETY: `state` holds the shadow's reference until after the
+            // shadow's guard drops.
+            let backing: &Object = unsafe { Reference::as_ptr(backing).as_ref() };
+            // Tried: waiting with `state` held is not allowed.
+            let Some(mut backing_state) = backing.state.try_lock() else {
+                panic!("vm_object_collapse: waiting for the backing object's lock, not yet");
+            };
+            if !backing_state.flags.contains(Flags::INTERNAL)
+                || backing_state.paging_in_progress != 0
+            {
+                return;
+            }
+            assert!(
+                backing_state.shadow.is_none(),
+                "vm_object_collapse: a backing object with a shadow, not yet"
+            );
+            let backing_offset = usize::from(state.shadow_offset);
+            let size = state.size;
+            assert!(
+                backing.references() != 1,
+                "vm_object_collapse: collapsing a backing object with one reference, not yet"
+            );
+            if backing_state.flags.contains(Flags::PAGER_CREATED) {
+                return;
+            }
+            // Each backing page it could show must be covered; GNU Mach's
+            // range includes its end.
+            let shown = backing_offset..=backing_offset + size;
+            let mut pages = backing_state
+                .pages
+                .tree
+                .lower_bound(Bound::Included(&backing_offset));
+            while let Some(page) = pages.get().filter(|page| shown.contains(&page.offset())) {
+                if state.lookup(page.offset() - backing_offset).is_none() {
+                    return;
+                }
+                pages.move_next();
+            }
+            // It shadows what the backing object did.
+            let bypassed = mem::replace(&mut state.shadow, backing_state.shadow.clone());
+            state.shadow_offset = state.shadow_offset + usize::from(backing_state.shadow_offset);
+            let copy = backing_state
+                .copy
+                .take_if(|copy| Reference::as_ptr(copy) == NonNull::from(object));
+            drop(backing_state);
+            // Unlocked: counts move without tokens, so a last reference may
+            // drop here.
+            TokenGuard::unlocked(state, || drop((bypassed, copy)));
         }
-        assert!(
-            self.shadow.is_none(),
-            "vm_object_collapse: a shadow object, not yet"
-        );
     }
 
     /// Removes its pages in `range`, as `vm_object_page_remove` does.
@@ -415,7 +471,7 @@ pub fn coalesce(
         (Some(object), None) | (None, Some(object)) => object,
     };
     let mut state = object.lock();
-    state.collapse();
+    ObjectState::collapse(&mut state, object);
     // Refused if pages outside these ranges may be in use.
     if object.references() > 1
         || state.flags.contains(Flags::PAGER_CREATED)
