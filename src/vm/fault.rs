@@ -6,12 +6,13 @@
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use super::map::{Backing, Entry, Map};
-use super::object::{Flags, Object, ObjectState};
+use super::map::{Backing, Entry, Lookup, Map};
+use super::object::{Flags, Kind, Object, ObjectState};
 use super::page::{self, Page};
 use super::phys_map::{MachinePhysMap as _, Wiring};
 use super::{Protection, STATISTICS, VirtualAddress};
 use crate::arch::PAGE_SIZE;
+use crate::device::pager::{self, Pager};
 use crate::error::Error;
 use crate::smp;
 use crate::sync::TokenGuard;
@@ -27,7 +28,8 @@ pub enum Purpose {
 
 /// Resolves a fault on the page at `address` in `map`, which asked for
 /// `access`, for `purpose`: looks the address up, finds the page, checks
-/// the map's version, maps the page, then wires it or activates it.
+/// the map's version, maps the page, then wires it or activates it; on a
+/// device's object, `device` maps the device's frame instead.
 ///
 /// # Errors
 ///
@@ -35,7 +37,7 @@ pub enum Purpose {
 ///
 /// # Panics
 ///
-/// As `Map::lookup`, `fault_page`, `MachinePhysMap::enter`,
+/// As `Map::lookup`, `device`, `fault_page`, `MachinePhysMap::enter`,
 /// `Page::activate` and `Object::deallocate`. If a lookup after a change to
 /// the map fails or finds another page, the object's copy changed, a wired
 /// page lost the access it asked for, or for `Purpose::ChangeWiring` if
@@ -59,6 +61,11 @@ pub fn fault(map: &Map, address: usize, access: Protection, purpose: Purpose) ->
     // A reference of its own keeps the object while the map changes.
     lookup.object.reference();
     lookup.state.begin_paging();
+    if let Some(Kind::Device(pager)) = &lookup.state.kind {
+        let pager = pager.clone();
+        device(map, address, access, lookup, &pager);
+        return Ok(());
+    }
     let found = fault_page(
         lookup.object,
         lookup.state,
@@ -126,6 +133,55 @@ pub fn fault(map: &Map, address: usize, access: Protection, purpose: Purpose) ->
     drop(state);
     lookup.object.deallocate();
     Ok(())
+}
+
+/// Maps `address` in `map`, which asked for `access`, to the frame of the
+/// device memory there, as `lookup` found it, with a reference and a paging
+/// operation of the fault's on its object, whose pager is `pager`; with no
+/// page, and the entry's protection, as NetBSD's device pager does. Counts
+/// the fault and a pagein, as `vm_fault_page`'s pager path does.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU. If the entry is wired, `access` writes,
+/// the object has a copy or its pager is not ready, the device refuses the
+/// frame, or the map changed since the lookup: not yet. As
+/// `MachinePhysMap::enter` and `Object::deallocate`.
+fn device(map: &Map, address: usize, access: Protection, lookup: Lookup, pager: &Pager) {
+    let task = smp::current()
+        .active_thread()
+        .expect("vm_fault_page: no current thread")
+        .task();
+    STATISTICS.faults.fetch_add(1, Ordering::Relaxed);
+    task.faults.fetch_add(1, Ordering::Relaxed);
+    assert!(!lookup.wired, "vm_fault: a wired device entry, not yet");
+    assert!(
+        !access.contains(Protection::WRITE) && lookup.state.copy.is_none(),
+        "vm_fault_page: writing or copying a device object, not yet"
+    );
+    // look_for_page: no page is resident, and none stands in.
+    assert!(
+        lookup.state.flags.contains(Flags::PAGER_READY),
+        "vm_fault_page: a pager not ready, not yet"
+    );
+    // Unlocked for the pager; the fault's reference keeps the object, and so
+    // its pager.
+    drop(lookup.state);
+    STATISTICS.pageins.fetch_add(1, Ordering::Relaxed);
+    task.pageins.fetch_add(1, Ordering::Relaxed);
+    // memory_object_data_request, a direct call.
+    let frame = pager::map_page(pager, lookup.offset)
+        .unwrap_or_else(|| panic!("vm_fault_page: VM_FAULT_MEMORY_ERROR, not yet"));
+    let verified = map
+        .verify(lookup.version)
+        .unwrap_or_else(|| panic!("vm_fault: vm_map_verify failed on a device object, not yet"));
+    map.phys_map()
+        .enter(address, frame, lookup.protection, Wiring::Pageable);
+    drop(verified);
+    let mut state = lookup.object.lock();
+    state.end_paging();
+    drop(state);
+    lookup.object.deallocate();
 }
 
 /// Wires the pages of `entry` in `map`, while the map is unlocked and the

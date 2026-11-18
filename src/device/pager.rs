@@ -2,14 +2,16 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The device pager, which backs memory objects mapped from devices; so
-//! far only its records, their making and their setting up.
+//! far only its records, their making and their setting up, and the
+//! frames they map.
 
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
-use super::{Device, Kind};
+use super::{Device, Kind, time};
+use crate::arch::PhysAddr;
 use crate::ipc::port::{KernelObject, Port};
 use crate::reference::Reference;
 use crate::slab::{Cache, CacheBox};
@@ -32,12 +34,10 @@ static CACHE: Cache<Pager> = Cache::new("dev_pager");
 /// its device's pager list.
 pub struct Pager {
     /// Its device, which it holds a reference to.
-    #[expect(dead_code, reason = "device_map_page reads it")]
     device: Reference<Device>,
     /// Where it starts in its device's memory.
     offset: Offset,
     /// What it allows.
-    #[expect(dead_code, reason = "device_map_page reads it")]
     protection: Protection,
     /// Its port, the memory object.
     port: Reference<Port>,
@@ -146,4 +146,13 @@ pub fn init_pager(pager: &Pager, request: Reference<Port>, name: Reference<Port>
     // A character device's pager: not cached, no copy help.
     // SAFETY: the record holds the reference `request` gave up.
     object::ready(unsafe { request.as_ref() }, CopyStrategy::None);
+}
+
+/// The frame at `offset` in `pager`'s memory, as `device_map_page` gives
+/// it; `None` if the device refuses it.
+pub fn map_page(pager: &Pager, offset: Offset) -> Option<PhysAddr> {
+    let offset = pager.offset + usize::from(offset);
+    match pager.device.kind {
+        Kind::Time => time::map(offset, pager.protection),
+    }
 }

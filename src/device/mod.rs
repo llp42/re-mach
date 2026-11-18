@@ -2,13 +2,14 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Devices; so far only the master device port, device lookup, opening
-//! and mapping, the device pager, terminals' input settings and the
-//! interrupt thread.
+//! and mapping, the device pager, terminals' input settings, the
+//! interrupt thread and the `time` device.
 
 pub mod interrupt;
 pub mod lookup;
 pub mod pager;
 mod terminal;
+mod time;
 
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, Ordering};

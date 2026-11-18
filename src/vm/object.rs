@@ -78,7 +78,7 @@ pub struct ObjectState {
     /// Its `Flags`.
     pub(super) flags: Flags,
     /// What serves its pages; none until a pager is entered for it.
-    kind: Option<Kind>,
+    pub(super) kind: Option<Kind>,
     /// A send right for its pager, the memory object; none until it has one.
     pager: Option<Reference<Port>>,
     /// Its request port, which its pager calls the kernel on; none until it
@@ -89,9 +89,9 @@ pub struct ObjectState {
 }
 
 /// What serves an object's pages; only the kinds used here.
-enum Kind {
+pub(super) enum Kind {
     /// A device's memory, through its pager's record.
-    Device(#[expect(dead_code, reason = "vm_fault_page's pager path reads it")] UnsafeRef<Pager>),
+    Device(UnsafeRef<Pager>),
 }
 
 /// How an object's data is copied, as Mach's

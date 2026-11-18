@@ -70,7 +70,7 @@ impl MappedTime {
 }
 
 /// The mapped time, once `map_time` takes its page.
-pub(super) static MAPPED_TIME: OnceLock<&'static MappedTime> = OnceLock::new();
+pub static MAPPED_TIME: OnceLock<&'static MappedTime> = OnceLock::new();
 
 /// Takes the page user tasks map the time from, wired, and writes the time
 /// of day in it, on the boot CPU.
