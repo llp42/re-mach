@@ -15,7 +15,7 @@ use crate::arch::PAGE_SIZE;
 use crate::error::Error;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
-use crate::vm::map::{MapCopy, Placement, RangeCheck};
+use crate::vm::map::{MapCopy, Placement, RangeCheck, Source};
 use crate::vm::{self, Protection};
 
 /// The names `space` holds rights under and their types, as
@@ -110,8 +110,8 @@ pub fn names(space: &Space) -> (CacheBox<MapCopy>, CacheBox<MapCopy>, usize) {
     }
     // Copied in, the arrays leave the IPC map.
     let (names, types) = (
-        map.copy_in(names..names + size_used),
-        map.copy_in(types..types + size_used),
+        map.copy_in(names..names + size_used, Source::Destroy),
+        map.copy_in(types..types + size_used, Source::Destroy),
     );
     assert!(size_used == size, "mach_port_names: kmem_free, not yet");
     (names, types, actual)

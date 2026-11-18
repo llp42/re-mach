@@ -182,6 +182,7 @@ impl Map {
             wire_count: AtomicU32::new(0),
             wired_access: AtomicU32::new(Protection::empty().bits()),
             in_transition: AtomicBool::new(false),
+            needs_copy: AtomicBool::new(false),
         })?;
         let mut contents = self.lock();
         let range = match placement {
@@ -389,6 +390,7 @@ impl Map {
             wire_count: AtomicU32::new(0),
             wired_access: AtomicU32::new(Protection::empty().bits()),
             in_transition: AtomicBool::new(false),
+            needs_copy: AtomicBool::new(false),
         })?;
         let entry = contents.link(self.bounds.start, previous, entry);
         if follows_first_free {
@@ -443,6 +445,7 @@ impl Map {
             wire_count: AtomicU32::new(1),
             wired_access: AtomicU32::new((Protection::READ | Protection::WRITE).bits()),
             in_transition: AtomicBool::new(false),
+            needs_copy: AtomicBool::new(false),
         })?;
         // The free space hint moves on to it.
         contents.first_free = Some(contents.link(self.bounds.start, previous, entry));
@@ -665,8 +668,8 @@ impl Map {
     /// # Panics
     ///
     /// If the range starts inside an entry, an entry there is in transition,
-    /// a wired entry allows nothing, or an entry to wire is a submap: not
-    /// yet. As `Contents::clip_end`,
+    /// a wired entry allows nothing, or an entry to wire is a submap or needs
+    /// a copy and allows writing: not yet. As `Contents::clip_end`,
     /// `object::allocate`, `fault::unwire` and `fault::wire`.
     #[expect(
         clippy::too_many_lines,
@@ -748,7 +751,12 @@ impl Map {
                 continue;
             }
             if entry.wire_count() == 0 {
-                // No entry needs a copy yet; one with no object gets one.
+                assert!(
+                    !entry.needs_copy.load(Ordering::Relaxed)
+                        || !entry.protection().contains(Protection::WRITE),
+                    "vm_map_pageable_scan: vm_object_shadow, not yet"
+                );
+                // One with no object gets one.
                 let Backing::Object { object, offset } = &entry.backing else {
                     panic!("vm_map_lookup: a submap, not yet");
                 };
@@ -925,18 +933,26 @@ impl Map {
         drop(guard);
     }
 
-    /// Moves `range` out of the map into a new copy, holding its entries,
-    /// which take their objects' references: `vm_map_copyin` destroying its
-    /// source.
+    /// Copies `range` out of the map into a new copy, holding entries for
+    /// it, which take references on their objects, as `vm_map_copyin` does:
+    /// with `Source::Destroy` the range then leaves the map; with
+    /// `Source::Keep` the copy and the map share each object until either
+    /// writes, and the map's mappings there stop allowing writing.
     ///
     /// # Panics
     ///
-    /// If the copy or an entry can't be allocated, or the range holds more
-    /// than three entries. If `range` is empty or wraps, starts inside an
-    /// entry or where none is, holds a hole, or an entry there doesn't allow
-    /// reading, is a submap or its object is not temporary: not yet. As
-    /// `Contents::clip_end` and `Map::delete`.
-    pub fn copy_in(&self, range: Range<VirtualAddress>) -> CacheBox<MapCopy> {
+    /// If the copy or an entry can't be allocated, or the copy's entries and
+    /// the splits at the range's ends need more than four. If `range` is
+    /// empty or wraps, starts where no entry is, holds a hole, or an entry
+    /// there doesn't allow reading or is a submap; if an object is not
+    /// temporary; for `Source::Keep`, if an entry is wired or has no object:
+    /// not yet. As `Contents::clip_start`, `Contents::clip_end`,
+    /// `MachinePhysMap::protect` and `Map::delete`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "vm_map_copyin's steps, in GNU Mach's order"
+    )]
+    pub fn copy_in(&self, range: Range<VirtualAddress>, source: Source) -> CacheBox<MapCopy> {
         assert!(
             range.start != range.end,
             "vm_map_copyin: zero bytes, not yet"
@@ -966,10 +982,9 @@ impl Map {
             .clone_pointer()
             .filter(|entry| start < entry.end())
             .unwrap_or_else(|| panic!("vm_map_copyin: KERN_INVALID_ADDRESS, not yet"));
-        assert!(
-            entry.start() == start,
-            "vm_map_clip_start: splitting an entry, not yet"
-        );
+        if start > entry.start() {
+            contents.clip_start(&entry, start, &mut reservation);
+        }
         loop {
             assert!(
                 entry.protection().contains(Protection::READ),
@@ -982,7 +997,9 @@ impl Map {
                 panic!("vm_map_copyin: a submap, not yet");
             };
             let object = object.load(Ordering::Relaxed);
-            // vm_map_entry_copy: unwired and out of transition.
+            let wired = entry.wire_count() != 0;
+            // vm_map_entry_copy: unwired, out of transition, and needing a
+            // copy if the source does.
             let mut new = reservation.take();
             *new = Entry {
                 tree_link: RBTreeAtomicLink::new(),
@@ -1001,6 +1018,7 @@ impl Map {
                 wire_count: AtomicU32::new(0),
                 wired_access: AtomicU32::new(Protection::empty().bits()),
                 in_transition: AtomicBool::new(false),
+                needs_copy: AtomicBool::new(entry.needs_copy.load(Ordering::Relaxed)),
             };
             let held = NonNull::new(object).map(|object| {
                 // SAFETY: the entry holds a reference on its object, or it is
@@ -1008,17 +1026,39 @@ impl Map {
                 // handle borrows it and never drops it.
                 ManuallyDrop::new(unsafe { Reference::from_raw(object) })
             });
-            // The source goes, so a temporary object's reference moves to the
-            // copy; GNU Mach's use_shared_copy is set only by vm_map_fork.
-            assert!(
-                held.as_ref()
-                    .is_none_or(|object| object.lock().flags.contains(Flags::TEMPORARY)),
-                "vm_map_copyin: vm_object_copy_temporary, not yet"
-            );
-            // Another reference, held by the copy's entry, as deleting the
-            // source drops its own.
-            if let Some(object) = &held {
-                Reference::into_raw(Reference::clone(object));
+            // A source that goes moves a temporary object's reference, or no
+            // object, to the copy; GNU Mach's use_shared_copy is set only by
+            // vm_map_fork.
+            if matches!(source, Source::Destroy)
+                && held
+                    .as_ref()
+                    .is_none_or(|object| object.lock().flags.contains(Flags::TEMPORARY))
+            {
+                // Another reference, held by the copy's entry, as deleting the
+                // source drops its own.
+                if let Some(object) = &held {
+                    Reference::into_raw(Reference::clone(object));
+                }
+            } else {
+                assert!(!wired, "vm_map_copyin: vm_object_copy_slowly, not yet");
+                let object = held
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("vm_object_copy_temporary: VM_OBJECT_NULL, not yet"));
+                let shared = object::copy_temporary(object).unwrap_or_else(|| {
+                    panic!("vm_map_copyin: vm_object_copy_strategically, not yet")
+                });
+                // The copy's entry holds it; both entries shadow the object
+                // before writing.
+                Reference::into_raw(shared);
+                new.needs_copy.store(true, Ordering::Relaxed);
+                if !entry.needs_copy.load(Ordering::Relaxed) {
+                    // vm_object_pmap_protect, over the entry's range.
+                    self.phys_map.protect(
+                        usize::from(entry.start())..usize::from(entry.end()),
+                        entry.protection() - Protection::WRITE,
+                    );
+                    entry.needs_copy.store(true, Ordering::Relaxed);
+                }
             }
             let copied = new.end();
             let new = CacheBox::into_raw(new).as_ptr();
@@ -1035,7 +1075,9 @@ impl Map {
                 .filter(|next| next.start() == copied)
                 .unwrap_or_else(|| panic!("vm_map_copyin: a hole, KERN_INVALID_ADDRESS, not yet"));
         }
-        self.delete(contents, start..end, &mut reservation);
+        if matches!(source, Source::Destroy) {
+            self.delete(contents, start..end, &mut reservation);
+        }
         drop(guard);
         copy
     }
@@ -1144,7 +1186,7 @@ impl Map {
     /// # Panics
     ///
     /// If its object can't be made. For a submap or an entry that doesn't
-    /// allow `access`: not yet.
+    /// allow `access` or needs a copy: not yet.
     pub fn lookup(&self, address: VirtualAddress, access: Protection) -> Result<Lookup, Error> {
         let contents = self.contents.read();
         let entry = contents.find(address).ok_or(Error::InvalidAddress)?;
@@ -1207,6 +1249,15 @@ impl Map {
         contents.timestamp = contents.timestamp.wrapping_add(1);
         contents
     }
+}
+
+/// What `Map::copy_in` does with the range it copies.
+#[derive(Clone, Copy)]
+pub enum Source {
+    /// Leaves it in the map, sharing its objects with the copy.
+    Keep,
+    /// Removes it from the map.
+    Destroy,
 }
 
 /// Whether `Map::pageable` checks its range.
@@ -1502,6 +1553,7 @@ impl Contents {
             wire_count: AtomicU32::new(entry.wire_count()),
             wired_access: AtomicU32::new(entry.wired_access().bits()),
             in_transition: AtomicBool::new(entry.in_transition.load(Ordering::Relaxed)),
+            needs_copy: AtomicBool::new(entry.needs_copy.load(Ordering::Relaxed)),
         };
         offset.store(
             offset.load(Ordering::Relaxed) + (start - entry.start()),
@@ -1569,6 +1621,7 @@ impl Contents {
             wire_count: AtomicU32::new(entry.wire_count()),
             wired_access: AtomicU32::new(entry.wired_access().bits()),
             in_transition: AtomicBool::new(entry.in_transition.load(Ordering::Relaxed)),
+            needs_copy: AtomicBool::new(entry.needs_copy.load(Ordering::Relaxed)),
         };
         entry.end.store(usize::from(end), Ordering::Relaxed);
         // Linked after it: the free space after it moves to the new entry.
@@ -1631,6 +1684,7 @@ impl EntryReservation {
                     wire_count: AtomicU32::new(0),
                     wired_access: AtomicU32::new(Protection::empty().bits()),
                     in_transition: AtomicBool::new(false),
+                    needs_copy: AtomicBool::new(false),
                 })
                 .unwrap_or_else(|error| panic!("vm_map_entry_create: {error:?}"));
             entries.push(entry);
@@ -1688,6 +1742,9 @@ pub struct Entry {
     /// Whether a wiring has it while the map is unlocked, which keeps it
     /// from merging or going; changed only under the map's write lock.
     in_transition: AtomicBool,
+    /// Whether a copy shares its object, which is then shadowed before it
+    /// is written; changed only under the map's write lock.
+    needs_copy: AtomicBool,
 }
 
 impl Entry {
@@ -1726,7 +1783,7 @@ impl Entry {
     ///
     /// # Panics
     ///
-    /// If it is a submap or doesn't allow `access`: not yet.
+    /// If it is a submap, doesn't allow `access` or needs a copy: not yet.
     fn checked_backing(&self, access: Protection) -> (&AtomicPtr<Object>, &AtomicUsize) {
         let Backing::Object { object, offset } = &self.backing else {
             panic!("vm_map_lookup: a submap, not yet");
@@ -1734,6 +1791,10 @@ impl Entry {
         assert!(
             self.protection().contains(access),
             "vm_map_lookup: KERN_PROTECTION_FAILURE, not yet"
+        );
+        assert!(
+            !self.needs_copy.load(Ordering::Relaxed),
+            "vm_map_lookup: needs_copy, not yet"
         );
         (object, offset)
     }
@@ -1778,6 +1839,7 @@ fn coalesce(cursor: &Cursor<'_, EntryAdapter>) {
         || previous.inheritance != entry.inheritance
         || previous.protection() != entry.protection()
         || previous.max_protection() != entry.max_protection()
+        || previous.needs_copy.load(Ordering::Relaxed) != entry.needs_copy.load(Ordering::Relaxed)
         || previous.wire_count() != entry.wire_count()
     {
         return;

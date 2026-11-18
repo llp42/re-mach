@@ -9,7 +9,7 @@ use core::slice;
 
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
-use super::port::{Port, PortName};
+use super::port::{KernelObject, Port, PortName};
 use super::space::Space;
 use super::{MessageType, object};
 use crate::arch::{self, Machine as _, PAGE_SIZE};
@@ -18,7 +18,8 @@ use crate::kalloc;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
 use crate::sync::CpuLocal;
-use crate::vm::map::{COPY_CACHE, Map, MapCopy};
+use crate::vm::VirtualAddress;
+use crate::vm::map::{COPY_CACHE, Map, MapCopy, Source};
 
 /// A message's header, in Mach's layout. Its ports are names as the user
 /// sent them, then, once copied in, ports' exposed addresses.
@@ -240,17 +241,30 @@ impl KernelMessage {
         Ok(())
     }
 
-    /// Copies in its body's rights from `space`, as `ipc_kmsg_copyin_body`
-    /// does: each inline port's name, its 32 bits, becomes the exposed
-    /// address of its port, which the message's right holds; a null name a
-    /// null port.
+    /// Copies in its body's rights from `space` and its out-of-line memory
+    /// from `map`, the sender's, as `ipc_kmsg_copyin_body` does: each inline
+    /// port's name, its 32 bits, becomes the exposed address of its port,
+    /// which the message's right holds, a null name a null port; out-of-line
+    /// memory is copied in, its source kept, and the copy's exposed address
+    /// replaces its address.
     ///
     /// # Panics
     ///
-    /// If a type is invalid or the body too small, an item is out of line,
-    /// a right is not a copied send right, a name is dead, or no item
-    /// carries a right: not yet. As `object::copy_in`.
-    pub(super) fn copy_in_body(&mut self, space: &Space) {
+    /// If a type is invalid or the body too small, ports are out of line,
+    /// out-of-line memory is empty or to be deallocated, or goes to a port
+    /// that takes it as page lists, a right is not a copied send right, a
+    /// name is dead, or no item carries a right or memory: not yet. As
+    /// `object::copy_in` and `Map::copy_in`.
+    pub(super) fn copy_in_body(&mut self, space: &Space, map: &Map) {
+        // SAFETY: copied in, the destination is a port's exposed address, and
+        // the message holds a reference to it.
+        let destination =
+            unsafe { &*ptr::with_exposed_provenance::<Port>(self.header().remote_port) };
+        // ipc_kobject_vm_page_list: paging and device ports.
+        let page_lists = matches!(
+            destination.kernel_object(),
+            Some(KernelObject::PagingRequest(_) | KernelObject::Device(_))
+        );
         let end = usize::try_from(self.header().size).unwrap();
         let message = self.message_mut();
         let mut offset = size_of::<Header>();
@@ -285,13 +299,35 @@ impl KernelMessage {
                 end - offset >= if inline { length } else { 8 },
                 "ipc_kmsg_copyin_body: MACH_SEND_MSG_TOO_SMALL, not yet"
             );
-            assert!(
-                inline,
-                "ipc_kmsg_copyin_body: out-of-line {}, not yet",
-                if port { "ports" } else { "memory" }
-            );
             let data = offset;
-            offset += length;
+            if inline {
+                offset += length;
+            } else {
+                assert!(!port, "ipc_kmsg_copyin_body: out-of-line ports, not yet");
+                let address = usize::from_le_bytes(message[data..data + 8].try_into().unwrap());
+                assert!(
+                    length != 0,
+                    "ipc_kmsg_copyin_body: empty out-of-line memory, not yet"
+                );
+                assert!(
+                    !page_lists,
+                    "ipc_kmsg_copyin_body: vm_map_copyin_page_list, not yet"
+                );
+                // msgt_deallocate, bit 31.
+                assert!(
+                    word & (1 << 31) == 0,
+                    "ipc_kmsg_copyin_body: vm_map_copyin destroying its source, not yet"
+                );
+                let copy = map.copy_in(
+                    VirtualAddress::from(address)
+                        ..VirtualAddress::from(address.wrapping_add(length)),
+                    Source::Keep,
+                );
+                let copy = CacheBox::into_raw(copy).as_ptr().expose_provenance();
+                message[data..data + 8].copy_from_slice(&copy.to_le_bytes());
+                offset += 8;
+                complex = true;
+            }
             if port {
                 assert!(
                     name == MessageType::CopySend.number(),
@@ -458,10 +494,10 @@ impl KernelMessage {
                 let copy = NonNull::new(ptr::with_exposed_provenance_mut::<MapCopy>(data))
                     .expect("ipc_kmsg_copyout_body: VM_MAP_COPY_NULL, not yet");
                 // SAFETY: out-of-line data enters a message only through
-                // MIG's `OutOfLine::into_parts`: the exposed address of a
-                // `COPY_CACHE` box from `CacheBox::into_raw`, which the
-                // message alone holds; the slot is overwritten below, so it
-                // is taken back once.
+                // `copy_in_body` or MIG's `OutOfLine::into_parts`: the exposed
+                // address of a `COPY_CACHE` box from `CacheBox::into_raw`,
+                // which the message alone holds; the slot is overwritten
+                // below, so it is taken back once.
                 let copy = unsafe { CacheBox::from_raw(&COPY_CACHE, copy) };
                 let address = match map.copy_out(copy) {
                     Ok(address) => address,

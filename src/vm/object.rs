@@ -127,6 +127,8 @@ bitflags::bitflags! {
         const PAGER_READY = 1 << 5;
         /// It stays, unreferenced, among the persisting objects.
         const CAN_PERSIST = 1 << 6;
+        /// Shadows of it may exist.
+        const SHADOWED = 1 << 7;
     }
 }
 
@@ -339,6 +341,23 @@ pub fn allocate(size: usize) -> Reference<Object> {
         Ordering::Release,
     );
     object
+}
+
+/// Another reference to `object` for a copy that shares it, as
+/// `vm_object_copy_temporary` makes one for a temporary object: the source
+/// and the copy each shadow it before writing; none if it isn't temporary.
+pub fn copy_temporary(object: &Reference<Object>) -> Option<Reference<Object>> {
+    let mut state = object.lock();
+    if !state.flags.contains(Flags::TEMPORARY) {
+        drop(state);
+        return None;
+    }
+    // Symmetric: GNU Mach's use_shared_copy, for a delayed copy, is set only
+    // by vm_map_fork.
+    let copy = Reference::clone(object);
+    state.flags.insert(Flags::SHADOWED);
+    drop(state);
+    Some(copy)
 }
 
 /// The object and offset two adjoining ranges, `previous_size` bytes of

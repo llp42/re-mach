@@ -130,7 +130,7 @@ pub fn trap(
     header.local_port = Reference::into_raw(reply_port).as_ptr().expose_provenance();
     if complex {
         // slow_copyin: its body's rights, then back to kernel_send.
-        request.copy_in_body(space);
+        request.copy_in_body(space, &thread.task().map);
     }
     assert!(kernel, "mach_msg_trap: fast_send_receive, not yet");
     // kernel_send.
