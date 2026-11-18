@@ -10,6 +10,7 @@ use crate::ipc::kernel_message::Header;
 use crate::ipc::port::{PortName, PortType};
 use crate::slab::CacheBox;
 use crate::vm::map::MapCopy;
+use crate::vm::object::Offset;
 
 /// An argument as MIG lays it out: its type word, then its data, padded to 8 bytes.
 #[repr(C)]
@@ -155,6 +156,16 @@ unsafe impl Inline for i32 {
 // SAFETY: a primitive.
 unsafe impl Inline for u32 {
     const WORD: u64 = type_word(MessageType::Integer32, 32, 1);
+}
+
+// SAFETY: a primitive.
+unsafe impl Inline for usize {
+    const WORD: u64 = type_word(MessageType::Integer64, 64, 1);
+}
+
+// SAFETY: `repr(transparent)` over a `usize`.
+unsafe impl Inline for Offset {
+    const WORD: u64 = type_word(MessageType::Integer64, 64, 1);
 }
 
 // SAFETY: `repr(transparent)` over a `u32`.
@@ -392,7 +403,7 @@ macro_rules! subsystem {
     // The request port as the routine gets it: through its intran, or raw.
     (@port $request_port:ident intran $intran:path) => { $intran($request_port) };
     (@port $request_port:ident raw) => { $request_port };
-    (@port_pass $port:ident intran) => { $port.as_deref() };
+    (@port_pass $port:ident intran) => { $port.as_ref() };
     (@port_pass $port:ident raw) => { $port };
     // Whether the request is complex: if any in is a right.
     (@complex) => { false };

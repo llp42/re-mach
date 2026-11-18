@@ -36,6 +36,7 @@ pub struct Object {
 
 /// A place in an object, in bytes from its start.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
 pub struct Offset(usize);
 
 impl From<usize> for Offset {

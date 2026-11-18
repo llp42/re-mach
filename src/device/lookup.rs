@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
-//! Device lookup, by name, number or port; so far by name.
+//! Device lookup, by name, number or port; so far by name and port.
 
 use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
+use super::pager::PagerAdapter;
 use super::{Device, DeviceState, Kind, State};
+use crate::ipc::port::{KernelObject, Port};
 use crate::reference::{Count, Reference};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::Spinlock;
@@ -29,7 +31,7 @@ static LOOKUP: Spinlock<LinkedList<DeviceAdapter>> =
 static CACHE: Cache<Device> = Cache::new("mach_device");
 
 /// Sets up device lookup, on the boot CPU.
-pub fn init() {
+pub(super) fn init() {
     CACHE.register();
 }
 
@@ -39,7 +41,7 @@ pub fn init() {
 /// # Panics
 ///
 /// If no device can be allocated. As `by_name`.
-pub fn find(name: &[u8]) -> Reference<Device> {
+pub(super) fn find(name: &[u8]) -> Reference<Device> {
     let (kind, unit) = by_name(name);
     let mut new = None;
     loop {
@@ -82,11 +84,27 @@ pub fn find(name: &[u8]) -> Reference<Device> {
                         state: State::Init,
                         open_count: 0,
                         port: None,
+                        pagers: LinkedList::new(PagerAdapter::NEW),
                     }),
                 })
                 .unwrap_or_else(|error| panic!("device_lookup: {error:?}")),
         );
     }
+}
+
+/// The device `port` stands for, with a reference to it taken under the
+/// port's lock, as `dev_port_lookup`; none for a dead port or one standing
+/// for no device.
+pub fn by_port(port: &Port) -> Option<Reference<Device>> {
+    port.with_kernel_object(|object| match object {
+        Some(&KernelObject::Device(device)) => {
+            // SAFETY: the port's reference keeps it alive; the handle borrows
+            // it and never drops.
+            let held = ManuallyDrop::new(unsafe { Reference::from_raw(device) });
+            Some(Reference::clone(&held))
+        }
+        _ => None,
+    })
 }
 
 /// The kind and unit `name` names, as `dev_name_lookup` does: the kind's

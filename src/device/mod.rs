@@ -1,21 +1,25 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
-//! Devices; so far only the master device port, device lookup and opening,
-//! terminals' input settings and the interrupt thread.
+//! Devices; so far only the master device port, device lookup, opening
+//! and mapping, the device pager, terminals' input settings and the
+//! interrupt thread.
 
 pub mod interrupt;
-mod lookup;
+pub mod lookup;
+pub mod pager;
 mod terminal;
 
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use intrusive_collections::LinkedListAtomicLink;
+use intrusive_collections::{LinkedList, LinkedListAtomicLink};
 
 use crate::ipc::port::{KernelObject, Port};
 use crate::reference::{Count, Counted, Reference};
 use crate::sync::Spinlock;
+use crate::vm::Protection;
+use crate::vm::object::Offset;
 
 /// The master device port, which devices are opened through; once
 /// `create_service` makes it.
@@ -23,7 +27,7 @@ pub static MASTER_PORT: AtomicPtr<Port> = AtomicPtr::new(ptr::null_mut());
 
 /// Creates the device service, in the kernel task: so far only the master
 /// device port, a port the kernel receives on that stands for nothing, then
-/// device lookup and terminals' input settings.
+/// device lookup, the device pager and terminals' input settings.
 ///
 /// # Panics
 ///
@@ -37,6 +41,7 @@ pub fn create_service() {
         Ordering::Release,
     );
     lookup::init();
+    pager::init();
     terminal::init();
 }
 
@@ -56,7 +61,7 @@ pub struct Device {
 }
 
 /// A device's state under its lock; so far only how far it is open, its
-/// open count and its port.
+/// open count, its port and its pagers.
 struct DeviceState {
     /// How far it is open.
     state: State,
@@ -64,6 +69,8 @@ struct DeviceState {
     open_count: u32,
     /// Its port, once opening.
     port: Option<Reference<Port>>,
+    /// Its pagers, one per offset.
+    pagers: LinkedList<pager::PagerAdapter>,
 }
 
 /// How far a device is open; only the states used here.
@@ -137,6 +144,23 @@ pub fn open(name: &[u8]) -> Reference<Port> {
     // The lookup's reference goes, as mach_device_deallocate.
     drop(device);
     send
+}
+
+/// Maps `device`'s memory from `offset`, allowing `protection`, as
+/// `device_map` does; gives a send right for its pager's port.
+///
+/// # Panics
+///
+/// If `protection` holds more than reading, writing and running, or the
+/// device is not open: not yet. As `pager::setup`.
+pub fn map(device: &Reference<Device>, protection: u32, offset: Offset) -> Reference<Port> {
+    let protection = Protection::from_bits(protection)
+        .unwrap_or_else(|| panic!("device_map: KERN_INVALID_ARGUMENT, not yet"));
+    assert!(
+        device.state.lock().state == State::Open,
+        "device_map: D_NO_SUCH_DEVICE, not yet"
+    );
+    pager::setup(device, protection, offset)
 }
 
 // SAFETY: its count is its own, and `free` frees nothing yet.

@@ -58,8 +58,8 @@ unsafe impl mig::Inline for TimeValue64 {
 ///
 /// As `clock::time::host_time`.
 #[expect(clippy::unnecessary_wraps, reason = "MIG's routines give a Result")]
-fn host_get_time(host: Option<&Host>) -> Result<RpcTimeValue, Error> {
-    let time = clock::time::host_time(host);
+fn host_get_time(host: Option<&&Host>) -> Result<RpcTimeValue, Error> {
+    let time = clock::time::host_time(host.copied());
     Ok(RpcTimeValue {
         seconds: time.seconds(),
         microseconds: time.microseconds(),
@@ -72,8 +72,8 @@ fn host_get_time(host: Option<&Host>) -> Result<RpcTimeValue, Error> {
 /// # Panics
 ///
 /// As `machine::host_reboot`.
-fn host_reboot(host: Option<&Host>, options: i32) -> Result<(), Error> {
-    machine::host_reboot(host, options)
+fn host_reboot(host: Option<&&Host>, options: i32) -> Result<(), Error> {
+    machine::host_reboot(host.copied(), options)
 }
 
 /// Serves `host_info`: up to `info.len()` integers of `flavor` for `host`.
@@ -81,8 +81,8 @@ fn host_reboot(host: Option<&Host>, options: i32) -> Result<(), Error> {
 /// # Panics
 ///
 /// As `host::info`.
-fn host_info(host: Option<&Host>, flavor: i32, info: &mut [i32]) -> Result<usize, Error> {
-    host::info(host, flavor, info)
+fn host_info(host: Option<&&Host>, flavor: i32, info: &mut [i32]) -> Result<usize, Error> {
+    host::info(host.copied(), flavor, info)
 }
 
 /// Serves `host_get_time64`: the time of day for `host`.
@@ -91,8 +91,8 @@ fn host_info(host: Option<&Host>, flavor: i32, info: &mut [i32]) -> Result<usize
 ///
 /// As `clock::time::host_time64`.
 #[expect(clippy::unnecessary_wraps, reason = "MIG's routines give a Result")]
-fn host_get_time64(host: Option<&Host>) -> Result<TimeValue64, Error> {
-    let time = clock::time::host_time64(host);
+fn host_get_time64(host: Option<&&Host>) -> Result<TimeValue64, Error> {
+    let time = clock::time::host_time64(host.copied());
     Ok(TimeValue64 {
         seconds: time.seconds,
         nanoseconds: time.nanoseconds,
@@ -100,9 +100,9 @@ fn host_get_time64(host: Option<&Host>) -> Result<TimeValue64, Error> {
 }
 
 /// Serves `host_get_kernel_version`: the kernel's version for `host`.
-fn host_get_kernel_version(host: Option<&Host>) -> Result<StringC<512>, Error> {
+fn host_get_kernel_version(host: Option<&&Host>) -> Result<StringC<512>, Error> {
     let mut kernel_version = StringC([0; 512]);
-    host::kernel_version(host, &mut kernel_version.0)?;
+    host::kernel_version(host.copied(), &mut kernel_version.0)?;
     Ok(kernel_version)
 }
 
@@ -112,8 +112,8 @@ fn host_get_kernel_version(host: Option<&Host>) -> Result<StringC<512>, Error> {
 ///
 /// As `clock::time::host_uptime64`.
 #[expect(clippy::unnecessary_wraps, reason = "MIG's routines give a Result")]
-fn host_get_uptime64(host: Option<&Host>) -> Result<TimeValue64, Error> {
-    let uptime = clock::time::host_uptime64(host);
+fn host_get_uptime64(host: Option<&&Host>) -> Result<TimeValue64, Error> {
+    let uptime = clock::time::host_uptime64(host.copied());
     Ok(TimeValue64 {
         seconds: uptime.seconds,
         nanoseconds: uptime.nanoseconds,
