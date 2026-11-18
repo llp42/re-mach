@@ -490,8 +490,12 @@ impl Thread {
         }
         // The thread takes its machine state for good.
         CacheBox::into_raw(machine_state);
-        // SAFETY: a thread lives until the reaper frees it, which comes later.
-        let thread = unsafe { CacheBox::into_raw(thread).as_ref() };
+        let thread = CacheBox::into_raw(thread);
+        // The box's provenance, which `free` takes back from a handle made
+        // from a shared borrow.
+        thread.expose_provenance();
+        // SAFETY: a thread lives until its last reference drops.
+        let thread = unsafe { thread.as_ref() };
         thread.timer.set_argument(ptr::from_ref(thread).cast());
         let port = Reference::from(port);
         let send = Port::make_send(&port);
@@ -1082,10 +1086,12 @@ impl Thread {
         ptr::eq(self.set.load(Ordering::Acquire), set)
     }
 
-    /// Sets the set it runs on, under that set's token.
-    pub(super) fn set_processor_set(&self, set: &'static ProcessorSet) {
-        self.set
-            .store(ptr::from_ref(set).cast_mut(), Ordering::Release);
+    /// Sets the set it runs on, or none, under that set's token.
+    pub(super) fn set_processor_set(&self, set: Option<&'static ProcessorSet>) {
+        self.set.store(
+            set.map_or(ptr::null_mut(), |set| ptr::from_ref(set).cast_mut()),
+            Ordering::Release,
+        );
     }
 
     /// Sets its name to `arguments`, cut to fit.
@@ -1119,19 +1125,71 @@ impl Thread {
     }
 }
 
-// SAFETY: its count is its own, and `free` frees nothing yet.
+// SAFETY: its count is its own, and every thread is a box of `CACHE`, which
+// `free` takes back.
 unsafe impl Counted for Thread {
     fn references(&self) -> &Count {
         &self.references
     }
 
-    /// Frees `thread`, as `thread_deallocate` does at zero.
+    /// Frees `thread`, as `thread_deallocate` does at zero: its timer
+    /// cancelled, its times added to its task's, it leaves its task and its
+    /// set, then goes back to its cache. GNU Mach's recheck under the tokens
+    /// is not needed: a new reference comes only from a live one or from
+    /// `Reference::upgrade`, which never counts up from zero.
     ///
     /// # Panics
     ///
-    /// Always: not yet.
-    unsafe fn free(_thread: NonNull<Self>) {
-        panic!("thread_deallocate: the last reference, not yet");
+    /// If it is the current thread, or not stopped. If it moved to another
+    /// set: not yet. As `reset_timeout_check`.
+    unsafe fn free(thread: NonNull<Self>) {
+        // The box's own provenance, which `create` exposed.
+        let thread = NonNull::<Self>::with_exposed_provenance(thread.addr());
+        // SAFETY: nothing else uses it, and it stays allocated until its
+        // box drops below.
+        let this = unsafe { thread.as_ref() };
+        // SAFETY: a thread's set lives while the thread is in it.
+        let set = unsafe { &*this.set.load(Ordering::Acquire) };
+        let mut set_members = set.lock();
+        assert!(
+            this.is_in(set),
+            "thread_deallocate: a thread that moved, not yet"
+        );
+        let task = this.task();
+        let mut members = task.members.lock();
+        let section = CriticalSection::enter();
+        clock::timeout::reset_timeout_check(&this.timer);
+        task.total_user_time
+            .fetch_add(this.user_time.load(Ordering::Relaxed), Ordering::Relaxed);
+        task.total_system_time
+            .fetch_add(this.system_time.load(Ordering::Relaxed), Ordering::Relaxed);
+        let reference = task.remove_thread(&mut members, this);
+        ProcessorSet::remove_thread(&mut set_members, this);
+        drop(section);
+        drop(members);
+        drop(set_members);
+        // Never the last: a set keeps its own reference until destroyed.
+        set.deallocate();
+        assert!(
+            !smp::current()
+                .active_thread()
+                .is_some_and(|current| ptr::eq(current, this)),
+            "thread deallocating itself"
+        );
+        assert!(
+            this.state()
+                .difference(ThreadState::RUN | ThreadState::HALTED)
+                == ThreadState::SUSPENDED,
+            "unstopped thread destroyed!"
+        );
+        // task_deallocate: the thread's reference to its task.
+        drop(reference);
+        // stack_free and pcb_terminate come later: its kernel stack and its
+        // machine state stay taken. No event counter exists for
+        // evc_notify_abort.
+        // SAFETY: a `CACHE` box `create` gave up, with that box's provenance;
+        // nothing uses it after.
+        drop(unsafe { CacheBox::from_raw(&CACHE, thread) });
     }
 }
 
@@ -1265,21 +1323,30 @@ pub fn halt_self() {
 /// What the reaper waits on; only its address counts.
 static REAPER: u8 = 0;
 
-/// The reaper's work: each time it runs it finds no thread ended on any
-/// CPU, then waits for one, uninterruptibly; the checks and the wait are in
-/// one critical section.
+/// The reaper's work: it takes each thread ended on any CPU off its dead
+/// list, waits until it stops, and drops the reference the list held; with
+/// none left it waits for one, uninterruptibly. Each look and
+/// the wait are in one critical section, the work outside it.
 ///
 /// # Panics
 ///
-/// If a thread ended: not yet.
+/// As `wait_until_stopped` and `free`.
 pub fn reaper_thread() -> ! {
     loop {
-        // No thread that ends between the checks and the wait is missed.
-        let section = CriticalSection::enter();
-        assert!(
-            (0..MAX_CPUS).all(|cpu| smp::of(cpu).dead_threads().lock().is_empty()),
-            "reaper_thread: a halted thread, not yet"
-        );
+        // No thread that ends between the last look and the wait is missed.
+        let mut section = CriticalSection::enter();
+        while let Some(thread) =
+            (0..MAX_CPUS).find_map(|cpu| smp::of(cpu).dead_threads().lock().pop_front())
+        {
+            drop(section);
+            // SAFETY: a dead list holds the reference of its thread's being
+            // alive, given up here.
+            let thread =
+                unsafe { Reference::from_raw(NonNull::new(UnsafeRef::into_raw(thread)).unwrap()) };
+            thread.wait_until_stopped();
+            drop(thread);
+            section = CriticalSection::enter();
+        }
         sched::assert_wait(Some(Event::of(&REAPER)));
         sched::block();
         drop(section);

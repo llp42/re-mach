@@ -540,8 +540,17 @@ impl ProcessorSet {
         members
             .threads
             .push_back(unsafe { UnsafeRef::from_raw(thread) });
-        thread.set_processor_set(self);
+        thread.set_processor_set(Some(self));
         members.thread_count += 1;
+    }
+
+    /// Lets `thread`, being freed, out of `members`, its set's.
+    pub(super) fn remove_thread(members: &mut Members, thread: &Thread) {
+        // SAFETY: the thread is on this list, which it joined as it was
+        // created.
+        unsafe { members.threads.cursor_mut_from_ptr(thread) }.remove();
+        thread.set_processor_set(None);
+        members.thread_count -= 1;
     }
 
     /// Takes `processor`, coming up, and sets its quanta again; the caller

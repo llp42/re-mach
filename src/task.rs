@@ -5,7 +5,7 @@
 
 use core::mem::ManuallyDrop;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicPtr, AtomicUsize};
+use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
@@ -44,6 +44,10 @@ pub struct Task {
     may_assign: bool,
     /// When it was created.
     pub(super) creation_time: AtomicTimeValue,
+    /// The time its ended threads ran in user mode, in microseconds.
+    pub(super) total_user_time: AtomicU64,
+    /// The time its ended threads ran in the kernel, in microseconds.
+    pub(super) total_system_time: AtomicU64,
     /// Its page faults: each search for a faulting page counts one.
     pub(super) faults: AtomicUsize,
     /// Its pages filled with zeros on a fault.
@@ -142,6 +146,21 @@ impl Task {
         members
             .threads
             .push_back(unsafe { UnsafeRef::from_raw(thread) });
+    }
+
+    /// Lets `thread`, being freed, out of its `members`; gives back the
+    /// reference `add_thread` took for it.
+    pub(super) fn remove_thread(
+        &self,
+        members: &mut TaskMembers,
+        thread: &Thread,
+    ) -> Reference<Self> {
+        members.thread_count -= 1;
+        // SAFETY: the thread is on this list, which it joined as it was
+        // created.
+        unsafe { members.threads.cursor_mut_from_ptr(thread) }.remove();
+        // SAFETY: the thread's reference, which it gives up here.
+        unsafe { Reference::from_raw(NonNull::from(self)) }
     }
 
     /// Gives a new send right for its port, with its reference, as
@@ -397,6 +416,8 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
         }),
         may_assign: true,
         creation_time: clock::time::stamp().into(),
+        total_user_time: AtomicU64::new(0),
+        total_system_time: AtomicU64::new(0),
         faults: AtomicUsize::new(0),
         zero_fills: AtomicUsize::new(0),
         pageins: AtomicUsize::new(0),
