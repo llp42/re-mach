@@ -556,6 +556,15 @@ impl Thread {
         Port::copy_send(&port)
     }
 
+    /// Makes its port stand for nothing, as `ipc_thread_disable` does.
+    fn disable_ipc(&self) {
+        // SAFETY: the slot keeps its port's reference, never dropped yet,
+        // which this borrows.
+        if let Some(port) = unsafe { self.self_port.load(Ordering::Acquire).as_ref() } {
+            port.replace_kernel_object(None);
+        }
+    }
+
     /// Records that it runs on the current CPU, as the CPU switches to it.
     pub fn run_here(&'static self) {
         let cpu = smp::current();
@@ -860,6 +869,29 @@ impl Thread {
         Ok(())
     }
 
+    /// Ends it, as `thread_terminate` does: its port stands for nothing,
+    /// and the current thread, no longer alive, halts as it leaves the
+    /// kernel.
+    ///
+    /// # Panics
+    ///
+    /// For another thread than the current: not yet.
+    pub(super) fn terminate(&self) {
+        self.disable_ipc();
+        assert!(
+            smp::current()
+                .active_thread()
+                .is_some_and(|current| ptr::eq(current, self)),
+            "thread_terminate: another thread, not yet"
+        );
+        let section = CriticalSection::enter();
+        if self.active.swap(false, Ordering::Relaxed) {
+            self.add_asts(Ast::TERMINATE);
+        }
+        smp::current().add_asts(Ast::TERMINATE);
+        drop(section);
+    }
+
     /// Writes `thread`'s machine state of `flavor` into `state`, as
     /// `thread_get_state` does, with `thread` stopped meanwhile; `state`'s
     /// length is the count asked for. Gives the count written.
@@ -1048,6 +1080,11 @@ impl Thread {
     /// Its ASTs, which the CPU running it takes.
     pub(super) fn asts(&self) -> Ast {
         Ast::from_bits_retain(self.asts.load(Ordering::Relaxed))
+    }
+
+    /// Posts `asts` on it.
+    fn add_asts(&self, asts: Ast) {
+        self.asts.fetch_or(asts.bits(), Ordering::Relaxed);
     }
 }
 

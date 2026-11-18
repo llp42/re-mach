@@ -21,6 +21,7 @@ use crate::vm::{self, Inheritance, Protection, VirtualAddress};
 
 mig::subsystem! {
     base 2000;
+    16 thread_terminate(target_thread = thread::of);
     17 thread_get_state(target_thread = thread::of, flavor: i32)
         -> (old_state: [u32; ..1024], CountInOut);
     18 thread_set_state(target_thread = thread::of, flavor: i32, new_state: [u32; ..1024]);
@@ -54,6 +55,23 @@ mig::subsystem! {
         max_protection: u32,
         inheritance: u32
     ) -> (address: VirtualAddress);
+}
+
+/// Serves `thread_terminate`: ends `thread`.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no thread.
+///
+/// # Panics
+///
+/// As `Thread::terminate`.
+fn thread_terminate(thread: Option<&Reference<Thread>>) -> Result<(), Error> {
+    let Some(thread) = thread else {
+        return Err(Error::InvalidArgument);
+    };
+    thread.terminate();
+    Ok(())
 }
 
 /// Serves `thread_get_state`: `thread`'s machine state of `flavor`, in at
