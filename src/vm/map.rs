@@ -839,16 +839,15 @@ impl Map {
     }
 
     /// Removes the entries of `range` from the map, `contents` its contents
-    /// under its write lock, and their pages from its physical map,
-    /// splitting entries at the range's start and end with ones from
-    /// `reservation`.
+    /// under its write lock, unwiring them, and their pages from its physical
+    /// map, splitting entries at the range's start and end with ones from
+    /// `reservation`. The kernel object's pages there are freed.
     ///
     /// # Panics
     ///
-    /// If an entry there is in transition, a submap, wired or the kernel
-    /// object's: not yet. As `Contents::clip_start`, `Contents::clip_end`
-    /// and `MachinePhysMap::remove`; at an object's last reference, as its
-    /// free.
+    /// If an entry there is in transition or a submap: not yet. As
+    /// `Contents::clip_start`, `Contents::clip_end`, `fault::unwire` and
+    /// `MachinePhysMap::remove`; at an object's last reference, as its free.
     fn delete(
         &self,
         contents: &mut Contents,
@@ -897,22 +896,25 @@ impl Map {
                 // SAFETY: the entry holds a reference on its object, which
                 // lives until that reference drops below.
                 let object = unsafe { pointer.as_ref() };
-                assert!(
-                    entry.wire_count() == 0,
-                    "vm_map_entry_delete: vm_fault_unwire, not yet"
-                );
-                assert!(
-                    !ptr::eq(object, &raw const object::KERNEL_OBJECT),
-                    "vm_map_entry_delete: the kernel object, not yet"
-                );
-                // Entries are shared only by vm_map_fork, not yet.
+                // Unwired, unmapped on every CPU, then freed: no CPU reaches a
+                // freed page.
+                if entry.wire_count() != 0 {
+                    // vm_map_entry_reset_wired.
+                    contents.size_wired -= entry.end() - entry.start();
+                    entry.wire_count.store(0, Ordering::Relaxed);
+                    fault::unwire(self, &entry);
+                }
+                // Entries are shared only by vm_map_fork, not yet. The kernel
+                // object's pages too leave by range (GNU Mach: page by page).
                 self.phys_map
                     .remove(usize::from(entry.start())..usize::from(entry.end()));
-                // With no pager and no other reference, its pages go now.
+                // The kernel object's pages go now; another's with no pager
+                // and no other reference.
                 let mut state = object.lock();
-                if !state.flags.contains(Flags::PAGER_CREATED)
-                    && object.references() == 1
-                    && state.paging_in_progress == 0
+                if ptr::eq(object, &raw const object::KERNEL_OBJECT)
+                    || (!state.flags.contains(Flags::PAGER_CREATED)
+                        && object.references() == 1
+                        && state.paging_in_progress == 0)
                 {
                     let offset = offset.load(Ordering::Relaxed);
                     state.remove_pages(offset..offset + (entry.end() - entry.start()));
