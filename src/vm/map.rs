@@ -59,6 +59,8 @@ pub(super) struct Contents {
     size: usize,
     /// How much of it is wired, in bytes.
     size_wired: usize,
+    /// How much of it may never be accessed, in bytes.
+    size_none: usize,
     /// Whether what it maps from now on is wired.
     wiring_required: bool,
     /// The most it may map, in bytes.
@@ -86,6 +88,7 @@ impl Map {
                 first_free: None,
                 size: 0,
                 size_wired: 0,
+                size_none: 0,
                 wiring_required: false,
                 size_limit: usize::MAX,
                 max_size_limit: usize::MAX,
@@ -128,15 +131,16 @@ impl Map {
     ///
     /// `InvalidArgument` if `size` is 0; for `Placement::Fixed`,
     /// `InvalidAddress` if the range is not inside the map and `NoSpace` if
-    /// it overlaps an entry; `NoSpace` if it takes the map past its size
-    /// limit, and `ResourceShortage` if no entry can be allocated.
+    /// it overlaps an entry; unless `max_protection` is none, as
+    /// `Contents::enforce_limit`; `ResourceShortage` if no entry can be
+    /// allocated.
     ///
     /// # Panics
     ///
-    /// If `max_protection` is none, the next entry would be extended over
-    /// the range, the entry grown over it could merge with the next, or a
-    /// new entry is due to be wired: not yet. As `object::coalesce`, and for
-    /// `Placement::Anywhere` as `Contents::find_anywhere`.
+    /// If the next entry would be extended over the range, the entry grown
+    /// over it could merge with the next, or a new entry is due to be wired:
+    /// not yet. As `object::coalesce`, and for `Placement::Anywhere` as
+    /// `Contents::find_anywhere`.
     #[expect(
         clippy::too_many_lines,
         reason = "vm_map_enter's steps, in GNU Mach's order"
@@ -200,17 +204,9 @@ impl Map {
         {
             return Err(Error::NoSpace);
         }
-        assert!(
-            !entry.max_protection.is_empty(),
-            "vm_map_enter: a VM_PROT_NONE maximum, not yet"
-        );
-        // vm_map_enforce_limit, which the kernel's maps always pass.
-        let size = contents
-            .size
-            .checked_add(range.end - range.start)
-            .ok_or(Error::InvalidArgument)?;
-        if size > contents.size_limit {
-            return Err(Error::NoSpace);
+        // Memory that may never be accessed is left out of the limit.
+        if !max_protection.is_empty() {
+            contents.enforce_limit(range.end - range.start)?;
         }
         let extends = |neighbour: &Entry| {
             !matches!(neighbour.backing, Backing::Submap(_))
@@ -260,7 +256,10 @@ impl Map {
             }
             drop(object);
             previous_offset.store(usize::from(object_offset), Ordering::Relaxed);
-            contents.size = size;
+            contents.size += range.end - range.start;
+            if max_protection.is_empty() {
+                contents.size_none += range.end - range.start;
+            }
             previous
                 .end
                 .store(usize::from(range.end), Ordering::Relaxed);
@@ -331,6 +330,9 @@ impl Map {
             .map_or(self.bounds.start, |entry| entry.end())
             == range.start;
         let entry = contents.link(self.bounds.start, previous, entry);
+        if max_protection.is_empty() {
+            contents.size_none += range.end - range.start;
+        }
         if follows_first_free {
             contents.first_free = Some(entry);
         }
@@ -873,6 +875,9 @@ impl Map {
                 drop(unsafe { Reference::from_raw(pointer) });
             }
             contents.size -= entry.end() - entry.start();
+            if entry.max_protection.is_empty() {
+                contents.size_none -= entry.end() - entry.start();
+            }
             // SAFETY: the hint moved off the range above, the entry is not in
             // transition, and `entry` is not used again.
             drop(unsafe { contents.unlink(&self.bounds, &entry) });
@@ -1016,9 +1021,7 @@ impl Map {
     ///
     /// # Errors
     ///
-    /// `NoSpace` if they take the map past its size limit, and
-    /// `InvalidArgument` if its size overflows; the copy comes back with
-    /// the error.
+    /// As `Contents::enforce_limit`; the copy comes back with the error.
     ///
     /// # Panics
     ///
@@ -1037,14 +1040,9 @@ impl Map {
         let size = (copy.offset + copy.size).next_multiple_of(PAGE_SIZE) - copy_start;
         let mut contents = self.lock();
         let start = contents.find_anywhere(&self.bounds, size);
-        // vm_map_enforce_limit, which the kernel's maps always pass.
-        let Some(new_size) = contents.size.checked_add(size) else {
+        if let Err(error) = contents.enforce_limit(size) {
             drop(contents);
-            return Err((copy, Error::InvalidArgument));
-        };
-        if new_size > contents.size_limit {
-            drop(contents);
-            return Err((copy, Error::NoSpace));
+            return Err((copy, error));
         }
         let last = contents
             .entries
@@ -1246,6 +1244,23 @@ unsafe impl Counted for Map {
 }
 
 impl Contents {
+    /// Checks that `size` more bytes keep the map within its size limit, not
+    /// counting what may never be accessed; the kernel's maps have none.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` if the size overflows, and `NoSpace` if it passes
+    /// the limit.
+    fn enforce_limit(&self, size: usize) -> Result<(), Error> {
+        let new_size = (self.size - self.size_none)
+            .checked_add(size)
+            .ok_or(Error::InvalidArgument)?;
+        if new_size > self.size_limit {
+            return Err(Error::NoSpace);
+        }
+        Ok(())
+    }
+
     /// The entry that holds `address`.
     fn find(&self, address: VirtualAddress) -> Option<&Entry> {
         self.entries
