@@ -170,7 +170,7 @@ pub fn trap(
         "mach_msg_trap: slow_copyout, MACH_RCV_TOO_LARGE, not yet"
     );
     // A reply, with the send-once right it carries; complex if its body
-    // carries out-of-line memory.
+    // carries rights or out-of-line memory.
     let complex = reply.header().bits.is_complex();
     let bits = MessageBits::new(Some(MessageType::PortSendOnce), None);
     assert!(
@@ -206,7 +206,7 @@ pub fn trap(
     header.local_port = usize::try_from(u32::from(name)).unwrap();
     header.remote_port = usize::try_from(u32::from(PortName::NULL)).unwrap();
     if complex {
-        reply.copy_out_body(&thread.task().map);
+        reply.copy_out_body(space, &thread.task().map);
     }
     // fast_put: only a saved buffer is copied out here.
     assert!(

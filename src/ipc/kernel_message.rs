@@ -9,7 +9,7 @@ use core::slice;
 
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
-use super::port::PortName;
+use super::port::{Port, PortName};
 use super::space::Space;
 use super::{MessageType, object};
 use crate::arch::{self, Machine as _, PAGE_SIZE};
@@ -391,14 +391,17 @@ impl KernelMessage {
     }
 
     /// Copies its body out to its receiver, as `ipc_kmsg_copyout_body`
-    /// does: out-of-line memory moves into `map`, and its address replaces
-    /// its copy.
+    /// does: each inline send right moves into `space`, and its name there
+    /// replaces its port; out-of-line memory moves into `map`, and its
+    /// address replaces its copy.
     ///
     /// # Panics
     ///
-    /// If an item carries rights, out-of-line data is empty, or its memory
-    /// can't be copied out: not yet. As `Map::copy_out`.
-    pub(super) fn copy_out_body(&mut self, map: &Map) {
+    /// If an item carries rights other than inline send rights, a port is
+    /// null or dead, a right can't be copied out, out-of-line data is empty,
+    /// or its memory can't be copied out: not yet. As `object::copy_out` and
+    /// `Map::copy_out`.
+    pub(super) fn copy_out_body(&mut self, space: &Space, map: &Map) {
         let end = usize::try_from(self.header().size).unwrap();
         let message = self.message_mut();
         let mut offset = size_of::<Header>();
@@ -411,13 +414,39 @@ impl KernelMessage {
             let size = u16::from_le_bytes([size_low, size_high]);
             let number = word >> 32;
             let length = usize::try_from((number * u64::from(size)).div_ceil(8)).unwrap();
+            // msgt_inline, bit 29.
+            let inline = word & (1 << 29) != 0;
             // MACH_MSG_TYPE_PORT_ANY: from MOVE_RECEIVE to MAKE_SEND_ONCE.
-            assert!(
-                !(16..=21).contains(&name),
-                "ipc_kmsg_copyout_body: port rights, not yet"
-            );
-            // msgt_inline, bit 29; msgt_deallocate, bit 31.
-            if word & (1 << 29) != 0 {
+            if (16..=21).contains(&name) {
+                assert!(inline, "ipc_kmsg_copyout_body: out-of-line ports, not yet");
+                assert!(
+                    name == MessageType::PortSend.number(),
+                    "ipc_kmsg_copyout_object: type {name}, not yet"
+                );
+                for slot in message[offset..offset + length].as_chunks_mut::<8>().0 {
+                    let address = usize::from_le_bytes(*slot);
+                    assert!(
+                        !matches!(address, 0 | usize::MAX),
+                        "ipc_kmsg_copyout_object: invalid_port_to_name, not yet"
+                    );
+                    let port =
+                        NonNull::new(ptr::with_exposed_provenance_mut::<Port>(address)).unwrap();
+                    // SAFETY: a reply's port is the exposed address of a reference
+                    // to it given up by `into_raw`, which the handle takes, as the
+                    // slot is overwritten below.
+                    let port = unsafe { Reference::from_raw(port) };
+                    let port_name = object::copy_out(space, port, MessageType::PortSend)
+                        .unwrap_or_else(|(error, _)| {
+                            panic!(
+                                "ipc_kmsg_copyout_object: {error:?}, ipc_object_destroy, not yet"
+                            )
+                        });
+                    // The name, zero-extended.
+                    *slot = usize::try_from(u32::from(port_name)).unwrap().to_le_bytes();
+                }
+            }
+            // msgt_deallocate, bit 31.
+            if inline {
                 word &= !(1 << 31);
                 offset += length;
             } else {

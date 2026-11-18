@@ -14,6 +14,7 @@ use super::entry::Rights;
 use super::port_set::PortSet;
 use super::space::{self, Space};
 use super::{MessageType, kernel_message, object};
+use crate::device::Device;
 use crate::error::Error;
 use crate::host::Host;
 use crate::processor::{Processor, ProcessorSet};
@@ -456,6 +457,8 @@ pub(super) fn timestamp() -> Timestamp {
 /// What a port the kernel receives on stands for; only the kinds used here.
 #[derive(Clone, Copy)]
 pub enum KernelObject {
+    /// A device's port, holding a reference to it.
+    Device(#[expect(dead_code, reason = "dev_port_lookup reads it")] NonNull<Device>),
     /// A memory object's name port, which names it to `vm_region`.
     PagerName(#[expect(dead_code, reason = "vm_object_lookup_name reads it")] NonNull<Object>),
     /// The host's port.
