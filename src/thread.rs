@@ -954,9 +954,19 @@ impl Thread {
             .store(event.map_or(0, usize::from), Ordering::Relaxed);
     }
 
+    /// How its last wait ended.
+    pub(super) fn wait_result(&self) -> WaitResult {
+        WaitResult::try_from(self.wait_result.load(Ordering::Relaxed)).unwrap()
+    }
+
     /// Sets how its wait ended.
     pub(super) fn set_wait_result(&self, result: WaitResult) {
         self.wait_result.store(result.number(), Ordering::Relaxed);
+    }
+
+    /// Whether it is on the queue of a port it waits on.
+    pub(super) fn is_queued_to_receive(&self) -> bool {
+        self.ipc_link.is_linked()
     }
 
     /// Its timer.

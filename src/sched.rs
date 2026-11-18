@@ -81,6 +81,19 @@ impl WaitResult {
     }
 }
 
+impl TryFrom<u8> for WaitResult {
+    type Error = u8;
+
+    /// The result of Mach's number `number`, if it is one used here.
+    fn try_from(number: u8) -> Result<Self, u8> {
+        match number {
+            0 => Ok(Self::Awakened),
+            1 => Ok(Self::TimedOut),
+            _ => Err(number),
+        }
+    }
+}
+
 /// The runnable threads of one priority.
 pub type RunQueue = LinkedList<RunQueueAdapter>;
 
@@ -408,6 +421,36 @@ pub fn assert_wait(event: Option<Event>) {
         thread.set_wait_event(Some(event));
     }
     thread.insert_state(ThreadState::WAIT | ThreadState::UNINTERRUPTIBLE);
+}
+
+/// Makes the current thread wait, interruptibly, for no event: it stops
+/// running once it blocks.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU.
+pub fn will_wait() {
+    let _section = CriticalSection::enter();
+    smp::current()
+        .active_thread()
+        .expect("thread_will_wait: no current thread")
+        .insert_state(ThreadState::WAIT);
+}
+
+/// As `will_wait`, with the thread's timer set to end the wait
+/// `milliseconds` later, rounded up to ticks.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU. As `set_timeout`.
+pub fn will_wait_with_timeout(milliseconds: u32) {
+    let _section = CriticalSection::enter();
+    let thread = smp::current()
+        .active_thread()
+        .expect("thread_will_wait_with_timeout: no current thread");
+    thread.insert_state(ThreadState::WAIT);
+    let ticks = (u64::from(milliseconds) * u64::from(HZ)).div_ceil(1000);
+    clock::timeout::set_timeout(thread.timer(), ticks);
 }
 
 /// Makes the current thread wait for `event`, releases `guard`'s lock and

@@ -5,6 +5,8 @@
 
 use core::ptr::{self, NonNull};
 
+use intrusive_collections::UnsafeRef;
+
 use super::MessageType;
 use super::entry::Rights;
 use super::kernel_message::{
@@ -15,6 +17,7 @@ use super::port::{Port, PortName, Receiver};
 use super::space::KERNEL_SPACE;
 use crate::arch::PAGE_SIZE;
 use crate::reference::Reference;
+use crate::sched::{self, WaitResult};
 use crate::{ipc_kobject, smp};
 
 bitflags::bitflags! {
@@ -25,19 +28,25 @@ bitflags::bitflags! {
         const SEND = 1;
         /// Receive a message.
         const RECEIVE = 1 << 1;
+        /// Give up receiving after the timeout.
+        const RECEIVE_TIMEOUT = 1 << 8;
     }
 }
 
+/// A receive's status when no message came in time, as Mach numbers it.
+const MACH_RCV_TIMED_OUT: u32 = 0x1000_4003;
+
 /// Sends the message at `message`, `send_size` bytes, then receives one on
 /// `receive_name`, as `mach_msg_trap` does; so far a request to a port the
-/// kernel receives on, and its reply. Gives `MACH_MSG_SUCCESS`.
+/// kernel receives on, and its reply, or a receive alone. Gives
+/// `MACH_MSG_SUCCESS`, or the receive's status.
 ///
 /// # Panics
 ///
 /// If no thread runs on the CPU, or the reply port has no send-once right.
 /// On every other path: not yet; as `kernel_message::get`,
 /// `KernelMessage::copy_in_body`, `ipc_kobject::server`,
-/// `KernelMessage::copy_out_body` and `kernel_message::put`.
+/// `KernelMessage::copy_out_body`, `kernel_message::put` and `receive`.
 #[expect(
     clippy::too_many_lines,
     reason = "mach_msg_trap's fast path, in GNU Mach's order"
@@ -48,13 +57,23 @@ pub fn trap(
     send_size: u32,
     receive_size: u32,
     receive_name: PortName,
-    _timeout: u32,
+    timeout: u32,
     _notify: PortName,
 ) -> u32 {
-    assert!(
-        option == (Options::SEND | Options::RECEIVE).bits(),
-        "mach_msg_trap: option {option:#x}, not yet"
-    );
+    if option != (Options::SEND | Options::RECEIVE).bits() {
+        // Of mach_msg_send and mach_msg_receive, so far the receive alone.
+        let options = Options::from_bits_retain(option);
+        assert!(
+            options.contains(Options::RECEIVE) && !options.contains(Options::SEND),
+            "mach_msg_trap: option {option:#x}, not yet"
+        );
+        return receive(
+            receive_name,
+            options
+                .contains(Options::RECEIVE_TIMEOUT)
+                .then_some(timeout),
+        );
+    }
     let thread = smp::current()
         .active_thread()
         .expect("mach_msg_trap: no current thread");
@@ -217,4 +236,92 @@ pub fn trap(
     kernel_message::put(message, reply, reply_size);
     // MACH_MSG_SUCCESS.
     0
+}
+
+/// Receives a message on `name`, as `mach_msg_receive` does, waiting for one
+/// at most `timeout` milliseconds if given; so far none comes. Gives
+/// `MACH_RCV_TIMED_OUT`.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU, or it wakes for no cause. On every other
+/// path: not yet.
+fn receive(name: PortName, mut timeout: Option<u32>) -> u32 {
+    let thread = smp::current()
+        .active_thread()
+        .expect("mach_msg_receive: no current thread");
+    let space = &thread.task().space;
+    // ipc_mqueue_copyin: the port locked, and a reference to it taken while
+    // the space's lock keeps the entry's own.
+    let state = space.state.read();
+    assert!(
+        state.active,
+        "ipc_mqueue_copyin: MACH_RCV_INVALID_NAME, not yet"
+    );
+    let entry = state
+        .lookup(name)
+        .unwrap_or_else(|| panic!("ipc_mqueue_copyin: MACH_RCV_INVALID_NAME, not yet"));
+    let port = if entry.bits.rights.contains(Rights::RECEIVE) {
+        let Some(Object::Port(port)) = &entry.object else {
+            panic!("ipc_mqueue_copyin: an entry with no port");
+        };
+        port.clone()
+    } else if entry.bits.rights.contains(Rights::PORT_SET) {
+        panic!("ipc_mqueue_copyin: a port set, not yet");
+    } else {
+        panic!("ipc_mqueue_copyin: MACH_RCV_INVALID_NAME, not yet");
+    };
+    let mut port_state = port.state.lock();
+    assert!(
+        port_state.active
+            && port_state.receiver_name == name
+            && port_state.receiver == Receiver::Space(NonNull::from(&**space)),
+        "ipc_mqueue_copyin: a receive right not the space's"
+    );
+    drop(state);
+    assert!(
+        port_state.set.is_none(),
+        "ipc_mqueue_copyin: a port in a set, not yet"
+    );
+    // ipc_mqueue_receive, under the queue's lock, the port's.
+    let status = loop {
+        assert!(
+            port_state.messages.is_empty(),
+            "ipc_mqueue_receive: a queued message, not yet"
+        );
+        match timeout {
+            Some(0) => break MACH_RCV_TIMED_OUT,
+            Some(milliseconds) => sched::will_wait_with_timeout(milliseconds),
+            None => sched::will_wait(),
+        }
+        // SAFETY: a thread lives while it waits on a port's queue, and it
+        // leaves it below.
+        port_state
+            .receivers
+            .push_front(unsafe { UnsafeRef::from_raw(thread) });
+        drop(port_state);
+        sched::block();
+        port_state = port.state.lock();
+        // Still queued, it woke for no message: MACH_RCV_IN_PROGRESS.
+        assert!(
+            thread.is_queued_to_receive(),
+            "ipc_mqueue_receive: ith_state not MACH_RCV_IN_PROGRESS, not yet"
+        );
+        // SAFETY: still linked, it is on the one queue it joined, this one.
+        unsafe { port_state.receivers.cursor_mut_from_ptr(thread) }.remove();
+        match thread.wait_result() {
+            WaitResult::TimedOut => {
+                assert!(
+                    timeout.is_some(),
+                    "ipc_mqueue_receive: timed out with no timeout"
+                );
+                timeout = Some(0);
+            }
+            WaitResult::Awakened => panic!("ipc_mqueue_receive: awakened with no message"),
+        }
+    };
+    drop(port_state);
+    // ipc_object_release.
+    drop(port);
+    status
 }
