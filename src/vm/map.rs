@@ -404,7 +404,9 @@ impl Map {
     /// multiple of the page size, wired, allowing `protection` now and at
     /// most `max_protection`; returns where. They are backed by `object` at
     /// the offset of their address in the map, or by nothing; the entry
-    /// holds a reference on `object`, the kernel object.
+    /// holds a reference on `object`, the kernel object. They count in the
+    /// map's wired size, with an object or without (GNU Mach leaves them
+    /// out).
     ///
     /// # Errors
     ///
@@ -454,6 +456,7 @@ impl Map {
             // vm_object_reference: another, held by the entry.
             Reference::into_raw(Reference::clone(&held));
         }
+        contents.size_wired += size;
         // The free space hint moves on to it.
         contents.first_free = Some(contents.link(self.bounds.start, previous, entry));
         drop(contents);
