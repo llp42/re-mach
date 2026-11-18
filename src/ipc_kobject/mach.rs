@@ -9,7 +9,7 @@ use crate::error::Error;
 use crate::ipc::port::Port;
 use crate::reference::Reference;
 use crate::task;
-use crate::vm::map::{Map, Placement};
+use crate::vm::map::{Change, Map, Placement};
 use crate::vm::object::Offset;
 use crate::vm::user::Mapping;
 use crate::vm::{self, Inheritance, Protection, VirtualAddress};
@@ -23,6 +23,13 @@ mig::subsystem! {
         anywhere: Boolean
     ) -> (address: VirtualAddress);
     23 vm_deallocate(target_task = task::map_of, address: VirtualAddress, size: usize);
+    24 vm_protect(
+        target_task = task::map_of,
+        address: VirtualAddress,
+        size: usize,
+        set_maximum: Boolean,
+        new_protection: u32
+    );
     89 vm_map(
         target_task = task::map_of,
         address: VirtualAddress,
@@ -84,6 +91,40 @@ fn vm_deallocate(
     };
     vm::user::deallocate(map, address, size);
     Ok(())
+}
+
+/// Serves `vm_protect`: what `size` bytes of `map` from `address` allow,
+/// or at most may allow if `set_maximum`, set to `protection`.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no map; as `vm::user::protect`.
+///
+/// # Panics
+///
+/// As `vm::user::protect`.
+fn vm_protect(
+    map: Option<&Reference<Map>>,
+    address: VirtualAddress,
+    size: usize,
+    set_maximum: Boolean,
+    protection: u32,
+) -> Result<(), Error> {
+    let Some(map) = map else {
+        return Err(Error::InvalidArgument);
+    };
+    let change = if bool::from(set_maximum) {
+        Change::Maximum
+    } else {
+        Change::Current
+    };
+    vm::user::protect(
+        map,
+        address,
+        size,
+        change,
+        Protection::from_bits_retain(protection),
+    )
 }
 
 /// Serves `vm_map`: `size` bytes of `memory_object` from `offset`, or a

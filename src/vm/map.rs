@@ -169,7 +169,7 @@ impl Map {
             gap: AtomicUsize::new(0),
             gap_sequence: AtomicU64::new(0),
             protection: AtomicU32::new(protection.bits()),
-            max_protection,
+            max_protection: AtomicU32::new(max_protection.bits()),
             inheritance,
             backing: Backing::Object {
                 object: AtomicPtr::new(
@@ -213,7 +213,7 @@ impl Map {
                 && !neighbour.in_transition.load(Ordering::Relaxed)
                 && neighbour.inheritance == entry.inheritance
                 && neighbour.protection() == entry.protection()
-                && neighbour.max_protection == entry.max_protection
+                && neighbour.max_protection() == entry.max_protection()
                 && neighbour.wire_count() == 0
         };
         let previous = below.clone_pointer();
@@ -383,7 +383,7 @@ impl Map {
             gap: AtomicUsize::new(next - range.end),
             gap_sequence: AtomicU64::new(0),
             protection: AtomicU32::new((Protection::READ | Protection::WRITE).bits()),
-            max_protection: Protection::all(),
+            max_protection: AtomicU32::new(Protection::all().bits()),
             inheritance: Inheritance::Copy,
             backing: Backing::Submap(submap.get().unwrap()),
             wire_count: AtomicU32::new(0),
@@ -432,7 +432,7 @@ impl Map {
             gap: AtomicUsize::new(next - range.end),
             gap_sequence: AtomicU64::new(0),
             protection: AtomicU32::new(protection.bits()),
-            max_protection,
+            max_protection: AtomicU32::new(max_protection.bits()),
             inheritance: Inheritance::Copy,
             backing: Backing::Object {
                 object: AtomicPtr::new(
@@ -451,37 +451,44 @@ impl Map {
     }
 
     /// Sets what `range`, cut to the map's bounds, allows to `protection`,
-    /// as `change` says, in its physical map too.
+    /// as `change` says, in its physical map too, splitting the entry its
+    /// start falls inside.
     ///
     /// # Errors
     ///
     /// `InvalidArgument` if a submap lies in `range`, and `ProtectionFailure`
-    /// if an entry there may never allow `protection`.
+    /// if an entry there may never allow `protection`; an entry split before
+    /// that stays split.
     ///
     /// # Panics
     ///
-    /// If `range` splits an entry, an entry would merge with the one before
-    /// it, one is in transition, has wired access or is wired, the map wires
-    /// what it maps, or for `Change::Maximum`: not yet. As
-    /// `MachinePhysMap::protect`.
+    /// If no entry can be allocated. If `range` ends inside an entry, an
+    /// entry would merge with the one before it, one is in transition, has
+    /// wired access or is wired, or the map wires what it maps: not yet. As
+    /// `Contents::clip_start` and `MachinePhysMap::protect`.
     pub fn protect(
         &self,
         range: Range<VirtualAddress>,
         protection: Protection,
         change: Change,
     ) -> Result<(), Error> {
-        let contents = self.lock();
+        // Taken before the lock, for the split.
+        let mut reservation = EntryReservation::new();
+        let mut guard = self.lock();
+        let contents = &mut *guard;
         let end = range.end.min(self.bounds.end);
         let start = range.start.max(self.bounds.start).min(end);
-        // The entry holding `start`, else the next.
-        let mut first = contents.entries.upper_bound(Bound::Included(&start));
-        match first.get() {
-            Some(entry) if start < entry.end() => assert!(
-                start == entry.start(),
-                "vm_map_clip_start: splitting an entry, not yet"
-            ),
-            _ => first.move_next(),
+        if let Some(entry) = contents
+            .entries
+            .upper_bound(Bound::Included(&start))
+            .clone_pointer()
+            .filter(|entry| start < entry.end())
+            && start > entry.start()
+        {
+            contents.clip_start(&entry, start, &mut reservation);
         }
+        // The entry starting at `start`, else the next.
+        let mut first = contents.entries.lower_bound(Bound::Included(&start));
         // Every entry is checked before any changes.
         let mut current = first.clone();
         while let Some(entry) = current.get().filter(|entry| entry.start() < end) {
@@ -492,7 +499,7 @@ impl Map {
                 !entry.in_transition.load(Ordering::Relaxed),
                 "vm_map_protect: vm_map_entry_wait, not yet"
             );
-            if !entry.max_protection.contains(protection) {
+            if !entry.max_protection().contains(protection) {
                 return Err(Error::ProtectionFailure);
             }
             current.move_next();
@@ -506,7 +513,19 @@ impl Map {
             let old = entry.protection();
             match change {
                 Change::Current => entry.protection.store(protection.bits(), Ordering::Relaxed),
-                Change::Maximum => panic!("vm_map_protect: set_max, not yet"),
+                Change::Maximum => {
+                    // Memory that may never be accessed is left out of the
+                    // limit.
+                    if entry.max_protection() != protection && protection.is_empty() {
+                        contents.size_none += entry.end() - entry.start();
+                    }
+                    entry
+                        .max_protection
+                        .store(protection.bits(), Ordering::Relaxed);
+                    entry
+                        .protection
+                        .store((protection & old).bits(), Ordering::Relaxed);
+                }
             }
             let new = entry.protection();
             assert!(
@@ -538,7 +557,7 @@ impl Map {
             );
             first.move_next();
         }
-        drop(contents);
+        drop(guard);
         Ok(())
     }
 
@@ -875,7 +894,7 @@ impl Map {
                 drop(unsafe { Reference::from_raw(pointer) });
             }
             contents.size -= entry.end() - entry.start();
-            if entry.max_protection.is_empty() {
+            if entry.max_protection().is_empty() {
                 contents.size_none -= entry.end() - entry.start();
             }
             // SAFETY: the hint moved off the range above, the entry is not in
@@ -967,7 +986,7 @@ impl Map {
                 gap: AtomicUsize::new(entry.gap.load(Ordering::Relaxed)),
                 gap_sequence: AtomicU64::new(0),
                 protection: AtomicU32::new(entry.protection().bits()),
-                max_protection: entry.max_protection,
+                max_protection: AtomicU32::new(entry.max_protection().bits()),
                 inheritance: entry.inheritance,
                 backing: Backing::Object {
                     object: AtomicPtr::new(object),
@@ -1085,7 +1104,9 @@ impl Map {
                 (Protection::READ | Protection::WRITE).bits(),
                 Ordering::Relaxed,
             );
-            entry.max_protection = Protection::all();
+            entry
+                .max_protection
+                .store(Protection::all().bits(), Ordering::Relaxed);
             // The copy kept its source's gap; the free space after it now
             // reaches the next entry.
             entry.gap.store(next - range.end, Ordering::Relaxed);
@@ -1197,7 +1218,6 @@ pub enum Change {
     /// What it allows now.
     Current,
     /// The most it may allow, which also cuts what it allows now.
-    #[expect(dead_code, reason = "the vm_protect RPC asks for it")]
     Maximum,
 }
 
@@ -1467,7 +1487,7 @@ impl Contents {
             gap: AtomicUsize::new(0),
             gap_sequence: AtomicU64::new(0),
             protection: AtomicU32::new(entry.protection().bits()),
-            max_protection: entry.max_protection,
+            max_protection: AtomicU32::new(entry.max_protection().bits()),
             inheritance: entry.inheritance,
             backing: Backing::Object {
                 object: AtomicPtr::new(object.load(Ordering::Relaxed)),
@@ -1534,7 +1554,7 @@ impl Contents {
             gap: AtomicUsize::new(gap),
             gap_sequence: AtomicU64::new(0),
             protection: AtomicU32::new(entry.protection().bits()),
-            max_protection: entry.max_protection,
+            max_protection: AtomicU32::new(entry.max_protection().bits()),
             inheritance: entry.inheritance,
             backing: Backing::Object {
                 object: AtomicPtr::new(object.load(Ordering::Relaxed)),
@@ -1596,7 +1616,7 @@ impl EntryReservation {
                     gap: AtomicUsize::new(0),
                     gap_sequence: AtomicU64::new(0),
                     protection: AtomicU32::new(Protection::empty().bits()),
-                    max_protection: Protection::empty(),
+                    max_protection: AtomicU32::new(Protection::empty().bits()),
                     inheritance: Inheritance::Copy,
                     backing: Backing::Object {
                         object: AtomicPtr::new(ptr::null_mut()),
@@ -1646,8 +1666,9 @@ pub struct Entry {
     /// What it allows now, as `Protection`'s bits; changed only under the
     /// map's write lock.
     protection: AtomicU32,
-    /// The most it may ever allow.
-    max_protection: Protection,
+    /// The most it may ever allow, as `Protection`'s bits; changed only
+    /// under the map's write lock.
+    max_protection: AtomicU32,
     /// What a child task gets of it.
     inheritance: Inheritance,
     /// What backs it.
@@ -1687,6 +1708,11 @@ impl Entry {
     /// What it allows now.
     pub(super) fn protection(&self) -> Protection {
         Protection::from_bits_retain(self.protection.load(Ordering::Relaxed))
+    }
+
+    /// The most it may ever allow.
+    fn max_protection(&self) -> Protection {
+        Protection::from_bits_retain(self.max_protection.load(Ordering::Relaxed))
     }
 
     /// Its object, from an offset, once `vm_map_lookup`'s checks find a fault
@@ -1745,7 +1771,7 @@ fn coalesce(cursor: &Cursor<'_, EntryAdapter>) {
         || entry.in_transition.load(Ordering::Relaxed)
         || previous.inheritance != entry.inheritance
         || previous.protection() != entry.protection()
-        || previous.max_protection != entry.max_protection
+        || previous.max_protection() != entry.max_protection()
         || previous.wire_count() != entry.wire_count()
     {
         return;
