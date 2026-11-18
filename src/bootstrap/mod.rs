@@ -23,6 +23,8 @@ use crate::sync::Spinlock;
 use crate::task::{self, Task};
 use crate::thread::{MachineThread as _, Thread};
 use crate::vm::map::{Change, Map, Placement};
+use crate::vm::object::Offset;
+use crate::vm::user::Mapping;
 use crate::vm::{Inheritance, Protection, VirtualAddress};
 use crate::{device, print, println, smp, vm};
 use elf_load::{Image, SectionType, Segment};
@@ -297,6 +299,8 @@ fn build_arguments_and_stack<'a>(
         stack_size,
         0,
         None,
+        Offset::from(0),
+        Mapping::Object,
         image.stack_protection,
         Protection::all(),
         Inheritance::Copy,

@@ -22,6 +22,8 @@ use crate::{ipc_host, vm};
 /// ones used here.
 #[derive(Clone, Copy)]
 pub enum MessageType {
+    /// `MACH_MSG_TYPE_BOOLEAN`: booleans.
+    Boolean,
     /// `MACH_MSG_TYPE_INTEGER_32`: 32-bit integers.
     Integer32,
     /// `MACH_MSG_TYPE_INTEGER_64`: 64-bit integers.
@@ -45,6 +47,7 @@ impl MessageType {
     /// Its number, Mach's `mach_msg_type_name_t`.
     pub const fn number(self) -> u8 {
         match self {
+            Self::Boolean => 0,
             Self::Integer32 => 2,
             Self::Integer64 => 11,
             Self::StringC => 12,

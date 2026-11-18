@@ -152,6 +152,11 @@ impl Port {
         self.state.lock().kernel_object = Some(object);
     }
 
+    /// Makes it stand for `object`; gives what it stood for, alive or not.
+    pub fn replace_kernel_object(&self, object: KernelObject) -> Option<KernelObject> {
+        self.state.lock().kernel_object.replace(object)
+    }
+
     /// What it stands for, while it is alive.
     pub fn kernel_object(&self) -> Option<KernelObject> {
         let state = self.state.lock();
@@ -334,6 +339,12 @@ impl SendRight {
     }
 }
 
+impl AsRef<Reference<Port>> for SendRight {
+    fn as_ref(&self) -> &Reference<Port> {
+        &self.0
+    }
+}
+
 impl Deref for SendRight {
     type Target = Port;
 
@@ -460,8 +471,13 @@ pub(super) fn timestamp() -> Timestamp {
 pub enum KernelObject {
     /// A device's port, holding a reference to it.
     Device(NonNull<Device>),
-    /// A device pager's port, the memory object of a device's memory.
-    DevicePager(#[expect(dead_code, reason = "device_pager_init_pager reads it")] NonNull<Pager>),
+    /// A device pager's port, the memory object of a device's memory, until
+    /// an object is made for it.
+    DevicePager(NonNull<Pager>),
+    /// A memory object's port, once the kernel made an object for it.
+    Pager(#[expect(dead_code, reason = "vm_object_enter's hit reads it")] NonNull<Object>),
+    /// A memory object's request port, which its pager calls the kernel on.
+    PagingRequest(NonNull<Object>),
     /// A memory object's name port, which names it to `vm_region`.
     PagerName(#[expect(dead_code, reason = "vm_object_lookup_name reads it")] NonNull<Object>),
     /// The host's port.

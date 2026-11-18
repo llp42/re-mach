@@ -5,6 +5,7 @@
 
 mod device;
 mod gnumach;
+mod mach;
 mod mach_host;
 mod mach_port;
 mod mig;
@@ -50,7 +51,8 @@ pub fn server(mut request: KernelMessage) -> KernelMessage {
         id: header.id.wrapping_add(100),
     };
     reply_header.return_code.word = <i32 as mig::Inline>::WORD;
-    let routine = mach_port::routine(header.id)
+    let routine = mach::routine(header.id)
+        .or_else(|| mach_port::routine(header.id))
         .or_else(|| mach_host::routine(header.id))
         .or_else(|| device::routine(header.id))
         .or_else(|| gnumach::routine(header.id))

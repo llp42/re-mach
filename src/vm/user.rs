@@ -4,10 +4,20 @@
 //! The virtual memory calls of Mach's interface.
 
 use super::map::{Change, Map, Placement};
+use super::object::{self, Object, Offset};
 use super::{Inheritance, Protection, VirtualAddress, Wire};
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
 use crate::ipc::port::{KernelObject, Port};
+use crate::reference::Reference;
+
+/// What `map` maps of a memory object.
+pub enum Mapping {
+    /// The object itself.
+    Object,
+    /// A copy of it.
+    Copy,
+}
 
 /// Maps `size` bytes of zero-filled memory into `map`, as `placement`
 /// says, a fixed address rounded down to a page, `size` rounded up to
@@ -32,17 +42,20 @@ pub fn allocate(map: &Map, placement: Placement, size: usize) -> Result<VirtualA
         placement,
         size,
         0,
+        None,
+        Offset::from(0),
         Protection::READ | Protection::WRITE,
         Protection::all(),
         Inheritance::Copy,
     )
 }
 
-/// Maps `size` bytes of `memory_object`, or of zero-filled memory for none,
-/// into `map`, as `placement` says, at an address with no bit of `mask`
-/// set, a fixed one rounded down to a page, `size` rounded up to pages;
-/// returns where they start. They allow `protection`, at most
-/// `max_protection`, and child tasks get `inheritance` of them.
+/// Maps `size` bytes of `memory_object` from `offset`, as `mapping` says,
+/// or of zero-filled memory for none, into `map`, as `placement` says, at
+/// an address with no bit of `mask` set, a fixed one rounded down to a
+/// page, `size` rounded up to pages; returns where they start. They allow
+/// `protection`, at most `max_protection`, and child tasks get
+/// `inheritance` of them.
 ///
 /// # Errors
 ///
@@ -52,14 +65,18 @@ pub fn allocate(map: &Map, placement: Placement, size: usize) -> Result<VirtualA
 ///
 /// # Panics
 ///
-/// For a memory object or `Placement::Anywhere`: not yet. As `Map::enter`.
+/// If `memory_object` stands for no memory object, or for `Mapping::Copy`
+/// of one: not yet. As `object::enter`, `enter` and, if mapping it fails,
+/// `Object::deallocate`.
 #[expect(clippy::too_many_arguments, reason = "vm_map's parameters")]
 pub fn map(
     map: &Map,
     placement: Placement,
     size: usize,
     mask: usize,
-    memory_object: Option<&Port>,
+    memory_object: Option<&Reference<Port>>,
+    offset: Offset,
+    mapping: Mapping,
     protection: Protection,
     max_protection: Protection,
     inheritance: Inheritance,
@@ -71,27 +88,43 @@ pub fn map(
     if size == 0 {
         return Err(Error::InvalidArgument);
     }
+    // Past the top, GNU Mach's rounding wraps to 0, which Map::enter refuses.
+    let size = size.checked_next_multiple_of(PAGE_SIZE).unwrap_or(0);
     // IP_NULL: no object, so no offset or copy.
-    assert!(memory_object.is_none(), "vm_map: a memory object, not yet");
+    let (object, offset, mapping) = memory_object.map_or_else(
+        || (None, Offset::from(0), Mapping::Object),
+        |port| {
+            let object = object::enter(port, size)
+                .unwrap_or_else(|| panic!("vm_map: memory_object_proxy_lookup, not yet"));
+            (Some(object), offset, mapping)
+        },
+    );
     assert!(
-        matches!(placement, Placement::Fixed(_)),
-        "vm_map: anywhere, not yet"
+        matches!(mapping, Mapping::Object),
+        "vm_map: vm_object_copy_strategically, not yet"
     );
     enter(
         map,
         placement,
         size,
         mask,
+        object,
+        offset,
         protection,
         max_protection,
         inheritance,
     )
+    .inspect_err(|_| {
+        if let Some(object) = object {
+            object.deallocate();
+        }
+    })
 }
 
-/// Maps `size` bytes with nothing behind them yet into `map`, as
-/// `placement` says, a fixed address rounded down to a page and with no bit
-/// of `mask` set, `size` rounded up to pages, as `Map::enter`; returns
-/// where they start.
+/// Maps `size` bytes of `object` from `offset`, or with nothing behind them
+/// yet for none, into `map`, as `placement` says, a fixed address rounded
+/// down to a page and with no bit of `mask` set, `size` rounded up to
+/// pages, as `Map::enter`; returns where they start.
 ///
 /// # Errors
 ///
@@ -100,12 +133,15 @@ pub fn map(
 ///
 /// # Panics
 ///
-/// As `Map::enter`.
+/// For a mask with `Placement::Anywhere`: not yet. As `Map::enter`.
+#[expect(clippy::too_many_arguments, reason = "vm_map_enter's parameters")]
 fn enter(
     map: &Map,
     placement: Placement,
     size: usize,
     mask: usize,
+    object: Option<&'static Object>,
+    offset: Offset,
     protection: Protection,
     max_protection: Protection,
     inheritance: Inheritance,
@@ -123,7 +159,19 @@ fn enter(
     {
         return Err(Error::NoSpace);
     }
-    let range = map.enter(placement, size, protection, max_protection, inheritance)?;
+    assert!(
+        mask == 0 || matches!(placement, Placement::Fixed(_)),
+        "vm_map_find_entry_anywhere: a mask, not yet"
+    );
+    let range = map.enter(
+        placement,
+        size,
+        object,
+        offset,
+        protection,
+        max_protection,
+        inheritance,
+    )?;
     Ok(range.start)
 }
 

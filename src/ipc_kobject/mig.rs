@@ -9,6 +9,7 @@ use crate::ipc::MessageType;
 use crate::ipc::kernel_message::Header;
 use crate::ipc::port::{PortName, PortType};
 use crate::slab::CacheBox;
+use crate::vm::VirtualAddress;
 use crate::vm::map::MapCopy;
 use crate::vm::object::Offset;
 
@@ -126,6 +127,17 @@ impl<T: Element> OutOfLine<T> {
     }
 }
 
+/// A boolean, MIG's `boolean_t`: true unless 0.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub(super) struct Boolean(u32);
+
+impl From<Boolean> for bool {
+    fn from(boolean: Boolean) -> Self {
+        boolean.0 != 0
+    }
+}
+
 /// A C string of `N` bytes, NUL-padded, MIG's `c_string[N]`.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
@@ -161,6 +173,16 @@ unsafe impl Inline for u32 {
 // SAFETY: a primitive.
 unsafe impl Inline for usize {
     const WORD: u64 = type_word(MessageType::Integer64, 64, 1);
+}
+
+// SAFETY: `repr(transparent)` over a `usize`.
+unsafe impl Inline for VirtualAddress {
+    const WORD: u64 = type_word(MessageType::Integer64, 64, 1);
+}
+
+// SAFETY: `repr(transparent)` over a `u32`.
+unsafe impl Inline for Boolean {
+    const WORD: u64 = type_word(MessageType::Boolean, 32, 1);
 }
 
 // SAFETY: `repr(transparent)` over a `usize`.
@@ -276,6 +298,15 @@ macro_rules! subsystem {
         $crate::ipc_kobject::mig::subsystem!(
             @sort $name $head [$($ins)* ($in send_right $intran)] [$($outs)*] [$($($rest)*)?]
             $out_list
+        );
+    };
+    // A send right in, raw.
+    (
+        @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*]
+        [$in:ident: Port $(, $($rest:tt)*)?] $out_list:tt
+    ) => {
+        $crate::ipc_kobject::mig::subsystem!(
+            @sort $name $head [$($ins)* ($in send_right)] [$($outs)*] [$($($rest)*)?] $out_list
         );
     };
     // An in-argument.
@@ -411,7 +442,7 @@ macro_rules! subsystem {
     (@complex $kind:ident $($rest:ident)*) => { mig::subsystem!(@complex $($rest)*) };
     // A right's handle takes it out of the request, its slot cleared; null
     // gives none.
-    (@take $request:ident $in:ident send_right $intran:path) => {
+    (@take $request:ident $in:ident send_right $($intran:path)?) => {
         let $in = core::ptr::NonNull::new(core::ptr::with_exposed_provenance_mut::<
             $crate::ipc::port::Port,
         >(core::mem::take(&mut $request.$in.data)))
@@ -424,7 +455,7 @@ macro_rules! subsystem {
     };
     (@take $request:ident $in:ident $kind:ident $($parameter:tt)*) => {};
     // Each kind's field: in the request, then in the reply.
-    (@field request send_right $intran:path) => { mig::Argument<usize> };
+    (@field request send_right $($intran:path)?) => { mig::Argument<usize> };
     (@field request inline $type:ty) => { mig::Argument<$type> };
     (@field request count $element:ty, $max:literal) => { mig::Argument<u32> };
     (@field reply inline $type:ty) => { mig::Argument<$type> };
@@ -432,7 +463,7 @@ macro_rules! subsystem {
     (@field reply out_of_line $element:ty) => { mig::Argument<usize> };
     (@field reply send_right) => { mig::Argument<usize> };
     // Its check: the word, whole, or the bits its kind checks.
-    (@check $request:ident $in:ident send_right $intran:path) => {
+    (@check $request:ident $in:ident send_right $($intran:path)?) => {
         $request.$in.word == mig::type_word($crate::ipc::MessageType::PortSend, 64, 1)
     };
     (@check $request:ident $in:ident inline $type:ty) => {
@@ -441,10 +472,13 @@ macro_rules! subsystem {
     (@check $request:ident $in:ident count $element:ty, $max:literal) => {
         $request.$in.word == <u32 as mig::Inline>::WORD
     };
-    // What the routine gets: the data; for a right, its intran's value; for a
-    // count, the reply's array, cut to it.
+    // What the routine gets: the data; for a right, its intran's value, or
+    // its port's reference; for a count, the reply's array, cut to it.
     (@pass $request:ident $reply:ident $in:ident send_right $intran:path) => {
         $in.as_deref().and_then($intran).as_deref()
+    };
+    (@pass $request:ident $reply:ident $in:ident send_right) => {
+        $in.as_ref().map(AsRef::as_ref)
     };
     (@pass $request:ident $reply:ident $in:ident inline $type:ty) => { $request.$in.data };
     (@pass $request:ident $reply:ident $in:ident count $element:ty, $max:literal) => {

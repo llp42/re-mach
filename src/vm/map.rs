@@ -117,10 +117,12 @@ impl Map {
         })
     }
 
-    /// Maps `size` bytes with nothing behind them yet, placed as `placement`
-    /// says, allowing `protection` now and at most `max_protection`, and
-    /// giving child tasks `inheritance`; returns where. The entry right
-    /// before them grows over them if it maps alike.
+    /// Maps `size` bytes of `object` from `offset`, or with nothing behind
+    /// them yet for none, placed as `placement` says, allowing `protection`
+    /// now and at most `max_protection`, and giving child tasks
+    /// `inheritance`; returns where. On success the entry takes the
+    /// caller's reference on `object`. The entry right before them grows
+    /// over them if it maps alike.
     ///
     /// # Errors
     ///
@@ -139,10 +141,13 @@ impl Map {
         clippy::too_many_lines,
         reason = "vm_map_enter's steps, in GNU Mach's order"
     )]
+    #[expect(clippy::too_many_arguments, reason = "vm_map_enter's parameters")]
     pub fn enter(
         &self,
         placement: Placement,
         size: usize,
+        object: Option<&'static Object>,
+        offset: Offset,
         protection: Protection,
         max_protection: Protection,
         inheritance: Inheritance,
@@ -163,8 +168,10 @@ impl Map {
             max_protection,
             inheritance,
             backing: Backing::Object {
-                object: AtomicPtr::new(ptr::null_mut()),
-                offset: AtomicUsize::new(0),
+                object: AtomicPtr::new(
+                    object.map_or(ptr::null_mut(), |object| ptr::from_ref(object).cast_mut()),
+                ),
+                offset: AtomicUsize::new(usize::from(offset)),
             },
             wire_count: AtomicU32::new(0),
             wired_access: AtomicU32::new(Protection::empty().bits()),
@@ -225,7 +232,7 @@ impl Map {
             // SAFETY: the entry holds a reference on its object, which lives
             // until vm_object_deallocate frees it.
             let (object, object_offset) =
-                object::coalesce(unsafe { slot.load(Ordering::Relaxed).as_ref() }, None);
+                object::coalesce(unsafe { slot.load(Ordering::Relaxed).as_ref() }, object);
             slot.store(
                 object.map_or(ptr::null_mut(), |object| ptr::from_ref(object).cast_mut()),
                 Ordering::Relaxed,

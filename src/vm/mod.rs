@@ -47,6 +47,7 @@ bitflags::bitflags! {
 
 /// A virtual address, as maps hold them.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
 pub struct VirtualAddress(usize);
 
 impl VirtualAddress {
@@ -100,6 +101,8 @@ impl Sub for VirtualAddress {
 pub enum Inheritance {
     /// A copy of it.
     Copy,
+    /// Nothing of it.
+    None,
 }
 
 /// The VM's event counts, as Mach's `vm_statistics` reports them; only
@@ -109,12 +112,19 @@ struct Statistics {
     faults: AtomicU32,
     /// Pages filled with zeros on a fault.
     zero_fill_count: AtomicU32,
+    /// Lookups of a memory object's object.
+    lookups: AtomicU32,
+    /// Lookups that found an object.
+    #[expect(dead_code, reason = "vm_object_enter's hit counts it")]
+    hits: AtomicU32,
 }
 
 /// The VM's event counts.
 static STATISTICS: Statistics = Statistics {
     faults: AtomicU32::new(0),
     zero_fill_count: AtomicU32::new(0),
+    lookups: AtomicU32::new(0),
+    hits: AtomicU32::new(0),
 };
 
 /// Sets up virtual memory before IPC, on the boot CPU.

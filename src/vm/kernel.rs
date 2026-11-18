@@ -6,7 +6,7 @@
 use core::ptr::{self, NonNull};
 
 use super::map::{Map, Placement};
-use super::object::KERNEL_OBJECT;
+use super::object::{KERNEL_OBJECT, Offset};
 use super::page::{self, Page};
 use super::phys_map::MachinePhysMap as _;
 use super::{Inheritance, Protection, VirtualAddress};
@@ -45,6 +45,8 @@ pub fn init() {
     if let Err(error) = map.enter(
         Placement::Fixed(VirtualAddress::from(boot_space.start)),
         boot_space.end - boot_space.start,
+        None,
+        Offset::from(0),
         Protection::READ | Protection::WRITE,
         Protection::all(),
         Inheritance::Copy,

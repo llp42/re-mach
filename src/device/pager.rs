@@ -2,7 +2,10 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The device pager, which backs memory objects mapped from devices; so
-//! far only its records and their making.
+//! far only its records, their making and their setting up.
+
+use core::ptr;
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
@@ -11,7 +14,7 @@ use crate::ipc::port::{KernelObject, Port};
 use crate::reference::Reference;
 use crate::slab::{Cache, CacheBox};
 use crate::vm::Protection;
-use crate::vm::object::Offset;
+use crate::vm::object::{self, CopyStrategy, Offset};
 
 intrusive_adapter!(
     #[expect(
@@ -25,8 +28,8 @@ intrusive_adapter!(
 static CACHE: Cache<Pager> = Cache::new("dev_pager");
 
 /// A device's memory from an offset, as one memory object: its device,
-/// offset and protection, its port, and its place in its device's pager
-/// list.
+/// offset and protection, its port, its object's rights, and its place in
+/// its device's pager list.
 pub struct Pager {
     /// Its device, which it holds a reference to.
     #[expect(dead_code, reason = "device_map_page reads it")]
@@ -38,6 +41,14 @@ pub struct Pager {
     protection: Protection,
     /// Its port, the memory object.
     port: Reference<Port>,
+    /// How many objects it serves.
+    client_count: AtomicU32,
+    /// A send right for its object's request port, as a reference given up
+    /// by `into_raw`; null until it serves one.
+    request: AtomicPtr<Port>,
+    /// A send right for its object's name port, as a reference given up by
+    /// `into_raw`; null until it serves one.
+    name: AtomicPtr<Port>,
     /// Its place in its device's pager list.
     link: LinkedListAtomicLink,
 }
@@ -86,6 +97,9 @@ pub(super) fn setup(
             offset,
             protection,
             port,
+            client_count: AtomicU32::new(0),
+            request: AtomicPtr::new(ptr::null_mut()),
+            name: AtomicPtr::new(ptr::null_mut()),
             link: LinkedListAtomicLink::new(),
         })
         .unwrap_or_else(|_| panic!("device_pager_setup: KERN_RESOURCE_SHORTAGE, not yet"));
@@ -106,4 +120,30 @@ pub(super) fn setup(
     state.pagers.push_back(pager);
     drop(state);
     send
+}
+
+/// Sets `pager` up for its object, as the kernel's `memory_object_init`
+/// reaches `device_pager_init_pager`: one client, whose send rights
+/// `request` and `name`, for its request and name ports, it keeps; then
+/// readies the object, not to persist and copied with no help.
+///
+/// # Panics
+///
+/// If `pager` serves an object already. As `object::ready`.
+pub fn init_pager(pager: &Pager, request: Reference<Port>, name: Reference<Port>) {
+    assert!(
+        pager.client_count.load(Ordering::Relaxed) == 0
+            && pager.request.load(Ordering::Relaxed).is_null()
+            && pager.name.load(Ordering::Relaxed).is_null(),
+        "device_pager_init_pager: a client already"
+    );
+    pager.client_count.store(1, Ordering::Relaxed);
+    let request = Reference::into_raw(request);
+    pager.request.store(request.as_ptr(), Ordering::Release);
+    pager
+        .name
+        .store(Reference::into_raw(name).as_ptr(), Ordering::Release);
+    // A character device's pager: not cached, no copy help.
+    // SAFETY: the record holds the reference `request` gave up.
+    object::ready(unsafe { request.as_ref() }, CopyStrategy::None);
 }
