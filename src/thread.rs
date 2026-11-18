@@ -475,6 +475,23 @@ impl Thread {
         self.machine_state.attach_stack(stack, function);
     }
 
+    /// A send right for `thread`'s port, made as `convert_thread_to_port`
+    /// makes it; `thread`'s reference drops after.
+    ///
+    /// # Panics
+    ///
+    /// If it has no port: not yet.
+    pub(super) fn convert_to_port(thread: Reference<Self>) -> Reference<Port> {
+        let port = NonNull::new(thread.self_port.load(Ordering::Acquire))
+            .unwrap_or_else(|| panic!("convert_thread_to_port: no port, not yet"));
+        // SAFETY: the slot keeps its port's reference, never dropped yet,
+        // which this handle borrows and never drops.
+        let port = mem::ManuallyDrop::new(unsafe { Reference::from_raw(port) });
+        let send = Port::make_send(&port);
+        drop(thread);
+        send
+    }
+
     /// Records that it runs on the current CPU, as the CPU switches to it.
     pub fn run_here(&'static self) {
         let cpu = smp::current();

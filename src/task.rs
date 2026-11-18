@@ -3,8 +3,9 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Tasks: an address space, a name space for ports, and threads.
 
+use core::mem::ManuallyDrop;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicUsize};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
@@ -17,7 +18,7 @@ use crate::ipc::port::{KernelObject, Port};
 use crate::ipc::space::Space;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, ProcessorSet};
-use crate::reference::Reference;
+use crate::reference::{Count, Counted, Reference};
 use crate::sched::{Priority, USER_PRIORITY};
 use crate::slab::{Cache, CacheBox};
 use crate::smp;
@@ -32,7 +33,7 @@ use crate::vm::phys_map::MachinePhysMap as _;
 #[expect(dead_code, reason = "the task calls read them")]
 pub struct Task {
     /// How many references it has.
-    references: AtomicU32,
+    references: Count,
     /// Its address space.
     pub(super) map: Reference<Map>,
     /// Its names for ports and port sets.
@@ -129,7 +130,11 @@ impl Task {
 
     /// Takes `thread`, new, into its `members`, with a reference for it.
     pub(super) fn add_thread(&self, members: &mut TaskMembers, thread: &'static Thread) {
-        self.references.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: the thread's creator holds a reference to it, which this
+        // handle borrows and never drops.
+        let task = ManuallyDrop::new(unsafe { Reference::from_raw(NonNull::from(self)) });
+        // The thread's, which it keeps.
+        Reference::into_raw(Reference::clone(&task));
         members.thread_count += 1;
         // SAFETY: a thread leaves its task before it is freed.
         members
@@ -160,23 +165,6 @@ impl Task {
         let send = Port::copy_send(port);
         drop(ports);
         send
-    }
-
-    /// Drops a reference on it, which is not its last.
-    ///
-    /// # Panics
-    ///
-    /// On its last reference: not yet.
-    pub(super) fn deallocate(&self) {
-        // Only the last reference's drop takes the set's token.
-        assert!(
-            self.references
-                .try_update(Ordering::Release, Ordering::Relaxed, |references| {
-                    (references > 1).then(|| references - 1)
-                })
-                .is_ok(),
-            "task_deallocate: the last reference, not yet"
-        );
     }
 
     /// Stops it once more for users: the first stop suspends it, holding its
@@ -320,6 +308,32 @@ impl Task {
     }
 }
 
+// SAFETY: its count is its own, and `free` frees nothing yet.
+unsafe impl Counted for Task {
+    fn references(&self) -> &Count {
+        &self.references
+    }
+
+    /// Frees `task`, as `task_deallocate` does at zero.
+    ///
+    /// # Panics
+    ///
+    /// Always: not yet.
+    unsafe fn free(_task: NonNull<Self>) {
+        panic!("task_deallocate: the last reference, not yet");
+    }
+}
+
+/// The task `port` stands for, with a reference to it taken under the
+/// port's lock, as `convert_port_to_task` gives it.
+pub fn of(port: &Port) -> Option<Reference<Task>> {
+    port.with_kernel_object(|object| match object {
+        // SAFETY: a task outlives its port's standing for it.
+        Some(KernelObject::Task(task)) => unsafe { Reference::upgrade(*task) },
+        _ => None,
+    })
+}
+
 /// The space of the task `port` stands for, with a reference to it taken
 /// under the port's lock, as `convert_port_to_space` gives it.
 pub fn space_of(port: &Port) -> Option<Reference<Space>> {
@@ -369,7 +383,8 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
     let mut space = Space::create()?;
     let port = Port::allocate_kernel()?;
     let mut task = CACHE.allocate(Task {
-        references: AtomicU32::new(2),
+        // One for being alive, one for the caller.
+        references: Count::new(2),
         // SAFETY: the caller's reference to the map, which the task takes.
         map: unsafe { Reference::from_raw(NonNull::from(map)) },
         // SAFETY: the box, given up below, holds the task's reference.

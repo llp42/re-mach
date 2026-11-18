@@ -4,11 +4,15 @@
 //! Mach's calls' server routines, as MIG makes them from `mach`'s
 //! definitions; only those written so far.
 
+use core::ptr::NonNull;
+
 use super::mig::{self, Boolean, OutOfLine};
+use crate::arch;
 use crate::error::Error;
 use crate::ipc::port::Port;
 use crate::reference::Reference;
-use crate::task;
+use crate::task::{self, Task};
+use crate::thread::{MachineThread as _, Thread};
 use crate::vm::map::{Change, Map, Placement};
 use crate::vm::object::Offset;
 use crate::vm::user::Mapping;
@@ -31,6 +35,7 @@ mig::subsystem! {
         new_protection: u32
     );
     27 vm_write(target_task = task::map_of, address: VirtualAddress, data: OutOfLine<u8>);
+    61 thread_create(parent_task = task::of) -> (child_thread: Port);
     89 vm_map(
         target_task = task::map_of,
         address: VirtualAddress,
@@ -148,6 +153,31 @@ fn vm_write(
         return Err(Error::InvalidArgument);
     };
     vm::user::write(map, address, data.map(OutOfLine::into_copy))
+}
+
+/// Serves `thread_create`: a new thread in `task`, suspended, which starts
+/// by returning to user mode; gives a send right for its port.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no task; as `Thread::create`.
+///
+/// # Panics
+///
+/// As `Thread::convert_to_port`.
+fn thread_create(task: Option<&Reference<Task>>) -> Result<Reference<Port>, Error> {
+    let Some(task) = task else {
+        return Err(Error::InvalidArgument);
+    };
+    // SAFETY: the handle keeps the task alive through the call, and the
+    // thread's reference after; tasks are never freed yet.
+    let thread = Thread::create(unsafe { Reference::as_ptr(task).as_ref() })?;
+    // SAFETY: the reference its creation gave the caller, which the handle
+    // takes.
+    let thread = unsafe { Reference::from_raw(NonNull::from(thread)) };
+    // Its first run returns to user mode, as thread_bootstrap_return.
+    thread.start(arch::MachineState::return_to_user);
+    Ok(Thread::convert_to_port(thread))
 }
 
 /// Serves `vm_map`: `size` bytes of `memory_object` from `offset`, or a

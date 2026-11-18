@@ -363,7 +363,9 @@ impl Drop for Script {
     fn drop(&mut self) {
         for command in self.commands.items() {
             if let Some(task) = command.task {
-                task.deallocate();
+                // SAFETY: the reference task-create gave the command, dropped
+                // here.
+                drop(unsafe { Reference::from_raw(NonNull::from(task)) });
             }
         }
     }
