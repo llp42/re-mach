@@ -481,7 +481,7 @@ impl Thread {
         *thread.suspend_count.get_mut() = members.suspend_count + 1 + u32::from(set.is_empty());
         thread.name.copy_from(&members.name);
         // Nothing is published yet; only the set's reference is undone, and
-        // the stack stays taken, as stacks are not freed yet.
+        // the stack and machine state stay taken: this path frees neither.
         if !members.active {
             drop(members);
             drop(set_members);
@@ -1134,14 +1134,15 @@ unsafe impl Counted for Thread {
 
     /// Frees `thread`, as `thread_deallocate` does at zero: its timer
     /// cancelled, its times added to its task's, it leaves its task and its
-    /// set, then goes back to its cache. GNU Mach's recheck under the tokens
-    /// is not needed: a new reference comes only from a live one or from
-    /// `Reference::upgrade`, which never counts up from zero.
+    /// set, its kernel stack is freed, then it goes back to its cache. GNU
+    /// Mach's recheck under the tokens is not needed: a new reference comes
+    /// only from a live one or from `Reference::upgrade`, which never counts
+    /// up from zero.
     ///
     /// # Panics
     ///
     /// If it is the current thread, or not stopped. If it moved to another
-    /// set: not yet. As `reset_timeout_check`.
+    /// set: not yet. As `reset_timeout_check` and `vm::kernel::free_stack`.
     unsafe fn free(thread: NonNull<Self>) {
         // The box's own provenance, which `create` exposed.
         let thread = NonNull::<Self>::with_exposed_provenance(thread.addr());
@@ -1184,9 +1185,14 @@ unsafe impl Counted for Thread {
         );
         // task_deallocate: the thread's reference to its task.
         drop(reference);
-        // stack_free and pcb_terminate come later: its kernel stack and its
-        // machine state stay taken. No event counter exists for
-        // evc_notify_abort.
+        // stack_free, with no token or critical section held: the free takes
+        // the kernel map's lock and waits for a shootdown.
+        // SAFETY: the thread is not the current one and has stopped for good:
+        // the reaper saw it off its CPU (on that same CPU; lock note 10.3)
+        // before dropping the dead list's reference; this runs once.
+        unsafe { vm::kernel::free_stack(this.kernel_stack.get().expect("stack_free: no stack")) };
+        // pcb_terminate comes later: its machine state stays taken. No event
+        // counter exists for evc_notify_abort.
         // SAFETY: a `CACHE` box `create` gave up, with that box's provenance;
         // nothing uses it after.
         drop(unsafe { CacheBox::from_raw(&CACHE, thread) });

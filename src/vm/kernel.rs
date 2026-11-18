@@ -216,3 +216,18 @@ pub fn allocate_stack() -> Result<KernelStack, Error> {
     fill(range.start + PAGE_SIZE..range.end)?;
     Ok(KernelStack { top: range.end })
 }
+
+/// Gives `stack` and its guard page back to the kernel map, as `kmem_free`
+/// does; its pages are freed.
+///
+/// # Safety
+///
+/// No CPU runs on `stack` or will, and it is freed once.
+///
+/// # Panics
+///
+/// If the kernel map is not set up. As `Map::remove`.
+pub unsafe fn free_stack(stack: &KernelStack) {
+    let start = stack.top - KERNEL_STACK_SIZE - PAGE_SIZE;
+    kernel_map().remove(VirtualAddress::from(start)..VirtualAddress::from(stack.top));
+}
