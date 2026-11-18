@@ -19,8 +19,8 @@ use crate::thread::Thread;
 use crate::vm::{Protection, VirtualAddress};
 
 bitflags::bitflags! {
-    /// How a thread waits on a word, as gsync's flags number them; only
-    /// those used here.
+    /// How a thread waits on a word or wakes its waiters, as gsync's flags
+    /// number them; only those used here.
     #[derive(Clone, Copy)]
     pub struct Flags: i32 {
         /// The word may be shared between tasks.
@@ -29,6 +29,8 @@ bitflags::bitflags! {
         const QUAD = 0x02;
         /// The wait ends after a timeout.
         const TIMED = 0x04;
+        /// Every waiter is woken, not only the first.
+        const BROADCAST = 0x08;
         /// The word is to be written.
         const MUTATE = 0x10;
     }
@@ -64,7 +66,6 @@ pub struct Waiter {
     /// Where the word is.
     key: Key,
     /// The thread.
-    #[expect(dead_code, reason = "gsync_wake wakes it")]
     thread: &'static Thread,
 }
 
@@ -200,4 +201,88 @@ pub fn wait(
             Err(Error::TimedOut)
         }
     }
+}
+
+/// Stores `value` in the word at `address` in `task` with `MUTATE`, then
+/// wakes the first thread waiting on that word, or with `BROADCAST` every
+/// one, as `gsync_wake` does.
+///
+/// # Errors
+///
+/// `InvalidArgument` if no thread waits on the word.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU; as `Map::probe` and `sched::clear_wait`.
+/// For no task, a misaligned address, one `probe_address` refuses, a shared
+/// word, a store to another task or one that fails: not yet.
+pub fn wake(
+    task: Option<&Task>,
+    address: VirtualAddress,
+    value: u32,
+    flags: Flags,
+) -> Result<(), Error> {
+    let Some(task) = task else {
+        panic!("gsync_wake: KERN_INVALID_TASK, not yet");
+    };
+    assert!(
+        usize::from(address) % size_of::<u32>() == 0,
+        "gsync_wake: a misaligned address, not yet"
+    );
+    // gsync_prepare_key, its map lock dropped before the store.
+    let access = if flags.contains(Flags::MUTATE) {
+        Protection::READ | Protection::WRITE
+    } else {
+        Protection::READ
+    };
+    assert!(
+        task.map.probe(address, access).is_ok(),
+        "gsync_wake: probe_address, KERN_INVALID_ADDRESS, not yet"
+    );
+    assert!(
+        !flags.contains(Flags::SHARED),
+        "gsync_prepare_key: GSYNC_SHARED, not yet"
+    );
+    let key = Key {
+        map: Reference::as_ptr(&task.map).addr().get(),
+        address,
+    };
+    let current = smp::current()
+        .active_thread()
+        .expect("gsync_wake: no current thread");
+    let remote = !ptr::eq(task, current.task());
+    assert!(
+        !(remote && flags.contains(Flags::MUTATE)),
+        "gsync_wake: temp_mapping, not yet"
+    );
+    let mut waiters = key.bucket().waiters.lock();
+    // Stored under the bucket's token, so no wait reads the word between
+    // the store and the wake.
+    if flags.contains(Flags::MUTATE) {
+        assert!(
+            arch::Current::copy_out(&value.to_ne_bytes(), usize::from(address)).is_ok(),
+            "gsync_wake: copyout, KERN_INVALID_ADDRESS, not yet"
+        );
+    }
+    // The first waiter with the key: the list is in key order.
+    let mut cursor = waiters.front_mut();
+    while cursor.get().is_some_and(|waiter| waiter.key < key) {
+        cursor.move_next();
+    }
+    if cursor.get().is_none_or(|waiter| waiter.key != key) {
+        drop(waiters);
+        return Err(Error::InvalidArgument);
+    }
+    loop {
+        // Unlinked and read before the wake: a woken waiter's frame may go
+        // at once.
+        let thread = cursor.remove().unwrap().thread;
+        sched::clear_wait(thread, WaitResult::Awakened);
+        if !flags.contains(Flags::BROADCAST) || cursor.get().is_none_or(|waiter| waiter.key != key)
+        {
+            break;
+        }
+    }
+    drop(waiters);
+    Ok(())
 }

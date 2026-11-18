@@ -23,6 +23,7 @@ mig::subsystem! {
         milliseconds: u32,
         flags: i32
     );
+    5 gsync_wake(task = task::of, address: VirtualAddress, value: u32, flags: i32);
     7 vm_wire_all(host: Port, task = task::map_of, flags: u32);
     15 vm_set_size_limit(host_port: Port, map = task::map_of, current_limit: usize, max_limit: usize);
     16 vm_get_size_limit(map = task::map_of) -> (current_limit: usize, max_limit: usize);
@@ -53,6 +54,30 @@ fn gsync_wait(
         value,
         value2,
         milliseconds,
+        Flags::from_bits_retain(flags),
+    )
+}
+
+/// Serves `gsync_wake`: stores `value` in the word at `address` in `task`
+/// and wakes that word's waiters, as `flags` say.
+///
+/// # Errors
+///
+/// As `gsync::wake`.
+///
+/// # Panics
+///
+/// As `gsync::wake`.
+fn gsync_wake(
+    task: Option<&Reference<Task>>,
+    address: VirtualAddress,
+    value: u32,
+    flags: i32,
+) -> Result<(), Error> {
+    gsync::wake(
+        task.map(|task| &**task),
+        address,
+        value,
         Flags::from_bits_retain(flags),
     )
 }
