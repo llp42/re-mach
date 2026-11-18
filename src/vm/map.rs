@@ -1498,7 +1498,7 @@ impl Entry {
     }
 
     /// What it allows now.
-    fn protection(&self) -> Protection {
+    pub(super) fn protection(&self) -> Protection {
         Protection::from_bits_retain(self.protection.load(Ordering::Relaxed))
     }
 

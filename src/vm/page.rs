@@ -157,17 +157,23 @@ impl Page {
         self.flags.store(flags.bits(), Ordering::Relaxed);
     }
 
-    /// Wires it once more, behind its object's token.
-    ///
-    /// # Panics
-    ///
-    /// If it is unwired and on a paging queue: not yet.
-    pub(super) fn wire(&self) {
+    /// Wires it once more, behind its object's token; wired for the first
+    /// time, it leaves its paging queue.
+    pub(super) fn wire(&'static self) {
         let count = self.wire_count.load(Ordering::Relaxed);
         if count == 0 {
-            assert!(
-                !self.is_on_paging_queue(),
-                "vm_page_wire: a page on a paging queue, not yet"
+            let flags = Flags::from_bits_retain(self.flags.load(Ordering::Relaxed));
+            let color = color(self.address().0 / PAGE_SIZE);
+            if flags.contains(Flags::ACTIVE) {
+                // SAFETY: an active page is on its colour's active queue.
+                unsafe { QUEUES.active.remove(color, self) };
+            } else if flags.contains(Flags::INACTIVE) {
+                // SAFETY: an inactive page is on its colour's inactive queue.
+                unsafe { QUEUES.inactive.remove(color, self) };
+            }
+            self.flags.store(
+                (flags - Flags::ACTIVE - Flags::INACTIVE).bits(),
+                Ordering::Relaxed,
             );
             QUEUES.wired_pages.fetch_add(1, Ordering::Relaxed);
         }
