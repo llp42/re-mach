@@ -1401,6 +1401,34 @@ impl Map {
         Ok(lookup)
     }
 
+    /// Checks that an entry holds `address` and allows `access`, as gsync's
+    /// `probe_address` does through `vm_map_lookup`, under the read lock,
+    /// dropped before it returns; it makes no object and locks none.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidAddress` if no entry holds `address` or it doesn't allow
+    /// `access`: `probe_address` fails, which gsync gives as
+    /// `KERN_INVALID_ADDRESS`.
+    ///
+    /// # Panics
+    ///
+    /// For a submap: not yet.
+    pub fn probe(&self, address: VirtualAddress, access: Protection) -> Result<(), Error> {
+        let contents = self.contents.read();
+        let entry = contents.find(address).ok_or(Error::InvalidAddress)?;
+        if let Backing::Submap(_) = entry.backing {
+            panic!("vm_map_lookup: a submap, not yet");
+        }
+        let allowed = entry.protection().contains(access);
+        drop(contents);
+        if allowed {
+            Ok(())
+        } else {
+            Err(Error::InvalidAddress)
+        }
+    }
+
     /// Takes its read lock if it is still at `version`, as a lookup found
     /// it; it stays locked until what is returned drops.
     pub fn verify(&self, version: u32) -> Option<impl Sized + '_> {

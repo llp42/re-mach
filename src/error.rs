@@ -27,6 +27,8 @@ pub enum Error {
     InvalidTask,
     /// The target is not a host, or not the host port the call needs.
     InvalidHost,
+    /// The wait's time ran out.
+    TimedOut,
 }
 
 impl From<Error> for u32 {
@@ -42,6 +44,7 @@ impl From<Error> for u32 {
             Error::NameExists => 13,
             Error::InvalidTask => 16,
             Error::InvalidHost => 22,
+            Error::TimedOut => 27,
         }
     }
 }
