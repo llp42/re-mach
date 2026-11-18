@@ -46,6 +46,8 @@ bitflags::bitflags! {
         const RUN = 0x04;
         /// Its wait may not be interrupted.
         const UNINTERRUPTIBLE = 0x08;
+        /// Stopped at a clean point, on its way out of the kernel.
+        const HALTED = 0x10;
         /// A processor's idle thread.
         const IDLE = 0x80;
     }
@@ -528,8 +530,10 @@ impl Thread {
     pub(super) fn convert_to_port(thread: Reference<Self>) -> Reference<Port> {
         let port = NonNull::new(thread.self_port.load(Ordering::Acquire))
             .unwrap_or_else(|| panic!("convert_thread_to_port: no port, not yet"));
-        // SAFETY: the slot keeps its port's reference, never dropped yet,
-        // which this handle borrows and never drops.
+        // SAFETY: the slot keeps its port's reference until the thread itself
+        // halts (`terminate_ipc`), which this handle borrows and never drops:
+        // up to `make_send`'s clone nothing blocks, and user threads share
+        // CPU 0.
         let port = mem::ManuallyDrop::new(unsafe { Reference::from_raw(port) });
         let send = Port::make_send(&port);
         drop(thread);
@@ -550,19 +554,44 @@ impl Thread {
             ptr::eq(self.self_send.load(Ordering::Acquire), port.as_ptr()),
             "retrieve_thread_self_fast: an interposed port, not yet"
         );
-        // SAFETY: the slot keeps its port's reference, never dropped yet,
-        // which this handle borrows and never drops.
+        // SAFETY: the slot keeps its port's reference until the thread itself
+        // halts (`terminate_ipc`), which this handle borrows and never drops:
+        // the current thread halts only after its last trap.
         let port = mem::ManuallyDrop::new(unsafe { Reference::from_raw(port) });
         Port::copy_send(&port)
     }
 
     /// Makes its port stand for nothing, as `ipc_thread_disable` does.
     fn disable_ipc(&self) {
-        // SAFETY: the slot keeps its port's reference, never dropped yet,
-        // which this borrows.
+        // SAFETY: the slot keeps its port's reference until the thread itself
+        // halts (`terminate_ipc`), which this borrows: the current thread has
+        // not, and another cannot run on CPU 0 before this returns.
         if let Some(port) = unsafe { self.self_port.load(Ordering::Acquire).as_ref() } {
             port.replace_kernel_object(None);
         }
+    }
+
+    /// Ends its ipc, as `ipc_thread_terminate` does: its slots emptied, its
+    /// naked send right released and its port destroyed; the names tasks
+    /// hold for the port stay, as rights to a dead port.
+    ///
+    /// # Panics
+    ///
+    /// If it has no port: not yet. As `Port::release_send` and
+    /// `Port::deallocate_kernel`.
+    fn terminate_ipc(&self) {
+        // Each slot is emptied before its reference goes: a later read finds
+        // no port.
+        let port = NonNull::new(self.self_port.swap(ptr::null_mut(), Ordering::AcqRel))
+            .unwrap_or_else(|| panic!("ipc_thread_terminate: an ended thread, not yet"));
+        // SAFETY: the slot kept the port's reference, given up to this handle.
+        let port = unsafe { Reference::from_raw(port) };
+        if let Some(send) = NonNull::new(self.self_send.swap(ptr::null_mut(), Ordering::AcqRel)) {
+            // SAFETY: the slot kept the send right's reference, given up here.
+            Port::release_send(unsafe { Reference::from_raw(send) });
+        }
+        port.deallocate_kernel();
+        drop(port);
     }
 
     /// Records that it runs on the current CPU, as the CPU switches to it.
@@ -845,7 +874,8 @@ impl Thread {
     }
 
     /// Lifts one stop users asked for, and the suspension it holds; a thread
-    /// no longer suspended at all runs, unless it waits.
+    /// no longer suspended at all is no longer halted either, and runs
+    /// unless it waits.
     ///
     /// # Errors
     ///
@@ -857,9 +887,10 @@ impl Thread {
         if self.user_stop_count.fetch_sub(1, Ordering::Relaxed) == 1
             && self.suspend_count.fetch_sub(1, Ordering::Relaxed) == 1
         {
-            let state = self
-                .state
-                .fetch_and(!ThreadState::SUSPENDED.bits(), Ordering::Relaxed);
+            let state = self.state.fetch_and(
+                !(ThreadState::SUSPENDED | ThreadState::HALTED).bits(),
+                Ordering::Relaxed,
+            );
             if state & (ThreadState::WAIT | ThreadState::RUN).bits() == 0 {
                 self.state
                     .fetch_or(ThreadState::RUN.bits(), Ordering::Relaxed);
@@ -1194,6 +1225,41 @@ pub fn kernel_thread(task: &'static Task, start: fn() -> !) -> Result<(), Error>
         .resume()
         .unwrap_or_else(|error| panic!("kernel_thread: thread_resume: {error:?}"));
     Ok(())
+}
+
+/// Halts the current thread on its way out of the kernel, as
+/// `thread_halt_self` does: one ending itself gives up its ipc, is held,
+/// joins its CPU's dead threads, halted, wakes the reaper and blocks for
+/// good.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU, or it runs again after its last block. If
+/// it is only asked to halt: not yet.
+pub fn halt_self() {
+    let thread = smp::current()
+        .active_thread()
+        .expect("thread_halt_self: no current thread");
+    assert!(
+        thread.asts().contains(Ast::TERMINATE),
+        "thread_halt_self: asked to halt, not yet"
+    );
+    thread.terminate_ipc();
+    thread.hold();
+    // It stays on this CPU until it blocks: the list it joins and the
+    // sleep queue woken below are this CPU's.
+    let section = CriticalSection::enter();
+    // SAFETY: a thread lives while it waits on a dead list: the reaper takes
+    // it off before freeing it.
+    smp::current()
+        .dead_threads()
+        .lock()
+        .push_back(unsafe { UnsafeRef::from_raw(thread) });
+    thread.insert_state(ThreadState::HALTED);
+    drop(section);
+    sched::wakeup(Event::of(&REAPER));
+    sched::block();
+    panic!("the zombie walks!");
 }
 
 /// What the reaper waits on; only its address counts.

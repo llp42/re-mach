@@ -10,7 +10,7 @@ use crate::processor::State;
 use crate::sched::{self, Policies, Policy};
 use crate::smp;
 use crate::sync::CriticalSection;
-use crate::thread::{Thread, ThreadState};
+use crate::thread::{self, Thread, ThreadState};
 
 bitflags::bitflags! {
     /// Why a CPU takes an AST, as Mach numbers them; only those used here.
@@ -26,12 +26,13 @@ bitflags::bitflags! {
 }
 
 /// Takes the current CPU's ASTs, with interrupts on: unless it runs its
-/// idle thread, the thread gives the processor up on `BLOCK`.
+/// idle thread, the thread halts while it should, then gives the processor
+/// up on `BLOCK`.
 ///
 /// # Panics
 ///
-/// If the thread should halt, or no `BLOCK` is pending, where GNU Mach
-/// tests `csw_needed`: not yet.
+/// If no `BLOCK` is pending, where GNU Mach tests `csw_needed`: not yet.
+/// As `thread::halt_self`.
 pub fn taken() {
     let cpu = smp::current();
     let thread = cpu.active_thread().expect("ast_taken: no current thread");
@@ -45,10 +46,9 @@ pub fn taken() {
     {
         return;
     }
-    assert!(
-        !thread.asts().intersects(Ast::HALT | Ast::TERMINATE),
-        "thread_halt_self: not yet"
-    );
+    while thread.asts().intersects(Ast::HALT | Ast::TERMINATE) {
+        thread::halt_self();
+    }
     assert!(
         reasons.contains(Ast::BLOCK),
         "ast_taken: csw_needed, not yet"

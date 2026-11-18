@@ -610,8 +610,10 @@ fn invoke(old: &'static Thread, new: &'static Thread) {
         return;
     }
     new.run_here();
-    // The CPU takes the new thread's ASTs; none is per-thread yet.
-    smp::current().add_asts(new.asts());
+    // The CPU trades the old thread's own ASTs for the new one's.
+    let cpu = smp::current();
+    cpu.remove_asts(Ast::HALT | Ast::TERMINATE);
+    cpu.add_asts(new.asts());
     // SAFETY: the CPU runs on `old`'s stack; `new` was switched away from,
     // or got its stack before it was made runnable.
     dispatch(unsafe { old.switch(new) });
@@ -619,8 +621,8 @@ fn invoke(old: &'static Thread, new: &'static Thread) {
 
 /// Puts `thread`, just switched from, where its state says: back on a run
 /// queue if it runs on, nowhere if an idle thread; one suspended outside a
-/// wait stops, and one that waits stops running, unless suspended in an
-/// interruptible wait.
+/// wait stops, halted or not, and one that waits stops running, unless
+/// suspended in an interruptible wait.
 ///
 /// # Panics
 ///
@@ -628,7 +630,13 @@ fn invoke(old: &'static Thread, new: &'static Thread) {
 pub fn dispatch(thread: &'static Thread) {
     match thread.state() {
         state if state == ThreadState::RUN => make_runnable(thread, Preemption::Forbidden),
-        state if state == ThreadState::RUN | ThreadState::SUSPENDED => {
+        state
+            if [
+                ThreadState::RUN | ThreadState::SUSPENDED,
+                ThreadState::RUN | ThreadState::SUSPENDED | ThreadState::HALTED,
+            ]
+            .contains(&state) =>
+        {
             thread.remove_state(ThreadState::RUN);
         }
         state
