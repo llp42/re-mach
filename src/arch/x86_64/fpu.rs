@@ -10,6 +10,7 @@ use core::sync::atomic::Ordering;
 use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
 use x86_64::registers::xcontrol::XCr0;
 
+use super::MachineState;
 use super::cpuid;
 use super::memory_layout::PAGE_SIZE;
 use super::per_cpu::PerCpu;
@@ -172,9 +173,57 @@ pub fn module_init() {
     );
 }
 
+/// Gives `state` the current thread's x87 control word to start with, if
+/// that thread has a floating-point state: from the FPU if it holds that
+/// state, else from its buffer.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU.
+pub fn inherit(state: &MachineState) {
+    let _section = CriticalSection::enter();
+    let thread = smp::current()
+        .active_thread()
+        .expect("fpinherit: no current thread");
+    let saved = thread.machine_state().fpu.load(Ordering::Relaxed);
+    if saved.is_null() {
+        return;
+    }
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "a saved state's area is 64-byte aligned"
+    )]
+    let control = if ptr::eq(PerCpu::current().fpu_owner(), thread) {
+        let mut control = 0_u16;
+        // SAFETY: the FPU holds this thread's state, so TS is clear, and the
+        // critical section keeps it there.
+        unsafe {
+            asm!("fnstcw ({0})", in(reg) ptr::from_mut(&mut control), options(att_syntax, nostack));
+        }
+        control
+    } else {
+        // SAFETY: the current thread's saved state, which only a switch from
+        // it writes; its area, 64-byte aligned, starts with the control word,
+        // and with XSAVE its header, holding XSTATE_BV, follows FXSAVE's area.
+        unsafe {
+            let area = saved.add(AREA_OFFSET);
+            // XSAVEOPT may leave an x87 state in its initial configuration
+            // unwritten, with XSTATE_BV's bit 0 clear: the default then.
+            let initial = matches!(SAVE.get(), Some(Save::Xsave | Save::XsaveOptimized))
+                && area.add(FXSAVE_SIZE).cast::<u64>().read() & 1 == 0;
+            if initial {
+                0
+            } else {
+                area.cast::<u16>().read()
+            }
+        }
+    };
+    state.init_control.store(control, Ordering::Relaxed);
+}
+
 /// Gives the current thread the FPU at a use that trapped, loaded with its
 /// saved state; at its first use, a buffer holding the default state, and
-/// the FPU loaded with that.
+/// the FPU loaded with that and the control word it inherited, if any.
 ///
 /// # Panics
 ///
@@ -184,7 +233,7 @@ pub fn no_extension_fault() {
         .active_thread()
         .expect("fpnoextflt: no current thread");
     let saved = thread.machine_state().fpu.load(Ordering::Relaxed);
-    let source = if saved.is_null() {
+    let (source, control) = if saved.is_null() {
         let size = AREA_OFFSET + *STATE_SIZE.get().expect("fpu: not set up");
         let state = STATE_CACHE
             .get()
@@ -199,9 +248,10 @@ pub fn no_extension_fault() {
             .machine_state()
             .fpu
             .store(state.as_ptr(), Ordering::Relaxed);
-        default.as_ptr()
+        let control = thread.machine_state().init_control.load(Ordering::Relaxed);
+        (default.as_ptr(), control)
     } else {
-        saved
+        (saved, 0)
     };
     let _section = CriticalSection::enter();
     let cpu = PerCpu::current();
@@ -223,6 +273,10 @@ pub fn no_extension_fault() {
             Some(Save::Xsave | Save::XsaveOptimized) => {
                 asm!("xrstor64 ({0})", in(reg) area, in("rax") features, in("rdx") features >> 32, options(att_syntax, nostack));
             }
+        }
+        // A first state's inherited control word, as fpinit.
+        if control != 0 {
+            asm!("fldcw ({0})", in(reg) ptr::from_ref(&control), options(att_syntax, nostack));
         }
     }
     cpu.set_fpu_owner(thread);

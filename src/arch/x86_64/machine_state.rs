@@ -7,7 +7,7 @@ use core::arch::{asm, global_asm, naked_asm};
 use core::cell::UnsafeCell;
 use core::ops::Range;
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU16, AtomicUsize, Ordering};
 
 use x86_64::VirtAddr;
 use x86_64::instructions::interrupts;
@@ -41,6 +41,9 @@ pub struct MachineState {
     pub(super) stack_top: AtomicUsize,
     /// Its floating-point state's buffer, once it first uses the FPU.
     pub(super) fpu: AtomicPtr<u8>,
+    /// The x87 control word its first FPU state takes, its creator's; 0
+    /// for the default's.
+    pub(super) init_control: AtomicU16,
 }
 
 // SAFETY: only its thread, or the CPU as that thread traps, writes its user
@@ -132,7 +135,12 @@ impl MachineThread for MachineState {
             onfault_stack: AtomicUsize::new(0),
             stack_top: AtomicUsize::new(0),
             fpu: AtomicPtr::new(ptr::null_mut()),
+            init_control: AtomicU16::new(0),
         })
+    }
+
+    fn inherit(&self) {
+        fpu::inherit(self);
     }
 
     fn attach_stack(&self, stack: &KernelStack, start: fn() -> !) {

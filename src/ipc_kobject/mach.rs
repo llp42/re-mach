@@ -4,13 +4,14 @@
 //! Mach's calls' server routines, as MIG makes them from `mach`'s
 //! definitions; only those written so far.
 
-use core::ptr::NonNull;
+use core::ptr::{self, NonNull};
 
 use super::mig::{self, Boolean, OutOfLine};
 use crate::arch;
 use crate::error::Error;
 use crate::ipc::port::Port;
 use crate::reference::Reference;
+use crate::smp;
 use crate::task::{self, Task};
 use crate::thread::{MachineThread as _, Thread};
 use crate::vm::map::{Change, Map, Placement};
@@ -175,6 +176,12 @@ fn thread_create(task: Option<&Reference<Task>>) -> Result<Reference<Port>, Erro
     // SAFETY: the reference its creation gave the caller, which the handle
     // takes.
     let thread = unsafe { Reference::from_raw(NonNull::from(thread)) };
+    // A thread of the caller's task inherits from the caller, as pcb_init.
+    if let Some(current) = smp::current().active_thread()
+        && ptr::eq(current.task(), &raw const **task)
+    {
+        thread.machine_state().inherit();
+    }
     // Its first run returns to user mode, as thread_bootstrap_return.
     thread.start(arch::MachineState::return_to_user);
     Ok(Thread::convert_to_port(thread))

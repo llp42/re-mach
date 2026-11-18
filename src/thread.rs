@@ -264,6 +264,13 @@ pub trait MachineThread: Sized {
     ///
     /// `ResourceShortage` if none can be allocated.
     fn new() -> Result<CacheBox<Self>, Error>;
+    /// Gives its thread, new in the current thread's task, what it inherits
+    /// from the current thread.
+    ///
+    /// # Panics
+    ///
+    /// If no thread runs on the CPU.
+    fn inherit(&self);
     /// Sets `stack` up to start its thread in `start`, which the thread
     /// enters by calling `begin`, once the switch to it is made.
     fn attach_stack(&self, stack: &KernelStack, start: fn() -> !);
