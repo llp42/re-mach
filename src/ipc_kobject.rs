@@ -24,15 +24,15 @@ const REPLY_SIZE: usize = 8192;
 /// `ipc_kobject_server` does: a reply with its header filled in, for the
 /// routine its id names to finish, counted in the kernel task's messages;
 /// then the request's destination right is released and its buffer saved
-/// or freed. Gives the reply.
+/// or freed; if the routine failed, the request is destroyed instead.
+/// Gives the reply.
 ///
 /// # Panics
 ///
 /// If no reply can be allocated, or no routine serves the request's id:
 /// not yet; as the routine. If the destination right is neither a send nor
 /// a send-once right; for a send-once right: not yet; as
-/// `Port::release_send`. If the routine fails, or the reply port is not
-/// valid: not yet.
+/// `Port::release_send`. If the reply port is not valid: not yet.
 pub fn server(mut request: KernelMessage) -> KernelMessage {
     let mut reply = KernelMessage::allocate(REPLY_SIZE)
         .unwrap_or_else(|_| panic!("ipc_kobject_server: dropping request, not yet"));
@@ -85,14 +85,18 @@ pub fn server(mut request: KernelMessage) -> KernelMessage {
     let return_code = unsafe { reply.layout::<mig::ReplyHeader>() }
         .return_code
         .data;
-    // A failed routine's request is destroyed; a MIG_NO_REPLY one replies
-    // later.
-    assert!(
-        return_code == 0,
-        "ipc_kobject_server: RetCode {return_code:#x}, ipc_kmsg_destroy or MIG_NO_REPLY, not yet"
-    );
-    // As ipc_kmsg_put, without the copy-out.
-    request.cache_or_free();
+    // No routine gives MIG_NO_REPLY yet: `Error` has no such code.
+    if return_code == 0 {
+        // As ipc_kmsg_put, without the copy-out.
+        request.cache_or_free();
+    } else {
+        // Freed, as ipc_kmsg_destroy; its reply port's right stays with the
+        // reply.
+        // The stub's handles released the body's rights already, before the
+        // destination's (GNU Mach: the destination's first).
+        request.header_mut().local_port = 0;
+        drop(request);
+    }
     // Neither null nor dead.
     assert!(
         !matches!(reply.header().remote_port, 0 | usize::MAX),
