@@ -842,9 +842,9 @@ impl Map {
     /// # Panics
     ///
     /// If an entry there is in transition, a submap, wired or the kernel
-    /// object's, or holds the only reference on an object with no pager and
-    /// no paging under way: not yet. As `Contents::clip_start`,
-    /// `Contents::clip_end` and `MachinePhysMap::remove`.
+    /// object's: not yet. As `Contents::clip_start`, `Contents::clip_end`
+    /// and `MachinePhysMap::remove`; at an object's last reference, as its
+    /// free.
     fn delete(
         &self,
         contents: &mut Contents,
@@ -886,7 +886,7 @@ impl Map {
             );
             address = entry.end();
             // vm_map_entry_delete.
-            let Backing::Object { object, .. } = &entry.backing else {
+            let Backing::Object { object, offset } = &entry.backing else {
                 panic!("vm_map_entry_delete: a submap, not yet");
             };
             if let Some(pointer) = NonNull::new(object.load(Ordering::Relaxed)) {
@@ -904,14 +904,15 @@ impl Map {
                 // Entries are shared only by vm_map_fork, not yet.
                 self.phys_map
                     .remove(usize::from(entry.start())..usize::from(entry.end()));
-                // The object's pages could go now if nothing else used it.
-                let state = object.lock();
-                assert!(
-                    state.flags.contains(Flags::PAGER_CREATED)
-                        || object.references() != 1
-                        || state.paging_in_progress != 0,
-                    "vm_map_entry_delete: vm_object_page_remove, not yet"
-                );
+                // With no pager and no other reference, its pages go now.
+                let mut state = object.lock();
+                if !state.flags.contains(Flags::PAGER_CREATED)
+                    && object.references() == 1
+                    && state.paging_in_progress == 0
+                {
+                    let offset = offset.load(Ordering::Relaxed);
+                    state.remove_pages(offset..offset + (entry.end() - entry.start()));
+                }
                 drop(state);
                 // vm_object_deallocate: the entry's reference goes.
                 // SAFETY: the entry held it, and goes too.

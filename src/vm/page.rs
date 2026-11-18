@@ -162,19 +162,7 @@ impl Page {
     pub(super) fn wire(&'static self) {
         let count = self.wire_count.load(Ordering::Relaxed);
         if count == 0 {
-            let flags = Flags::from_bits_retain(self.flags.load(Ordering::Relaxed));
-            let color = color(self.address().0 / PAGE_SIZE);
-            if flags.contains(Flags::ACTIVE) {
-                // SAFETY: an active page is on its colour's active queue.
-                unsafe { QUEUES.active.remove(color, self) };
-            } else if flags.contains(Flags::INACTIVE) {
-                // SAFETY: an inactive page is on its colour's inactive queue.
-                unsafe { QUEUES.inactive.remove(color, self) };
-            }
-            self.flags.store(
-                (flags - Flags::ACTIVE - Flags::INACTIVE).bits(),
-                Ordering::Relaxed,
-            );
+            self.remove_from_queue();
             QUEUES.wired_pages.fetch_add(1, Ordering::Relaxed);
         }
         self.wire_count.store(count + 1, Ordering::Relaxed);
@@ -202,6 +190,24 @@ impl Page {
             Ordering::Relaxed,
         );
         QUEUES.wired_pages.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Takes it off its paging queue, if it is on one, behind its object's
+    /// token.
+    pub(super) fn remove_from_queue(&'static self) {
+        let flags = Flags::from_bits_retain(self.flags.load(Ordering::Relaxed));
+        let color = color(self.address().0 / PAGE_SIZE);
+        if flags.contains(Flags::ACTIVE) {
+            // SAFETY: an active page is on its colour's active queue.
+            unsafe { QUEUES.active.remove(color, self) };
+        } else if flags.contains(Flags::INACTIVE) {
+            // SAFETY: an inactive page is on its colour's inactive queue.
+            unsafe { QUEUES.inactive.remove(color, self) };
+        }
+        self.flags.store(
+            (flags - Flags::ACTIVE - Flags::INACTIVE).bits(),
+            Ordering::Relaxed,
+        );
     }
 
     /// Fills it with zeros.
@@ -759,10 +765,20 @@ fn allocate_reserved() -> Option<&'static Page> {
     Some(&array.pages[frame? - array.start.0 / PAGE_SIZE])
 }
 
-/// Puts `page`, which `allocate` gave and nothing uses now, back in its
-/// pool: the DMA reserve for a frame below its end, else its colour's free
-/// queue.
+/// Puts `page`, which `allocate` gave, back in its pool once it is in no
+/// object, on no paging queue and unused, as `vm_page_free` does: unwired,
+/// not busy and reset as new, it goes to the DMA reserve for a frame below
+/// its end, else to its colour's free queue.
 pub fn free(page: &'static Page) {
+    if page.wire_count.load(Ordering::Relaxed) != 0 {
+        QUEUES.wired_pages.fetch_sub(1, Ordering::Relaxed);
+        page.wire_count.store(0, Ordering::Relaxed);
+    }
+    page.clear_busy();
+    // vm_page_init.
+    page.object.store(ptr::null_mut(), Ordering::Relaxed);
+    page.offset.store(0, Ordering::Relaxed);
+    page.flags.store(Flags::empty().bits(), Ordering::Relaxed);
     let frame = page.address().0 / PAGE_SIZE;
     if frame < reserve_end(pages().pages.len() * PAGE_SIZE) {
         let mut reserve = DMA_RESERVE.lock();

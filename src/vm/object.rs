@@ -13,7 +13,7 @@ use intrusive_collections::{
 };
 
 use super::STATISTICS;
-use super::page::{Page, PageTreeAdapter};
+use super::page::{self, Page, PageTreeAdapter};
 use crate::arch::{MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE};
 use crate::device::pager::{self, Pager};
 use crate::ipc::port::{KernelObject, Port};
@@ -328,17 +328,20 @@ impl ObjectState {
         }
     }
 
-    /// Removes its pages in `range`, as `vm_object_page_remove` does.
-    ///
-    /// # Panics
-    ///
-    /// If it has a page there: not yet.
-    fn remove_pages(&self, range: Range<usize>) {
-        let first = self.pages.tree.lower_bound(Bound::Included(&range.start));
-        assert!(
-            first.get().is_none_or(|page| page.offset() >= range.end),
-            "vm_object_page_remove: freeing a page, not yet"
-        );
+    /// Frees its pages in `range`, as `vm_object_page_remove` does; the
+    /// caller has unmapped them by range (no per-page `pmap_page_protect`).
+    pub(super) fn remove_pages(&mut self, range: Range<usize>) {
+        let mut cursor = self
+            .pages
+            .tree
+            .lower_bound_mut(Bound::Included(&range.start));
+        while cursor.get().is_some_and(|page| page.offset() < range.end) {
+            // vm_page_remove: out of the object and off its paging queue.
+            let page = cursor.remove().unwrap();
+            self.pages.count -= 1;
+            page.remove_from_queue();
+            page::free(page);
+        }
     }
 }
 
@@ -446,8 +449,7 @@ pub fn shadow(source: Reference<Object>, offset: Offset, size: usize) -> Referen
 /// # Panics
 ///
 /// If they are the same object and contiguous, or only `next` has one and it
-/// would take the range before it: not yet. As `ObjectState::collapse` and
-/// `ObjectState::remove_pages`.
+/// would take the range before it: not yet. As `ObjectState::collapse`.
 pub fn coalesce(
     previous: Option<&Reference<Object>>,
     next: Option<&Reference<Object>>,
