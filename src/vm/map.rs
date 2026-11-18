@@ -791,25 +791,29 @@ impl Map {
 
     /// Removes the entries of `range` from the map, `contents` its contents
     /// under its write lock, and their pages from its physical map,
-    /// splitting an entry at the range's end with one from `reservation`.
+    /// splitting entries at the range's start and end with ones from
+    /// `reservation`.
     ///
     /// # Panics
     ///
-    /// If the range starts inside an entry, or an entry there is in
-    /// transition, a submap, wired or the kernel object's, or holds the only
-    /// reference on an object with no pager and no paging under way: not
-    /// yet. As `Contents::clip_end` and `MachinePhysMap::remove`.
+    /// If an entry there is in transition, a submap, wired or the kernel
+    /// object's, or holds the only reference on an object with no pager and
+    /// no paging under way: not yet. As `Contents::clip_start`,
+    /// `Contents::clip_end` and `MachinePhysMap::remove`.
     fn delete(
         &self,
         contents: &mut Contents,
         range: Range<VirtualAddress>,
         reservation: &mut EntryReservation,
     ) {
-        if let Some(entry) = contents.find(range.start) {
-            assert!(
-                entry.start() == range.start,
-                "vm_map_clip_start: splitting an entry, not yet"
-            );
+        if let Some(entry) = contents
+            .entries
+            .upper_bound(Bound::Included(&range.start))
+            .clone_pointer()
+            .filter(|entry| range.start < entry.end())
+            && range.start > entry.start()
+        {
+            contents.clip_start(&entry, range.start, reservation);
         }
         // The free space hint moves before the range.
         let first = contents.entries.lower_bound(Bound::Included(&range.start));
@@ -1413,13 +1417,84 @@ impl Contents {
         }
         let entry = NonNull::new(UnsafeRef::into_raw(entry)).unwrap();
         // SAFETY: a map's entries come from `CacheBox::into_raw` of
-        // `ENTRY_CACHE`'s boxes (`link`, `clip_end`). Besides its trees, the
-        // free space hint and the caller's pointer, an entry is reached only
-        // under the map's lock, which the caller holds for writing, or by
-        // `Map::pageable_locked` while it is in transition; the caller's
-        // contract rules out the others, so out of the trees, it is the box's
-        // alone.
+        // `ENTRY_CACHE`'s boxes (`link`, `clip_start`, `clip_end`). Besides
+        // its trees, the free space hint and the caller's pointer, an entry is
+        // reached only under the map's lock, which the caller holds for
+        // writing, or by `Map::pageable_locked` while it is in transition; the
+        // caller's contract rules out the others, so out of the trees, it is
+        // the box's alone.
         unsafe { CacheBox::from_raw(&ENTRY_CACHE, entry) }
+    }
+
+    /// Splits `entry` at `start`, inside it: an entry from `reservation`
+    /// takes the part before `start`, with a reference on its object, and
+    /// the entry before them has its free space inserted again.
+    ///
+    /// # Panics
+    ///
+    /// If `reservation` is used up, or for a submap: not yet.
+    fn clip_start(
+        &mut self,
+        entry: &Entry,
+        start: VirtualAddress,
+        reservation: &mut EntryReservation,
+    ) {
+        let Backing::Object { object, offset } = &entry.backing else {
+            panic!("_vm_map_clip_start: a submap, not yet");
+        };
+        // A full copy of it, up to `start`.
+        let mut new = reservation.take();
+        *new = Entry {
+            tree_link: RBTreeAtomicLink::new(),
+            gap_link: RBTreeAtomicLink::new(),
+            start: AtomicUsize::new(usize::from(entry.start())),
+            end: AtomicUsize::new(usize::from(start)),
+            gap: AtomicUsize::new(0),
+            gap_sequence: AtomicU64::new(0),
+            protection: AtomicU32::new(entry.protection().bits()),
+            max_protection: entry.max_protection,
+            inheritance: entry.inheritance,
+            backing: Backing::Object {
+                object: AtomicPtr::new(object.load(Ordering::Relaxed)),
+                offset: AtomicUsize::new(offset.load(Ordering::Relaxed)),
+            },
+            wire_count: AtomicU32::new(entry.wire_count()),
+            wired_access: AtomicU32::new(entry.wired_access().bits()),
+            in_transition: AtomicBool::new(entry.in_transition.load(Ordering::Relaxed)),
+        };
+        offset.store(
+            offset.load(Ordering::Relaxed) + (start - entry.start()),
+            Ordering::Relaxed,
+        );
+        // Moved first, so the new entry sorts before it.
+        entry.start.store(usize::from(start), Ordering::Relaxed);
+        // Linked before it: the free space of the entry before is inserted
+        // again, as the last of its size.
+        let previous = self.entries.find(&start).peek_prev().clone_pointer();
+        if let Some(previous) = previous.filter(|previous| previous.gap_link.is_linked()) {
+            let key = (
+                previous.gap.load(Ordering::Relaxed),
+                previous.gap_sequence.load(Ordering::Relaxed),
+            );
+            let previous = self.gaps.find_mut(&key).remove().unwrap();
+            previous
+                .gap_sequence
+                .store(self.gap_inserts, Ordering::Relaxed);
+            self.gap_inserts += 1;
+            self.gaps.insert(previous);
+        }
+        let new = CacheBox::into_raw(new).as_ptr();
+        // SAFETY: the tree takes the entry, once, until `unlink` gives it
+        // back.
+        self.entries.insert(unsafe { UnsafeRef::from_raw(new) });
+        if let Some(object) = NonNull::new(object.load(Ordering::Relaxed)) {
+            // SAFETY: the entry holds a reference on its object, or it is the
+            // kernel object, whose own reference never drops; this handle
+            // borrows it and never drops it.
+            let held = ManuallyDrop::new(unsafe { Reference::from_raw(object) });
+            // Another, held by the new entry.
+            Reference::into_raw(Reference::clone(&held));
+        }
     }
 
     /// Splits `entry` at `end`, inside it: an entry from `reservation`
