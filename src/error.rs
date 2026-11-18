@@ -19,6 +19,8 @@ pub enum Error {
     Failure,
     /// A resource it needed could not be allocated, perhaps for now only.
     ResourceShortage,
+    /// The access restriction asked for is not allowed.
+    NoAccess,
     /// The name denotes a right already.
     NameExists,
     /// The target is not an active task.
@@ -36,6 +38,7 @@ impl From<Error> for u32 {
             Error::InvalidArgument => 4,
             Error::Failure => 5,
             Error::ResourceShortage => 6,
+            Error::NoAccess => 8,
             Error::NameExists => 13,
             Error::InvalidTask => 16,
             Error::InvalidHost => 22,

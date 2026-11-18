@@ -345,10 +345,13 @@ macro_rules! subsystem {
             @sort $name $head [$($ins)*] [$($outs)* ($out send_right)] [] []
         );
     };
-    // One fixed inline out-argument.
-    (@sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*] [] [$out:ident: $type:ty]) => {
+    // A fixed inline out-argument.
+    (
+        @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*] []
+        [$out:ident: $type:ty $(, $($rest:tt)*)?]
+    ) => {
         $crate::ipc_kobject::mig::subsystem!(
-            @sort $name $head [$($ins)*] [$($outs)* ($out inline $type)] [] []
+            @sort $name $head [$($ins)*] [$($outs)* ($out inline $type)] [] [$($($rest)*)?]
         );
     };
     // Sorted: the stub, given the names of the locals the rules reach.

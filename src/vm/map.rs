@@ -35,17 +35,12 @@ pub struct Map {
     phys_map: &'static PhysMap,
     /// How many references it has.
     references: Count,
-    /// The most it may map, in bytes.
-    size_limit: usize,
-    /// The most `size_limit` may be raised to.
-    #[expect(dead_code, reason = "vm_set_size_limit reads it")]
-    max_size_limit: usize,
     /// What changes as it maps and unmaps, behind its lock.
-    contents: SleepLock<Contents>,
+    pub(super) contents: SleepLock<Contents>,
 }
 
 /// What a map's lock guards.
-struct Contents {
+pub(super) struct Contents {
     /// Its entries, by address.
     entries: RBTree<EntryAdapter>,
     /// The entries free space follows, by its size, then by when it was
@@ -66,6 +61,10 @@ struct Contents {
     size_wired: usize,
     /// Whether what it maps from now on is wired.
     wiring_required: bool,
+    /// The most it may map, in bytes.
+    pub(super) size_limit: usize,
+    /// The most `size_limit` may be raised to.
+    pub(super) max_size_limit: usize,
     /// Its version, moved on by every write lock.
     timestamp: u32,
 }
@@ -79,8 +78,6 @@ impl Map {
             bounds,
             phys_map,
             references: Count::new(1),
-            size_limit: usize::MAX,
-            max_size_limit: usize::MAX,
             contents: SleepLock::new(Contents {
                 entries: RBTree::new(EntryAdapter::NEW),
                 gaps: RBTree::new(GapAdapter::NEW),
@@ -90,6 +87,8 @@ impl Map {
                 size: 0,
                 size_wired: 0,
                 wiring_required: false,
+                size_limit: usize::MAX,
+                max_size_limit: usize::MAX,
                 timestamp: 0,
             }),
         }
@@ -111,11 +110,11 @@ impl Map {
         bounds: Range<VirtualAddress>,
     ) -> Result<CacheBox<Self>, Error> {
         let size = page::memory_size();
-        MAP_CACHE.allocate(Self {
-            size_limit: size,
-            max_size_limit: size,
-            ..Self::new(phys_map, bounds)
-        })
+        let mut map = Self::new(phys_map, bounds);
+        let contents = map.contents.get_mut();
+        contents.size_limit = size;
+        contents.max_size_limit = size;
+        MAP_CACHE.allocate(map)
     }
 
     /// Maps `size` bytes of `object` from `offset`, or with nothing behind
@@ -210,7 +209,7 @@ impl Map {
             .size
             .checked_add(range.end - range.start)
             .ok_or(Error::InvalidArgument)?;
-        if size > self.size_limit {
+        if size > contents.size_limit {
             return Err(Error::NoSpace);
         }
         let extends = |neighbour: &Entry| {
@@ -1011,7 +1010,7 @@ impl Map {
             drop(contents);
             return Err((copy, Error::InvalidArgument));
         };
-        if new_size > self.size_limit {
+        if new_size > contents.size_limit {
             drop(contents);
             return Err((copy, Error::NoSpace));
         }
@@ -1146,7 +1145,7 @@ impl Map {
     }
 
     /// Takes its write lock, moving its version on.
-    fn lock(&self) -> impl DerefMut<Target = Contents> + '_ {
+    pub(super) fn lock(&self) -> impl DerefMut<Target = Contents> + '_ {
         let mut contents = self.contents.write();
         contents.timestamp = contents.timestamp.wrapping_add(1);
         contents

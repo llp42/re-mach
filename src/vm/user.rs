@@ -253,3 +253,43 @@ pub fn wire_all(host: &Port, map: Option<&Map>, flags: u32) -> Result<(), Error>
     // Maps hold no projected buffers.
     map.pageable_all(flags)
 }
+
+/// Limits `map` to `current` bytes, at most `max` once raised, for `host`;
+/// raising its most needs the host's privileged port.
+///
+/// # Errors
+///
+/// `InvalidArgument` if `current` is past `max`, `InvalidTask` for no map,
+/// `InvalidHost` unless `host` is a host port, alive, and `NoAccess` if
+/// `max` is past the map's most and `host` is not privileged.
+pub fn set_size_limit(
+    host: &Port,
+    map: Option<&Map>,
+    current: usize,
+    max: usize,
+) -> Result<(), Error> {
+    if current > max {
+        return Err(Error::InvalidArgument);
+    }
+    let Some(map) = map else {
+        return Err(Error::InvalidTask);
+    };
+    let privileged = match host.kernel_object() {
+        Some(KernelObject::Host(_)) => false,
+        Some(KernelObject::HostPrivileged(_)) => true,
+        _ => return Err(Error::InvalidHost),
+    };
+    let mut contents = map.lock();
+    if max > contents.max_size_limit && !privileged {
+        return Err(Error::NoAccess);
+    }
+    contents.size_limit = current;
+    contents.max_size_limit = max;
+    Ok(())
+}
+
+/// `map`'s size limit, and the most it may be raised to.
+pub fn size_limits(map: &Map) -> (usize, usize) {
+    let contents = map.contents.read();
+    (contents.size_limit, contents.max_size_limit)
+}
