@@ -451,8 +451,8 @@ impl Map {
     }
 
     /// Sets what `range`, cut to the map's bounds, allows to `protection`,
-    /// as `change` says, in its physical map too, splitting the entry its
-    /// start falls inside.
+    /// as `change` says, in its physical map too, splitting the entries its
+    /// start and end fall inside.
     ///
     /// # Errors
     ///
@@ -462,17 +462,17 @@ impl Map {
     ///
     /// # Panics
     ///
-    /// If no entry can be allocated. If `range` ends inside an entry, an
-    /// entry would merge with the one before it, one is in transition, has
-    /// wired access or is wired, or the map wires what it maps: not yet. As
-    /// `Contents::clip_start` and `MachinePhysMap::protect`.
+    /// If no entry can be allocated. If an entry would merge with the one
+    /// before it, one is in transition, has wired access or is wired, or the
+    /// map wires what it maps: not yet. As `Contents::clip_start`,
+    /// `Contents::clip_end` and `MachinePhysMap::protect`.
     pub fn protect(
         &self,
         range: Range<VirtualAddress>,
         protection: Protection,
         change: Change,
     ) -> Result<(), Error> {
-        // Taken before the lock, for the split.
+        // Taken before the lock, for the splits.
         let mut reservation = EntryReservation::new();
         let mut guard = self.lock();
         let contents = &mut *guard;
@@ -487,10 +487,9 @@ impl Map {
         {
             contents.clip_start(&entry, start, &mut reservation);
         }
-        // The entry starting at `start`, else the next.
-        let mut first = contents.entries.lower_bound(Bound::Included(&start));
-        // Every entry is checked before any changes.
-        let mut current = first.clone();
+        // Every entry is checked before any changes, from the one starting
+        // at `start`, else the next.
+        let mut current = contents.entries.lower_bound(Bound::Included(&start));
         while let Some(entry) = current.get().filter(|entry| entry.start() < end) {
             if matches!(entry.backing, Backing::Submap(_)) {
                 return Err(Error::InvalidArgument);
@@ -504,12 +503,17 @@ impl Map {
             }
             current.move_next();
         }
-        let mut current = first.clone();
-        while let Some(entry) = current.get().filter(|entry| entry.start() < end) {
-            assert!(
-                end >= entry.end(),
-                "vm_map_clip_end: splitting an entry, not yet"
-            );
+        // Each entry is found by address, as splitting it changes the tree.
+        let mut address = start;
+        while let Some(entry) = contents
+            .entries
+            .lower_bound(Bound::Included(&address))
+            .clone_pointer()
+            .filter(|entry| entry.start() < end)
+        {
+            if end < entry.end() {
+                contents.clip_end(&entry, end, &mut reservation);
+            }
             let old = entry.protection();
             match change {
                 Change::Current => entry.protection.store(protection.bits(), Ordering::Relaxed),
@@ -540,12 +544,14 @@ impl Map {
                 self.phys_map
                     .protect(usize::from(entry.start())..usize::from(entry.end()), new);
             }
-            coalesce(&current);
-            current.move_next();
+            address = entry.end();
+            coalesce(&contents.entries.find(&entry.start()));
         }
         // The entry after the range, with the last in it.
-        coalesce(&current);
-        // vm_map_pageable_scan; no entry merged, so the range starts at `first`.
+        coalesce(&contents.entries.lower_bound(Bound::Included(&address)));
+        // vm_map_pageable_scan; no entry merged, so from the entry starting
+        // at `start`, else the next.
+        let mut first = contents.entries.lower_bound(Bound::Included(&start));
         while let Some(entry) = first.get().filter(|entry| entry.start() < end) {
             assert!(
                 entry.wired_access().is_empty(),
