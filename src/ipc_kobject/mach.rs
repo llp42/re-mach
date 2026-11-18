@@ -13,7 +13,7 @@ use crate::ipc::port::Port;
 use crate::reference::Reference;
 use crate::smp;
 use crate::task::{self, Task};
-use crate::thread::{MachineThread as _, Thread};
+use crate::thread::{self, MachineThread as _, Thread};
 use crate::vm::map::{Change, Map, Placement};
 use crate::vm::object::Offset;
 use crate::vm::user::Mapping;
@@ -21,6 +21,8 @@ use crate::vm::{self, Inheritance, Protection, VirtualAddress};
 
 mig::subsystem! {
     base 2000;
+    17 thread_get_state(target_thread = thread::of, flavor: i32)
+        -> (old_state: [u32; ..1024], CountInOut);
     21 vm_allocate(
         target_task = task::map_of,
         address: VirtualAddress,
@@ -50,6 +52,27 @@ mig::subsystem! {
         max_protection: u32,
         inheritance: u32
     ) -> (address: VirtualAddress);
+}
+
+/// Serves `thread_get_state`: `thread`'s machine state of `flavor`, in at
+/// most `state`'s words; gives how many.
+///
+/// # Errors
+///
+/// As `Thread::read_state`.
+///
+/// # Panics
+///
+/// As `Thread::read_state`.
+fn thread_get_state(
+    thread: Option<&Reference<Thread>>,
+    flavor: i32,
+    state: &mut [u32],
+) -> Result<usize, Error> {
+    // SAFETY: the handle keeps the thread alive through the call; threads
+    // are never freed yet.
+    let thread = thread.map(|thread| unsafe { Reference::as_ptr(thread).as_ref() });
+    Thread::read_state(thread, flavor, state)
 }
 
 /// Serves `vm_allocate`: `size` bytes of zero-filled memory mapped into

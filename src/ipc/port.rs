@@ -523,7 +523,7 @@ pub enum KernelObject {
     /// A task's port.
     Task(NonNull<Task>),
     /// A thread's port.
-    Thread(#[expect(dead_code, reason = "convert_port_to_thread reads it")] NonNull<Thread>),
+    Thread(NonNull<Thread>),
 }
 
 /// The cache ports come from.

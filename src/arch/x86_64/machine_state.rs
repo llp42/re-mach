@@ -15,6 +15,7 @@ use x86_64::instructions::interrupts;
 use super::fpu;
 use super::memory_layout::MAX_USER_ADDRESS;
 use super::per_cpu::PerCpu;
+use super::thread_state::{StateFlavor, UserRegisters};
 use super::trap::TrapFrame;
 use crate::ast;
 use crate::error::Error;
@@ -47,7 +48,7 @@ pub struct MachineState {
 }
 
 // SAFETY: only its thread, or the CPU as that thread traps, writes its user
-// registers.
+// registers; others read them only while it is stopped.
 unsafe impl Sync for MachineState {}
 
 /// What a user stack pointer is aligned to, as the System V ABI asks.
@@ -277,5 +278,32 @@ impl MachineThread for MachineState {
                 options(att_syntax, noreturn),
             );
         }
+    }
+
+    unsafe fn read_state(&self, flavor: i32, state: &mut [u32]) -> Result<usize, Error> {
+        match StateFlavor::try_from(flavor) {
+            Ok(StateFlavor::RegistersAndSegments) => {
+                let Some(words) = state.first_chunk_mut::<{ UserRegisters::COUNT }>() else {
+                    return Err(Error::InvalidArgument);
+                };
+                // SAFETY: guaranteed by the caller: its thread is stopped, so
+                // nothing writes its user registers.
+                let user = UserRegisters::from(unsafe { &*self.user.get() });
+                // SAFETY: `words` holds a `UserRegisters`'s bytes, which its
+                // fields, padding included, all set.
+                unsafe {
+                    ptr::from_mut(words)
+                        .cast::<UserRegisters>()
+                        .write_unaligned(user);
+                }
+                Ok(UserRegisters::COUNT)
+            }
+            Ok(StateFlavor::Debug) => panic!("thread_getstatus: i386_DEBUG_STATE, not yet"),
+            Err(flavor) => panic!("thread_getstatus: flavor {flavor}, not yet"),
+        }
+    }
+
+    fn reads_own_state(flavor: i32) -> bool {
+        matches!(StateFlavor::try_from(flavor), Ok(StateFlavor::Debug))
     }
 }

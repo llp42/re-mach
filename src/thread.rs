@@ -303,6 +303,24 @@ pub trait MachineThread: Sized {
     /// Takes the current CPU's ASTs until none is pending, then returns its
     /// thread to user mode.
     fn return_to_user() -> !;
+    /// Writes its thread's user state of `flavor` into `state`, whose
+    /// length is the count asked for; gives the count written.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` if `state` is too short for the flavor.
+    ///
+    /// # Panics
+    ///
+    /// For a flavor not written here: not yet.
+    ///
+    /// # Safety
+    ///
+    /// Its thread is stopped.
+    unsafe fn read_state(&self, flavor: i32, state: &mut [u32]) -> Result<usize, Error>;
+    /// Whether a thread reads its own state of `flavor` directly, without
+    /// being stopped.
+    fn reads_own_state(flavor: i32) -> bool;
 }
 
 /// Where a new thread begins, before its function: it dispatches `old`, the
@@ -716,6 +734,47 @@ impl Thread {
             .fetch_or(ThreadState::SUSPENDED.bits(), Ordering::Relaxed);
     }
 
+    /// Waits until it stops, as `thread_dowait` does: at once if it is
+    /// suspended outside a wait.
+    ///
+    /// # Panics
+    ///
+    /// If it is the current thread; if it runs or waits: not yet.
+    fn wait_until_stopped(&self) {
+        assert!(
+            !smp::current()
+                .active_thread()
+                .is_some_and(|current| ptr::eq(current, self)),
+            "thread_dowait"
+        );
+        let _section = CriticalSection::enter();
+        match self.state() & ThreadState::SCHEDULING {
+            state if state == ThreadState::SUSPENDED => {}
+            state if state == ThreadState::WAIT | ThreadState::SUSPENDED => {
+                panic!("thread_dowait: an interruptible wait, not yet")
+            }
+            state if state == ThreadState::RUN | ThreadState::SUSPENDED => {
+                panic!("thread_dowait: rem_runq, not yet")
+            }
+            state
+                if [
+                    ThreadState::RUN | ThreadState::SUSPENDED | ThreadState::UNINTERRUPTIBLE,
+                    ThreadState::RUN | ThreadState::WAIT | ThreadState::SUSPENDED,
+                    ThreadState::RUN
+                        | ThreadState::WAIT
+                        | ThreadState::SUSPENDED
+                        | ThreadState::UNINTERRUPTIBLE,
+                    ThreadState::WAIT | ThreadState::SUSPENDED | ThreadState::UNINTERRUPTIBLE,
+                ]
+                .contains(&state) =>
+            {
+                panic!("thread_dowait: wake_active, not yet")
+            }
+            // Matching no case, it counts as stopped.
+            _ => {}
+        }
+    }
+
     /// Lifts one suspension; a thread no longer suspended runs.
     ///
     /// # Panics
@@ -760,6 +819,45 @@ impl Thread {
             }
         }
         Ok(())
+    }
+
+    /// Writes `thread`'s machine state of `flavor` into `state`, as
+    /// `thread_get_state` does, with `thread` stopped meanwhile; `state`'s
+    /// length is the count asked for. Gives the count written.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` for no thread or the current one; as
+    /// `MachineThread::read_state`.
+    ///
+    /// # Panics
+    ///
+    /// For a state the current thread reads directly: not yet. As
+    /// `wait_until_stopped`, `MachineThread::read_state` and `release`.
+    pub(super) fn read_state(
+        thread: Option<&'static Self>,
+        flavor: i32,
+        state: &mut [u32],
+    ) -> Result<usize, Error> {
+        let Some(thread) = thread else {
+            return Err(Error::InvalidArgument);
+        };
+        if smp::current()
+            .active_thread()
+            .is_some_and(|current| ptr::eq(current, thread))
+        {
+            assert!(
+                !arch::MachineState::reads_own_state(flavor),
+                "thread_get_state: the current thread's own state, not yet"
+            );
+            return Err(Error::InvalidArgument);
+        }
+        thread.hold();
+        thread.wait_until_stopped();
+        // SAFETY: stopped above, and held so until the release.
+        let result = unsafe { thread.machine_state.read_state(flavor, state) };
+        thread.release();
+        result
     }
 
     /// Its task, which lives while it has threads.
@@ -879,6 +977,16 @@ unsafe impl Counted for Thread {
     unsafe fn free(_thread: NonNull<Self>) {
         panic!("thread_deallocate: the last reference, not yet");
     }
+}
+
+/// The thread `port` stands for, with a reference to it taken under the
+/// port's lock, as `convert_port_to_thread` gives it.
+pub fn of(port: &Port) -> Option<Reference<Thread>> {
+    port.with_kernel_object(|object| match object {
+        // SAFETY: a thread outlives its port's standing for it.
+        Some(KernelObject::Thread(thread)) => unsafe { Reference::upgrade(*thread) },
+        _ => None,
+    })
 }
 
 /// Sets the current thread's base priority to `priority`, its highest

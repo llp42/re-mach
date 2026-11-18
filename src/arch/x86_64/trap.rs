@@ -18,6 +18,7 @@ use x86_64::structures::idt::{ExceptionVector, InterruptStackFrameValue, PageFau
 use super::memory_layout::{MAX_USER_ADDRESS, PAGE_SIZE};
 use super::per_cpu::KERNEL_STACK;
 use super::serial::Serial;
+use super::thread_state::UserRegisters;
 use super::{MachineState, fpu, gdt};
 use crate::smp;
 use crate::thread::MachineThread as _;
@@ -204,6 +205,39 @@ impl TrapFrame {
                 VirtAddr::zero(),
                 gdt::USER_DATA,
             ),
+        }
+    }
+}
+
+impl From<&TrapFrame> for UserRegisters {
+    /// The user registers and segments `frame` saved, as `thread_getstatus`
+    /// gives them.
+    fn from(frame: &TrapFrame) -> Self {
+        let interrupted = &frame.interrupted;
+        Self {
+            r8: frame.r8,
+            r9: frame.r9,
+            r10: frame.r10,
+            r11: frame.r11,
+            r12: frame.r12,
+            r13: frame.r13,
+            r14: frame.r14,
+            r15: frame.r15,
+            rdi: frame.rdi,
+            rsi: frame.rsi,
+            rbp: frame.rbp,
+            rsp: 0,
+            rbx: frame.rbx,
+            rdx: frame.rdx,
+            rcx: frame.rcx,
+            rax: frame.rax,
+            rip: interrupted.instruction_pointer.as_u64(),
+            cs: u32::from(interrupted.code_segment.0),
+            cs_padding: 0,
+            rflags: interrupted.cpu_flags.bits(),
+            user_rsp: interrupted.stack_pointer.as_u64(),
+            ss: u32::from(interrupted.stack_segment.0),
+            ss_padding: 0,
         }
     }
 }

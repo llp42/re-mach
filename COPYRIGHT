@@ -144,6 +144,11 @@ SPDX-FileContributor: Avadis Tevanian, Jr.
 SPDX-FileContributor: Michael Wayne Young
 SPDX-License-Identifier: CMU-Mach
 
+SPDX-FileName: i386/include/mach/i386/thread_status.h
+SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
+SPDX-FileContributor: Avadis Tevanian, Jr.
+SPDX-License-Identifier: CMU-Mach
+
 SPDX-FileName: i386/intel/pmap.c
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988 Carnegie Mellon University
 SPDX-FileContributor: Avadis Tevanian, Jr.

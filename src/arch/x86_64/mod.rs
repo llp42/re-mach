@@ -32,6 +32,7 @@ mod shootdown;
 mod smap;
 mod stack;
 mod syscall;
+mod thread_state;
 mod trap;
 mod tss;
 
