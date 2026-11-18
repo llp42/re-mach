@@ -342,6 +342,14 @@ pub trait MachineThread: Sized {
     /// Whether a thread writes its own state of `flavor` directly, without
     /// being stopped.
     fn writes_own_state(flavor: i32) -> bool;
+    /// Frees `state`, with its floating-point state.
+    ///
+    /// # Safety
+    ///
+    /// `state` is a box from `new`, given up, and its thread was switched
+    /// from for the last time: no CPU uses `state` or holds its
+    /// floating-point state, and nothing uses it after.
+    unsafe fn terminate(state: NonNull<Self>);
 }
 
 /// Where a new thread begins, before its function: it dispatches `old`, the
@@ -481,14 +489,14 @@ impl Thread {
         *thread.suspend_count.get_mut() = members.suspend_count + 1 + u32::from(set.is_empty());
         thread.name.copy_from(&members.name);
         // Nothing is published yet; only the set's reference is undone, and
-        // the stack and machine state stay taken: this path frees neither.
+        // the stack stays taken: this path does not free it.
         if !members.active {
             drop(members);
             drop(set_members);
             set.deallocate();
             return Err(Error::Failure);
         }
-        // The thread takes its machine state for good.
+        // The thread keeps its machine state for life.
         CacheBox::into_raw(machine_state);
         let thread = CacheBox::into_raw(thread);
         // The box's provenance, which `free` takes back from a handle made
@@ -1134,10 +1142,10 @@ unsafe impl Counted for Thread {
 
     /// Frees `thread`, as `thread_deallocate` does at zero: its timer
     /// cancelled, its times added to its task's, it leaves its task and its
-    /// set, its kernel stack is freed, then it goes back to its cache. GNU
-    /// Mach's recheck under the tokens is not needed: a new reference comes
-    /// only from a live one or from `Reference::upgrade`, which never counts
-    /// up from zero.
+    /// set, its kernel stack and machine state are freed, then it goes back
+    /// to its cache. GNU Mach's recheck under the tokens is not needed: a new
+    /// reference comes only from a live one or from `Reference::upgrade`,
+    /// which never counts up from zero.
     ///
     /// # Panics
     ///
@@ -1191,8 +1199,12 @@ unsafe impl Counted for Thread {
         // the reaper saw it off its CPU (on that same CPU; lock note 10.3)
         // before dropping the dead list's reference; this runs once.
         unsafe { vm::kernel::free_stack(this.kernel_stack.get().expect("stack_free: no stack")) };
-        // pcb_terminate comes later: its machine state stays taken. No event
-        // counter exists for evc_notify_abort.
+        // No event counter exists for evc_notify_abort.
+        let machine_state = NonNull::new(UnsafeRef::into_raw(this.machine_state.clone())).unwrap();
+        // SAFETY: the box `create` gave up, through the pointer it kept; the
+        // thread was switched from for the last time, as for its stack, and
+        // nothing uses its machine state after; this runs once.
+        unsafe { arch::MachineState::terminate(machine_state) };
         // SAFETY: a `CACHE` box `create` gave up, with that box's provenance;
         // nothing uses it after.
         drop(unsafe { CacheBox::from_raw(&CACHE, thread) });

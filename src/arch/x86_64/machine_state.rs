@@ -6,7 +6,7 @@
 use core::arch::{asm, global_asm, naked_asm};
 use core::cell::UnsafeCell;
 use core::ops::Range;
-use core::ptr;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU16, AtomicUsize, Ordering};
 
 use x86_64::instructions::interrupts;
@@ -355,5 +355,18 @@ impl MachineThread for MachineState {
             StateFlavor::try_from(flavor),
             Ok(StateFlavor::Debug | StateFlavor::FsGsBase)
         )
+    }
+
+    unsafe fn terminate(state: NonNull<Self>) {
+        // SAFETY: guaranteed by the caller; its thread's last switch moved
+        // the TSS's and the CPU's stack pointers to the next thread.
+        let state = unsafe { CacheBox::from_raw(&CACHE, state) };
+        if let Some(buffer) = NonNull::new(state.fpu.load(Ordering::Relaxed)) {
+            // SAFETY: its thread's buffer; that thread's last switch saved
+            // its state there and cleared the CPU's FPU owner.
+            unsafe { fpu::free(buffer) };
+        }
+        // No LDT exists to free.
+        drop(state);
     }
 }

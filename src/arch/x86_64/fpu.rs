@@ -312,3 +312,20 @@ pub fn save_context(thread: &Thread) {
     }
     cpu.clear_fpu_owner();
 }
+
+/// Frees a thread's saved state's buffer as the thread ends; no FPU holds
+/// that state, which the thread's last switch saved.
+///
+/// # Safety
+///
+/// `buffer` came from `no_extension_fault`, its thread was switched from
+/// for the last time, and nothing uses it after.
+///
+/// # Panics
+///
+/// Before `module_init`.
+pub unsafe fn free(buffer: NonNull<u8>) {
+    let cache = STATE_CACHE.get().expect("fpu: module not set up");
+    // SAFETY: guaranteed by the caller.
+    unsafe { cache.free(buffer) };
+}
