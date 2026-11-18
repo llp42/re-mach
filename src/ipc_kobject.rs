@@ -27,15 +27,17 @@ const REPLY_SIZE: usize = 8192;
 /// routine its id names to finish, counted in the kernel task's messages;
 /// then the request's destination right is released and its buffer saved
 /// or freed; if the routine failed, the request is destroyed instead.
-/// Gives the reply.
+/// Gives the reply, or `None` if the request has no reply port, the reply
+/// destroyed.
 ///
 /// # Panics
 ///
 /// If no reply can be allocated, or no routine serves the request's id:
 /// not yet; as the routine. If the destination right is neither a send nor
 /// a send-once right; for a send-once right: not yet; as
-/// `Port::release_send`. If the reply port is not valid: not yet.
-pub fn server(mut request: KernelMessage) -> KernelMessage {
+/// `Port::release_send`. If the reply port is dead, or null for a complex
+/// reply: not yet.
+pub fn server(mut request: KernelMessage) -> Option<KernelMessage> {
     let mut reply = KernelMessage::allocate(REPLY_SIZE)
         .unwrap_or_else(|_| panic!("ipc_kobject_server: dropping request, not yet"));
     let header = request.header();
@@ -101,10 +103,18 @@ pub fn server(mut request: KernelMessage) -> KernelMessage {
         request.header_mut().local_port = 0;
         drop(request);
     }
-    // Neither null nor dead.
-    assert!(
-        !matches!(reply.header().remote_port, 0 | usize::MAX),
-        "ipc_kobject_server: an invalid reply port, not yet"
-    );
-    reply
+    // Queued only to a valid reply port, else destroyed, as
+    // ipc_kmsg_destroy: a simple reply with no ports is only freed.
+    match reply.header().remote_port {
+        0 => {
+            assert!(
+                !reply.header().bits.is_complex(),
+                "ipc_kmsg_clean: ipc_kmsg_clean_body, not yet"
+            );
+            drop(reply);
+            None
+        }
+        usize::MAX => panic!("ipc_kobject_server: a dead reply port, not yet"),
+        _ => Some(reply),
+    }
 }
