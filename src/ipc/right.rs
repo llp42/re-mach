@@ -43,12 +43,13 @@ pub(super) fn lookup_write(space: &Space, name: PortName) -> SleepLockWriteGuard
 }
 
 /// Looks for a send or receive right for `port` in `space`, of state
-/// `state`, as `ipc_right_reverse` does: gives a send right's name, with
-/// the port locked.
+/// `state`, as `ipc_right_reverse` does: gives its entry's name, with the
+/// port locked.
 ///
 /// # Panics
 ///
-/// If `port` is alive and the space holds its receive right: not yet.
+/// If the space receives on `port` under a null name, or under a name
+/// whose entry is not the port's receive right.
 pub(super) fn reverse<'a>(
     space: &Space,
     state: &SpaceState,
@@ -57,10 +58,25 @@ pub(super) fn reverse<'a>(
     let port_state = port.state.lock();
     // A dead port has none.
     if port_state.active {
-        assert!(
-            port_state.receiver != Receiver::Space(NonNull::from(space)),
-            "ipc_right_reverse: the space's receive right, not yet"
-        );
+        if port_state.receiver == Receiver::Space(NonNull::from(space)) {
+            let name = port_state.receiver_name;
+            assert!(
+                name != PortName::NULL,
+                "ipc_right_reverse: a receive right with a null name"
+            );
+            let entry = state
+                .lookup(name)
+                .expect("ipc_right_reverse: no receive right's entry");
+            let Some(Object::Port(object)) = &entry.object else {
+                panic!("ipc_right_reverse: a receive right's entry with no port");
+            };
+            assert!(
+                entry.bits.rights.contains(Rights::RECEIVE)
+                    && Reference::as_ptr(object) == NonNull::from(port),
+                "ipc_right_reverse: an entry that is not the port's receive right"
+            );
+            return Some((name, port_state));
+        }
         if let Some(entry) = state.reverse_map.lookup(key(port)) {
             // SAFETY: the reverse map holds copies of the name map's pointers,
             // to entries it still holds, and `state` keeps the name map shared,
@@ -81,9 +97,10 @@ pub(super) fn reverse<'a>(
 ///
 /// # Panics
 ///
-/// If `name` has no entry. If its entry holds the receive right, if its
-/// user references would reach the maximum, or for a send-once right: not
-/// yet. For a type that is not a right.
+/// If `name` has no entry, or its entry holds the receive right with other
+/// rights or user references. If its user references would reach the
+/// maximum, or for a send-once right: not yet. For a type that is not a
+/// right.
 pub(super) fn copy_out<'a>(
     state: &'a mut SpaceState,
     name: PortName,
@@ -112,7 +129,13 @@ pub(super) fn copy_out<'a>(
                 drop(port_state);
                 false
             } else if bits.rights.contains(Rights::RECEIVE) {
-                panic!("ipc_right_copyout: a receive right's entry, not yet")
+                assert!(
+                    bits.rights.bits() == Rights::RECEIVE.bits() && bits.user_references == 0,
+                    "ipc_right_copyout: a receive right's entry with other rights or user references"
+                );
+                // The send right moves to the entry; the entry keeps its own reference.
+                drop(port_state);
+                false
             } else {
                 drop(port_state);
                 // As in GNU Mach, a failure leaves the entry out of the reverse map.

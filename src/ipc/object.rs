@@ -229,8 +229,10 @@ pub(super) fn copy_out(
 ///
 /// # Panics
 ///
-/// If `port` is dead, or `space` holds a send right for it: not yet; as
-/// `SpaceState::allocate_name`, `right::reverse` and `right::copy_out`.
+/// If the entry `right::reverse` finds holds neither a send nor a receive
+/// right. If `port` is dead, or `space` holds a send or receive right for
+/// it under another name: not yet; as `SpaceState::allocate_name`,
+/// `right::reverse` and `right::copy_out`.
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the port's guard is moved into right::copy_out"
@@ -246,21 +248,33 @@ pub(super) fn copy_out_name(
         Ok(entry) => entry.in_use(),
         Err(error) => return Err((error, port)),
     };
-    if !matches!(message_type, MessageType::PortSendOnce) {
-        let found = right::reverse(space, &state, &port);
+    let port_state = if let Some((found_name, port_state)) =
+        (!matches!(message_type, MessageType::PortSendOnce))
+            .then(|| right::reverse(space, &state, &port))
+            .flatten()
+    {
         assert!(
-            found.is_none(),
-            "ipc_object_copyout_name: a right ipc_right_reverse found, not yet"
+            found_name == name,
+            "ipc_object_copyout_name: KERN_RIGHT_EXISTS, not yet"
         );
-    }
-    if used {
-        return Err((Error::NameExists, port));
-    }
-    let port_state = port.state.lock();
-    assert!(
-        port_state.active,
-        "ipc_object_copyout_name: a dead port, not yet"
-    );
+        assert!(
+            state
+                .lookup(name)
+                .is_some_and(|entry| entry.bits.rights.intersects(Rights::SEND | Rights::RECEIVE)),
+            "ipc_object_copyout_name: an entry with no send or receive right"
+        );
+        port_state
+    } else {
+        if used {
+            return Err((Error::NameExists, port));
+        }
+        let port_state = port.state.lock();
+        assert!(
+            port_state.active,
+            "ipc_object_copyout_name: a dead port, not yet"
+        );
+        port_state
+    };
     // The entry takes the right's reference, unless the right merged into
     // one it holds.
     if let Some(entry) = right::copy_out(&mut state, name, message_type, &port, port_state) {
