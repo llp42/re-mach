@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Tasks: an address space, a name space for ports, and threads.
 
-use core::mem::ManuallyDrop;
+use core::mem::{self, ManuallyDrop};
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize};
 
@@ -14,7 +14,7 @@ use crate::ast::Ast;
 use crate::clock;
 use crate::clock::time::AtomicTimeValue;
 use crate::error::Error;
-use crate::ipc::port::{KernelObject, Port};
+use crate::ipc::port::{KernelObject, Port, SendRight};
 use crate::ipc::space::Space;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, ProcessorSet};
@@ -77,12 +77,39 @@ intrusive_adapter!(
     pub SetTaskAdapter = UnsafeRef<Task>: Task { set_link => LinkedListAtomicLink }
 );
 
-/// A task's ports, under its lock; so far only its own.
+/// A task's ports, under its lock; so far its own and its exception port.
 pub struct TaskPorts {
     /// Its port, which controls it.
     pub(super) self_port: Option<Reference<Port>>,
     /// The send right for its port it hands out.
     self_send: Option<Reference<Port>>,
+    /// The send right its threads' exceptions go to, if any.
+    exception: Option<SendRight>,
+}
+
+/// A task's special port, by Mach's `TASK_*_PORT` number.
+#[derive(Clone, Copy)]
+pub enum SpecialPort {
+    /// `TASK_KERNEL_PORT`: the send right it hands out for its port.
+    Kernel,
+    /// `TASK_EXCEPTION_PORT`: its exception port.
+    Exception,
+    /// `TASK_BOOTSTRAP_PORT`: its bootstrap port.
+    Bootstrap,
+}
+
+impl TryFrom<i32> for SpecialPort {
+    type Error = i32;
+
+    /// The special port Mach's number `number` names, if any.
+    fn try_from(number: i32) -> Result<Self, i32> {
+        match number {
+            1 => Ok(Self::Kernel),
+            3 => Ok(Self::Exception),
+            4 => Ok(Self::Bootstrap),
+            _ => Err(number),
+        }
+    }
 }
 
 /// Whether a task is alive, its priorities and suspensions, its threads and
@@ -186,6 +213,30 @@ impl Task {
         let send = Port::copy_send(port);
         drop(ports);
         send
+    }
+
+    /// Sets its special port `which` to `port`, as `task_set_special_port`
+    /// does; the old right is released after its lock.
+    ///
+    /// # Panics
+    ///
+    /// If it has no port, or `which` is its kernel or bootstrap port: not
+    /// yet.
+    pub(super) fn set_special_port(&self, which: SpecialPort, port: Option<SendRight>) {
+        let mut ports = self.ports.lock();
+        assert!(
+            ports.self_port.is_some(),
+            "task_set_special_port: KERN_FAILURE, not yet"
+        );
+        let slot = match which {
+            SpecialPort::Exception => &mut ports.exception,
+            SpecialPort::Kernel => panic!("task_set_special_port: TASK_KERNEL_PORT, not yet"),
+            SpecialPort::Bootstrap => panic!("task_set_special_port: TASK_BOOTSTRAP_PORT, not yet"),
+        };
+        let old = mem::replace(slot, port);
+        drop(ports);
+        // As ipc_port_release_send.
+        drop(old);
     }
 
     /// Stops it once more for users: the first stop suspends it, holding its
@@ -413,6 +464,8 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
         ports: Spinlock::new(TaskPorts {
             self_port: None,
             self_send: None,
+            // No parent to inherit it from.
+            exception: None,
         }),
         may_assign: true,
         creation_time: clock::time::stamp().into(),

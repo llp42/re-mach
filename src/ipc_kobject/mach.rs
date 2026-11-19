@@ -9,10 +9,10 @@ use core::ptr::{self, NonNull};
 use super::mig::{self, Boolean, OutOfLine};
 use crate::arch;
 use crate::error::Error;
-use crate::ipc::port::Port;
+use crate::ipc::port::{Port, SendRight};
 use crate::reference::Reference;
 use crate::smp;
-use crate::task::{self, Task};
+use crate::task::{self, SpecialPort, Task};
 use crate::thread::{self, MachineThread as _, Thread};
 use crate::vm::map::{Change, Map, Placement};
 use crate::vm::object::Offset;
@@ -40,6 +40,7 @@ mig::subsystem! {
         new_protection: u32
     );
     27 vm_write(target_task = task::map_of, address: VirtualAddress, data: OutOfLine<u8>);
+    59 task_set_special_port(task = task::of, which_port: i32, special_port: SendRight);
     61 thread_create(parent_task = task::of) -> (child_thread: Port);
     63 thread_resume(target_thread = thread::of);
     89 vm_map(
@@ -218,6 +219,33 @@ fn vm_write(
         return Err(Error::InvalidArgument);
     };
     vm::user::write(map, address, data.map(OutOfLine::into_copy))
+}
+
+/// Serves `task_set_special_port`: `task`'s special port numbered
+/// `which_port` becomes `special_port`.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no task; the right is released, as
+/// `ipc_kmsg_destroy` of the request does.
+///
+/// # Panics
+///
+/// If `which_port` names no special port: not yet. As
+/// `Task::set_special_port`.
+fn task_set_special_port(
+    task: Option<&Reference<Task>>,
+    which_port: i32,
+    special_port: Option<SendRight>,
+) -> Result<(), Error> {
+    let Some(task) = task else {
+        return Err(Error::InvalidArgument);
+    };
+    let which = SpecialPort::try_from(which_port).unwrap_or_else(|number| {
+        panic!("task_set_special_port: KERN_INVALID_ARGUMENT for {number}, not yet")
+    });
+    task.set_special_port(which, special_port);
+    Ok(())
 }
 
 /// Serves `thread_create`: a new thread in `task`, suspended, which starts
