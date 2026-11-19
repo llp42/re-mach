@@ -166,10 +166,13 @@ pub struct Thread {
 }
 
 /// A thread's ports under its lock, besides its own port; so far its
-/// exception port.
+/// exception port and its reply port.
 pub struct ThreadPorts {
     /// The send right its exceptions go to first, if any.
     pub(super) exception: Option<SendRight>,
+    /// The port it receives its kernel calls' replies on, made on first
+    /// use; the slot holds the reference it was made with.
+    pub(super) reply: Option<Reference<Port>>,
 }
 
 /// 5/8 to the power of a number of seconds, as two shifts: `x >> first`,
@@ -439,8 +442,11 @@ impl Thread {
             machine_state: unsafe { UnsafeRef::from_raw(ptr::from_mut(&mut *machine_state)) },
             self_port: AtomicPtr::new(ptr::null_mut()),
             self_send: AtomicPtr::new(ptr::null_mut()),
-            // As ipc_thread_init: no exception port.
-            ports: Spinlock::new(ThreadPorts { exception: None }),
+            // As ipc_thread_init: no exception port, no reply port.
+            ports: Spinlock::new(ThreadPorts {
+                exception: None,
+                reply: None,
+            }),
             argument: AtomicPtr::new(ptr::null_mut()),
             kernel_stack: OnceLock::new(),
             last_processor: AtomicPtr::new(ptr::null_mut()),

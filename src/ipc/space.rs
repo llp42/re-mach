@@ -206,5 +206,4 @@ pub(super) static CACHE: Cache<Space> = Cache::new("ipc_space");
 pub static KERNEL_SPACE: Space = Space::special();
 
 /// The space that marks ports receiving kernel replies; never in use.
-#[expect(dead_code, reason = "kernel replies mark their ports with it")]
 pub static REPLY_SPACE: Space = Space::special();

@@ -113,6 +113,20 @@ impl Port {
         Ok(port)
     }
 
+    /// A new port that receives kernel replies, with one reference, as
+    /// `ipc_port_alloc_reply` makes it.
+    ///
+    /// # Errors
+    ///
+    /// `ResourceShortage` if no port can be allocated.
+    pub fn allocate_reply() -> Result<CacheBox<Self>, Error> {
+        let mut port = CACHE.allocate(Self::new(NonNull::from(&space::REPLY_SPACE)))?;
+        // Its address's low 32 bits, as GNU Mach names special ports.
+        let address = ptr::from_ref(&*port).addr() & 0xffff_ffff;
+        port.state.get_mut().receiver_name = PortName::from(u32::try_from(address).unwrap());
+        Ok(port)
+    }
+
     /// A new port that `space` receives on, under a free name there, its one
     /// reference the receive right's; gives the name.
     ///
@@ -192,6 +206,21 @@ impl Port {
         let mut state = port.state.lock();
         state.make_send_count += 1;
         state.send_rights += 1;
+        drop(state);
+        port.clone()
+    }
+
+    /// Makes a send-once right for `port` from its receive right, whose
+    /// reference the caller lends, as `ipc_port_make_sonce` does; gives the
+    /// right's reference.
+    ///
+    /// # Panics
+    ///
+    /// If `port` is dead: not yet.
+    pub fn make_send_once(port: &Reference<Self>) -> Reference<Self> {
+        let mut state = port.state.lock();
+        assert!(state.active, "ipc_port_make_sonce: a dead port, not yet");
+        state.send_once_rights += 1;
         drop(state);
         port.clone()
     }

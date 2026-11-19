@@ -196,7 +196,7 @@ impl KernelMessage {
     /// # Panics
     ///
     /// As `allocate`.
-    fn allocate_saved() -> Result<Self, Error> {
+    pub fn allocate_saved() -> Result<Self, Error> {
         Self::take_cached().map_or_else(|| Self::allocate(PAGE_SIZE), Ok)
     }
 

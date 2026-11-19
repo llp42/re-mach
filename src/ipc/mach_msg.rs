@@ -323,6 +323,25 @@ fn send(message: usize, send_size: u32) -> u32 {
     0
 }
 
+/// Sends `message`, as `ipc_mqueue_send_always` does: past its
+/// destination's queue limit.
+///
+/// # Panics
+///
+/// If the kernel receives on its destination: not yet. As `queue`.
+pub fn send_always(message: KernelMessage) {
+    // SAFETY: copied in or made by the kernel, the destination is a port's
+    // exposed address, and the message holds a reference to it.
+    let port = unsafe { &*ptr::with_exposed_provenance::<Port>(message.header().remote_port) };
+    let port_state = port.state.lock();
+    assert!(
+        port_state.receiver != Receiver::Space(NonNull::from(&KERNEL_SPACE)),
+        "ipc_mqueue_send: ipc_kobject_server, not yet"
+    );
+    drop(port_state);
+    queue(message, Options::SEND_ALWAYS);
+}
+
 /// Queues `message` on its destination, a port the kernel does not receive
 /// on, as `ipc_mqueue_send` does past the kernel's branch; `SEND_ALWAYS` in
 /// `options` passes the queue's limit. The port's oldest waiting receiver
@@ -430,6 +449,22 @@ fn receive(name: PortName, timeout: Option<u32>) -> u32 {
     // ipc_object_release.
     drop(port);
     status
+}
+
+/// Waits on `port`, a reply port the caller holds a reference to, for its
+/// reply, as `exception_raise` receives it: with no option, no size limit
+/// and no timeout.
+///
+/// # Panics
+///
+/// If `port` is dead: not yet. As `dequeue`.
+pub fn receive_reply(port: &Port) -> u32 {
+    let port_state = port.state.lock();
+    assert!(
+        port_state.active,
+        "exception_raise: MACH_RCV_PORT_DIED, not yet"
+    );
+    dequeue(port, port_state, None)
 }
 
 /// Takes a message off the queue of `port`, which `port_state` holds
