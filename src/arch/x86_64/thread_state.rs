@@ -66,3 +66,15 @@ impl UserRegisters {
     /// Its size in words, `i386_THREAD_STATE_COUNT`.
     pub(super) const COUNT: usize = size_of::<Self>() / size_of::<u32>();
 }
+
+/// `i386_fsgs_base_state`: a thread's user FS and GS bases.
+#[repr(C)]
+pub(super) struct FsGsBase {
+    pub(super) fs_base: u64,
+    pub(super) gs_base: u64,
+}
+
+impl FsGsBase {
+    /// Its size in words, `i386_FSGS_BASE_STATE_COUNT`.
+    pub(super) const COUNT: usize = size_of::<Self>() / size_of::<u32>();
+}

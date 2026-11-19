@@ -17,7 +17,7 @@ use x86_64::{PrivilegeLevel, VirtAddr};
 use super::fpu;
 use super::memory_layout::MAX_USER_ADDRESS;
 use super::per_cpu::PerCpu;
-use super::thread_state::{StateFlavor, UserRegisters};
+use super::thread_state::{FsGsBase, StateFlavor, UserRegisters};
 use super::trap::TrapFrame;
 use crate::ast;
 use crate::error::Error;
@@ -364,7 +364,27 @@ impl MachineThread for MachineState {
             }
             Ok(StateFlavor::Debug) => panic!("thread_setstatus: i386_DEBUG_STATE, not yet"),
             Ok(StateFlavor::FsGsBase) => {
-                panic!("thread_setstatus: i386_FSGS_BASE_STATE, not yet")
+                let Some(words) = state.first_chunk::<{ FsGsBase::COUNT }>() else {
+                    return Err(Error::InvalidArgument);
+                };
+                // SAFETY: `words` holds a `FsGsBase`'s bytes, and any bytes
+                // make one.
+                let bases = unsafe { ptr::from_ref(words).cast::<FsGsBase>().read_unaligned() };
+                // The MSRs take canonical addresses only.
+                if VirtAddr::try_new(bases.fs_base).is_err()
+                    || VirtAddr::try_new(bases.gs_base).is_err()
+                {
+                    return Err(Error::InvalidArgument);
+                }
+                self.fs_base.store(bases.fs_base, Ordering::Relaxed);
+                self.gs_base.store(bases.gs_base, Ordering::Relaxed);
+                if smp::current()
+                    .active_thread()
+                    .is_some_and(|current| ptr::eq(current.machine_state(), self))
+                {
+                    self.load_user_bases();
+                }
+                Ok(())
             }
             Err(flavor) => panic!("thread_setstatus: flavor {flavor}, not yet"),
         }

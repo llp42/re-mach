@@ -337,7 +337,8 @@ pub trait MachineThread: Sized {
     ///
     /// # Safety
     ///
-    /// Its thread is stopped.
+    /// Its thread is stopped, or is the current thread and `flavor` is one
+    /// `writes_own_state` names.
     unsafe fn write_state(&self, flavor: i32, state: &[u32]) -> Result<(), Error>;
     /// Whether a thread writes its own state of `flavor` directly, without
     /// being stopped.
@@ -975,18 +976,18 @@ impl Thread {
     }
 
     /// Sets `thread`'s machine state of `flavor` from `state`, as
-    /// `thread_set_state` does, with `thread` stopped meanwhile; `state`'s
+    /// `thread_set_state` does, with `thread` stopped meanwhile unless it
+    /// is the current thread and writes that state directly; `state`'s
     /// length is the count given.
     ///
     /// # Errors
     ///
-    /// `InvalidArgument` for no thread or the current one; as
-    /// `MachineThread::write_state`.
+    /// `InvalidArgument` for no thread, or the current one with a state it
+    /// does not write directly; as `MachineThread::write_state`.
     ///
     /// # Panics
     ///
-    /// For a state the current thread writes directly: not yet. As
-    /// `wait_until_stopped`, `MachineThread::write_state` and `release`.
+    /// As `wait_until_stopped`, `MachineThread::write_state` and `release`.
     pub(super) fn write_state(
         thread: Option<&'static Self>,
         flavor: i32,
@@ -999,10 +1000,11 @@ impl Thread {
             .active_thread()
             .is_some_and(|current| ptr::eq(current, thread))
         {
-            assert!(
-                !arch::MachineState::writes_own_state(flavor),
-                "thread_set_state: the current thread's own state, not yet"
-            );
+            if arch::MachineState::writes_own_state(flavor) {
+                // SAFETY: the current thread, with a state it writes
+                // directly.
+                return unsafe { thread.machine_state.write_state(flavor, state) };
+            }
             return Err(Error::InvalidArgument);
         }
         thread.hold();
