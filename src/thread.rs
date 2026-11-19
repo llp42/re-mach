@@ -19,14 +19,14 @@ use crate::clock::time::TimeValue;
 use crate::clock::timeout::Timeout;
 use crate::config::MAX_CPUS;
 use crate::error::Error;
-use crate::ipc::port::{KernelObject, Port};
+use crate::ipc::port::{KernelObject, Port, SendRight};
 use crate::machine::Mode;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, Processor, ProcessorSet};
 use crate::reference::{Count, Counted, Reference};
 use crate::sched::{self, Event, Policy, Preemption, Priority, SCHEDULER_SCALE, WaitResult};
 use crate::slab::{Cache, CacheBox};
-use crate::sync::{CriticalSection, OnceLock};
+use crate::sync::{CriticalSection, OnceLock, Spinlock};
 use crate::task::Task;
 use crate::vm;
 use crate::vm::kernel::KernelStack;
@@ -132,6 +132,8 @@ pub struct Thread {
     self_port: AtomicPtr<Port>,
     /// The send right for its port it hands out.
     self_send: AtomicPtr<Port>,
+    /// Its other ports.
+    ports: Spinlock<ThreadPorts>,
     /// What its function is given by whoever starts it; null for nothing.
     argument: AtomicPtr<()>,
     /// Its kernel stack, which it keeps for life; set as it is created.
@@ -161,6 +163,13 @@ pub struct Thread {
     fixed_quantum: u32,
     /// Its ASTs, which the CPU running it takes.
     asts: AtomicU32,
+}
+
+/// A thread's ports under its lock, besides its own port; so far its
+/// exception port.
+pub struct ThreadPorts {
+    /// The send right its exceptions go to first, if any.
+    exception: Option<SendRight>,
 }
 
 /// 5/8 to the power of a number of seconds, as two shifts: `x >> first`,
@@ -430,6 +439,8 @@ impl Thread {
             machine_state: unsafe { UnsafeRef::from_raw(ptr::from_mut(&mut *machine_state)) },
             self_port: AtomicPtr::new(ptr::null_mut()),
             self_send: AtomicPtr::new(ptr::null_mut()),
+            // As ipc_thread_init: no exception port.
+            ports: Spinlock::new(ThreadPorts { exception: None }),
             argument: AtomicPtr::new(ptr::null_mut()),
             kernel_stack: OnceLock::new(),
             last_processor: AtomicPtr::new(ptr::null_mut()),
@@ -585,7 +596,7 @@ impl Thread {
     }
 
     /// Ends its ipc, as `ipc_thread_terminate` does: its slots emptied, its
-    /// naked send right released and its port destroyed; the names tasks
+    /// naked send rights released and its port destroyed; the names tasks
     /// hold for the port stay, as rights to a dead port.
     ///
     /// # Panics
@@ -603,6 +614,9 @@ impl Thread {
             // SAFETY: the slot kept the send right's reference, given up here.
             Port::release_send(unsafe { Reference::from_raw(send) });
         }
+        // Released after the lock, as it drops.
+        let exception = self.ports.lock().exception.take();
+        drop(exception);
         port.deallocate_kernel();
         drop(port);
     }
