@@ -40,6 +40,9 @@ pub enum MessageType {
     PortSendOnce,
     /// `MACH_MSG_TYPE_COPY_SEND`: a send right copied from the sender's.
     CopySend,
+    /// `MACH_MSG_TYPE_MAKE_SEND`: a send right made from the sender's
+    /// receive right.
+    MakeSend,
     /// `MACH_MSG_TYPE_MAKE_SEND_ONCE`: a send-once right made from the
     /// sender's receive right.
     MakeSendOnce,
@@ -58,6 +61,7 @@ impl MessageType {
             Self::PortSend => 17,
             Self::PortSendOnce => 18,
             Self::CopySend => 19,
+            Self::MakeSend => 20,
             Self::MakeSendOnce => 21,
         }
     }
@@ -75,6 +79,7 @@ impl TryFrom<u8> for MessageType {
             17 => Ok(Self::PortSend),
             18 => Ok(Self::PortSendOnce),
             19 => Ok(Self::CopySend),
+            20 => Ok(Self::MakeSend),
             21 => Ok(Self::MakeSendOnce),
             _ => Err(number),
         }

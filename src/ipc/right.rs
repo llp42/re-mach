@@ -168,6 +168,43 @@ pub(super) fn copy_in(state: &SpaceState, name: PortName) -> Reference<Port> {
     port
 }
 
+/// Makes a send right from the receive right of `name`'s entry, in the
+/// write-locked, alive `space` of state `state`, as `ipc_right_copyin` does
+/// for `MACH_MSG_TYPE_MAKE_SEND`: gives the port's new send right with its
+/// reference; the entry is unchanged.
+///
+/// # Panics
+///
+/// If the space is dead, `name` has no entry, or its receive right has no
+/// port, a dead one or one received under another name or space. If the
+/// entry holds no receive right: not yet.
+pub(super) fn make_send(space: &Space, state: &SpaceState, name: PortName) -> Reference<Port> {
+    assert!(state.active, "ipc_right_copyin: a dead space");
+    let entry = state.lookup(name).expect("ipc_right_copyin: no entry");
+    assert!(
+        entry.bits.rights.contains(Rights::RECEIVE),
+        "ipc_right_copyin: KERN_INVALID_RIGHT, not yet"
+    );
+    let Some(Object::Port(port)) = &entry.object else {
+        panic!("ipc_right_copyin: a receive right with no port");
+    };
+    let mut port_state = port.state.lock();
+    assert!(
+        port_state.active,
+        "ipc_right_copyin: a dead port's receive right"
+    );
+    assert!(
+        port_state.receiver_name == name
+            && port_state.receiver == Receiver::Space(NonNull::from(space)),
+        "ipc_right_copyin: a receive right under another name or space"
+    );
+    port_state.make_send_count += 1;
+    port_state.send_rights += 1;
+    let port = port.clone();
+    drop(port_state);
+    port
+}
+
 /// Checks whether the port of `entry`'s send or send-once right, in the
 /// write-locked space of state `state`, died, as `ipc_right_check` does:
 /// gives it locked and alive.

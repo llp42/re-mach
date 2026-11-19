@@ -252,9 +252,9 @@ impl KernelMessage {
     ///
     /// If a type is invalid or the body too small, ports are out of line,
     /// out-of-line memory is empty or to be deallocated, or goes to a port
-    /// that takes it as page lists, a right is not a copied send right, a
-    /// name is dead, or no item carries a right or memory: not yet. As
-    /// `object::copy_in` and `Map::copy_in`.
+    /// that takes it as page lists, a right is not a copied or made send
+    /// right, a name is dead, or no item carries a right or memory: not
+    /// yet. As `object::copy_in` and `Map::copy_in`.
     pub(super) fn copy_in_body(&mut self, space: &Space, map: &Map) {
         // SAFETY: copied in, the destination is a port's exposed address, and
         // the message holds a reference to it.
@@ -329,10 +329,13 @@ impl KernelMessage {
                 complex = true;
             }
             if port {
-                assert!(
-                    name == MessageType::CopySend.number(),
-                    "ipc_kmsg_copyin_body: type {name}, MOVE_ and MAKE_ rights, not yet"
-                );
+                let Ok(message_type @ (MessageType::CopySend | MessageType::MakeSend)) =
+                    MessageType::try_from(name)
+                else {
+                    panic!(
+                        "ipc_kmsg_copyin_body: type {name}, MOVE_ and MAKE_SEND_ONCE rights, not yet"
+                    );
+                };
                 // As ipc_object_copyin_type.
                 word = (word & !0xff) | u64::from(MessageType::PortSend.number());
                 message[place..place + 8].copy_from_slice(&word.to_le_bytes());
@@ -341,7 +344,7 @@ impl KernelMessage {
                     let port_name =
                         PortName::from(u32::from_le_bytes(slot[..4].try_into().unwrap()));
                     let address = if port_name.is_valid() {
-                        let copied = object::copy_in(space, port_name);
+                        let copied = object::copy_in(space, port_name, message_type);
                         Reference::into_raw(copied).as_ptr().expose_provenance()
                     } else {
                         assert!(

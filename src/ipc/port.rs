@@ -50,7 +50,7 @@ pub(super) struct PortState {
     /// How many send-once rights for it there are.
     pub(super) send_once_rights: u32,
     /// How many send rights have been made from its receive right.
-    make_send_count: u32,
+    pub(super) make_send_count: u32,
     /// What it stands for, when the kernel receives on it.
     kernel_object: Option<KernelObject>,
     /// The set it is in, if any.
