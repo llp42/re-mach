@@ -257,17 +257,19 @@ impl ObjectState {
     }
 
     /// Collapses `object`, whose state `state` is, with its shadow, as
-    /// `vm_object_collapse` does: bypasses a shadow none of whose pages
-    /// shows through it, unlocking `state` to drop the shadow's reference.
-    /// Nothing if `object` had a pager, has paging under way or has no
-    /// shadow, or its shadow is external, has paging under way, had a pager
-    /// or shows a page.
+    /// `vm_object_collapse` does: merges in a shadow it holds the only
+    /// reference to, or bypasses one none of whose pages shows through it,
+    /// unlocking `state` to free the merged shadow or drop the bypassed
+    /// one's reference. Nothing if `object` had a pager, has paging under
+    /// way or has no shadow, or its shadow is external, has paging under
+    /// way, or, to be bypassed, had a pager or shows a page.
     ///
     /// # Panics
     ///
-    /// If the shadow's token is held, the shadow has a shadow, or `object`
-    /// holds the shadow's only reference: not yet. At the shadow's last
-    /// reference, as its free.
+    /// If the shadow's token is held, the shadow has a shadow, or a merged
+    /// shadow had a pager or a page to move up: not yet. At a bypassed
+    /// shadow's last reference, as its free. As `Port::deallocate_kernel`
+    /// for `object`'s old name port.
     pub(super) fn collapse(state: &mut TokenGuard<'_, Self>, object: &Object) {
         loop {
             // No page is ever absent.
@@ -277,8 +279,8 @@ impl ObjectState {
             let Some(backing) = &state.shadow else {
                 return;
             };
-            // SAFETY: `state` holds the shadow's reference until after the
-            // shadow's guard drops.
+            // SAFETY: `state`, or a merge that takes it out, holds the
+            // shadow's reference until after the shadow's guard drops.
             let backing: &Object = unsafe { Reference::as_ptr(backing).as_ref() };
             // Tried: waiting with `state` held is not allowed.
             let Some(mut backing_state) = backing.state.try_lock() else {
@@ -295,10 +297,60 @@ impl ObjectState {
             );
             let backing_offset = usize::from(state.shadow_offset);
             let size = state.size;
-            assert!(
-                backing.references() != 1,
-                "vm_object_collapse: collapsing a backing object with one reference, not yet"
-            );
+            if backing.references() == 1 {
+                // Its pages outside the object or under one of its pages
+                // are freed; the others would move up.
+                while let Some(page) = backing_state.pages.tree.front().clone_pointer() {
+                    match page.offset().checked_sub(backing_offset) {
+                        Some(offset) if offset < size && state.lookup(offset).is_none() => {
+                            panic!("vm_object_collapse: vm_page_rename, not yet");
+                        }
+                        _ => {
+                            // vm_page_remove: out of the object and off its
+                            // paging queue.
+                            backing_state.pages.tree.front_mut().remove();
+                            backing_state.pages.count -= 1;
+                            page.remove_from_queue();
+                            page::free(page);
+                        }
+                    }
+                }
+                assert!(
+                    !backing_state.flags.contains(Flags::PAGER_CREATED),
+                    "vm_object_collapse: moving the backing object's pager, not yet"
+                );
+                // The backing object's name port names the object; the
+                // object's own stands for nothing.
+                let name = backing.pager_name.swap(ptr::null_mut(), Ordering::Acquire);
+                // SAFETY: the slot held its port's reference, taken here.
+                let old_name = NonNull::new(object.pager_name.swap(name, Ordering::AcqRel))
+                    .map(|old_name| unsafe { Reference::from_raw(old_name) });
+                if let Some(old_name) = &old_name {
+                    old_name.replace_kernel_object(None);
+                }
+                // SAFETY: the slot holds its port's reference, borrowed here.
+                if let Some(name) = unsafe { name.as_ref() } {
+                    name.set_kernel_object(KernelObject::PagerName(NonNull::from(object)));
+                }
+                // It shadows what the backing object did; the backing
+                // object's reference moves out.
+                let merged = mem::replace(&mut state.shadow, backing_state.shadow.take()).unwrap();
+                state.shadow_offset =
+                    state.shadow_offset + usize::from(backing_state.shadow_offset);
+                drop(backing_state);
+                TokenGuard::unlocked(state, || {
+                    if let Some(old_name) = old_name {
+                        old_name.deallocate_kernel();
+                        drop(old_name);
+                    }
+                    // Not terminated: it has no page, pager or shadow left.
+                    // SAFETY: every object but the kernel object is a box
+                    // of `CACHE` that `allocate` gave up, and with its only
+                    // reference nothing else uses this one.
+                    drop(unsafe { CacheBox::from_raw(&CACHE, Reference::into_raw(merged)) });
+                });
+                continue;
+            }
             if backing_state.flags.contains(Flags::PAGER_CREATED) {
                 return;
             }
