@@ -7,9 +7,10 @@ use core::arch::{asm, global_asm, naked_asm};
 use core::cell::UnsafeCell;
 use core::ops::Range;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicPtr, AtomicU16, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
 use x86_64::instructions::interrupts;
+use x86_64::registers::model_specific::{FsBase, KernelGsBase};
 use x86_64::structures::gdt::SegmentSelector;
 use x86_64::{PrivilegeLevel, VirtAddr};
 
@@ -46,6 +47,11 @@ pub struct MachineState {
     /// The x87 control word its first FPU state takes, its creator's; 0
     /// for the default's.
     pub(super) init_control: AtomicU16,
+    /// Its user FS base.
+    fs_base: AtomicU64,
+    /// Its user GS base, which `KERNEL_GS_BASE` holds while it runs in the
+    /// kernel.
+    gs_base: AtomicU64,
 }
 
 // SAFETY: its thread, or the CPU as that thread traps, writes its user
@@ -123,6 +129,16 @@ unsafe extern "sysv64" fn switch_stacks(
 /// The cache process control blocks come from.
 static CACHE: Cache<MachineState> = Cache::new("pcb");
 
+impl MachineState {
+    /// Writes its user FS and GS bases to the current CPU's MSRs.
+    fn load_user_bases(&self) {
+        // SAFETY: the kernel never uses FS.
+        unsafe { FsBase::write(VirtAddr::new(self.fs_base.load(Ordering::Relaxed))) };
+        // SAFETY: user GS base, for `swapgs`.
+        unsafe { KernelGsBase::write(VirtAddr::new(self.gs_base.load(Ordering::Relaxed))) };
+    }
+}
+
 impl MachineThread for MachineState {
     fn module_init() {
         CACHE.register();
@@ -138,6 +154,8 @@ impl MachineThread for MachineState {
             stack_top: AtomicUsize::new(0),
             fpu: AtomicPtr::new(ptr::null_mut()),
             init_control: AtomicU16::new(0),
+            fs_base: AtomicU64::new(0),
+            gs_base: AtomicU64::new(0),
         })
     }
 
@@ -174,6 +192,7 @@ impl MachineThread for MachineState {
         updated.privilege_stack_table[0] = VirtAddr::new(u64::try_from(user_end).unwrap());
         tss.set(updated);
         cpu.set_kernel_stack(self.stack_top.load(Ordering::Relaxed));
+        self.load_user_bases();
         // SAFETY: guaranteed by the caller; the frame is the one
         // `attach_stack` wrote.
         unsafe {
@@ -205,6 +224,7 @@ impl MachineThread for MachineState {
         updated.privilege_stack_table[0] = VirtAddr::new(u64::try_from(user_end).unwrap());
         tss.set(updated);
         cpu.set_kernel_stack(next.stack_top.load(Ordering::Relaxed));
+        next.load_user_bases();
         // SAFETY: guaranteed by the caller; this thread's stack pointer is
         // saved where its next switch back reads it.
         unsafe {
