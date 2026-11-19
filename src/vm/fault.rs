@@ -340,9 +340,9 @@ enum Residency {
 /// # Panics
 ///
 /// If no thread runs on the CPU. If a page is busy, it must be resident and
-/// is not, an object has a pager or a copy, the shadow lacks the page or
-/// it is read, or if no page is free: not yet. As `Page::deactivate` and
-/// `ObjectState::collapse`.
+/// is not, an object has a pager or a copy, the shadow lacks the page and
+/// has a shadow, its page is read, or if no page is free: not yet. As
+/// `Page::deactivate` and `ObjectState::collapse`.
 fn fault_page(
     object: &Object,
     mut state: TokenGuard<'static, ObjectState>,
@@ -381,7 +381,11 @@ fn fault_page(
         !state.flags.contains(Flags::PAGER_CREATED),
         "vm_fault_page: a pager (look_for_page), not yet"
     );
-    let state = if let Some(shadow) = &state.shadow {
+    // Down the shadow chain; at its end, the placeholder is filled with zeros.
+    let state = 'chain_end: {
+        let Some(shadow) = &state.shadow else {
+            break 'chain_end state;
+        };
         // SAFETY: the object, which the caller keeps, holds a reference on
         // its shadow, and the call's paging operation keeps `collapse` from
         // changing it until the walk is done.
@@ -398,10 +402,13 @@ fn fault_page(
                 "vm_fault_page: a pager (look_for_page), not yet"
             );
             assert!(
-                shadow_state.shadow.is_some(),
-                "vm_fault_page: zero fill at a shadow chain's end, not yet"
+                shadow_state.shadow.is_none(),
+                "vm_fault_page: the next object in a shadow chain, not yet"
             );
-            panic!("vm_fault_page: the next object in a shadow chain, not yet");
+            // Back to the first object, whose placeholder is filled.
+            shadow_state.end_paging();
+            drop(shadow_state);
+            break 'chain_end token.lock();
         };
         assert!(!source.is_busy(), "vm_fault_page: a busy page, not yet");
         source.set_busy();
@@ -429,14 +436,16 @@ fn fault_page(
         state.end_paging();
         ObjectState::collapse(&mut state, object);
         state.begin_paging();
-        state
-    } else {
-        // SAFETY: the page was free and nothing maps it, so it is ours alone.
-        unsafe { page.zero_fill() };
-        STATISTICS.zero_fill_count.fetch_add(1, Ordering::Relaxed);
-        task.zero_fills.fetch_add(1, Ordering::Relaxed);
-        state
+        assert!(
+            state.copy.is_none(),
+            "vm_fault_page: a copy object, not yet"
+        );
+        return Found { page, state };
     };
+    // SAFETY: the placeholder is busy and nothing maps it, so it is ours alone.
+    unsafe { page.zero_fill() };
+    STATISTICS.zero_fill_count.fetch_add(1, Ordering::Relaxed);
+    task.zero_fills.fetch_add(1, Ordering::Relaxed);
     assert!(
         state.copy.is_none(),
         "vm_fault_page: a copy object, not yet"
