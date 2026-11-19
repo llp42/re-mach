@@ -144,6 +144,10 @@ SPDX-FileContributor: Avadis Tevanian, Jr.
 SPDX-FileContributor: Michael Wayne Young
 SPDX-License-Identifier: CMU-Mach
 
+SPDX-FileName: i386/include/mach/i386/exception.h
+SPDX-FileCopyrightText: 1991, 1990, 1989, 1988 Carnegie Mellon University
+SPDX-License-Identifier: CMU-Mach
+
 SPDX-FileName: i386/include/mach/i386/thread_status.h
 SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
 SPDX-FileContributor: Avadis Tevanian, Jr.
@@ -407,6 +411,10 @@ SPDX-License-Identifier: LicenseRef-CMU-CSL
 
 SPDX-FileName: kern/debug.c
 SPDX-FileCopyrightText: 1993 Carnegie Mellon University
+SPDX-License-Identifier: CMU-Mach
+
+SPDX-FileName: kern/exception.c
+SPDX-FileCopyrightText: 1993, 1992, 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
 
 SPDX-FileName: kern/gsync.c

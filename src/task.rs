@@ -84,7 +84,7 @@ pub struct TaskPorts {
     /// The send right for its port it hands out.
     self_send: Option<Reference<Port>>,
     /// The send right its threads' exceptions go to, if any.
-    exception: Option<SendRight>,
+    pub(super) exception: Option<SendRight>,
 }
 
 /// A task's special port, by Mach's `TASK_*_PORT` number.

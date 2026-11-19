@@ -133,7 +133,7 @@ pub struct Thread {
     /// The send right for its port it hands out.
     self_send: AtomicPtr<Port>,
     /// Its other ports.
-    ports: Spinlock<ThreadPorts>,
+    pub(super) ports: Spinlock<ThreadPorts>,
     /// What its function is given by whoever starts it; null for nothing.
     argument: AtomicPtr<()>,
     /// Its kernel stack, which it keeps for life; set as it is created.
@@ -169,7 +169,7 @@ pub struct Thread {
 /// exception port.
 pub struct ThreadPorts {
     /// The send right its exceptions go to first, if any.
-    exception: Option<SendRight>,
+    pub(super) exception: Option<SendRight>,
 }
 
 /// 5/8 to the power of a number of seconds, as two shifts: `x >> first`,

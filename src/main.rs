@@ -15,6 +15,7 @@ mod config;
 mod console;
 mod device;
 mod error;
+mod exception;
 mod gsync;
 mod host;
 mod ipc;

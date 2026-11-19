@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
+// Inspired by GNU Mach; see COPYRIGHT.
 //! System calls: their entry point.
 
 use core::arch::global_asm;
@@ -11,8 +12,12 @@ use x86_64::registers::rflags::RFlags;
 use super::per_cpu::{KERNEL_STACK, PRIVILEGE_STACK, USER_STACK};
 use super::trap::TrapFrame;
 use super::{MachineState, copy, gdt};
+use crate::exception::{self, Exception};
 use crate::syscall::MACH_TRAPS;
 use crate::thread::MachineThread as _;
+
+/// `EXC_I386_INVOP`: the code of a bad instruction's exception.
+const INVALID_OPERATION: i32 = 1;
 
 // SYSCALL enters with interrupts off, rip in rcx and rflags in r11: the
 // user registers go into the thread's machine state as a trap from user
@@ -69,7 +74,7 @@ unsafe extern "C" {
 /// Runs the system call `frame` holds: the Mach trap its eax names,
 /// negated, with its register arguments, and those past the sixth from the
 /// user stack; the result goes to its rax, and the thread returns to user
-/// mode.
+/// mode. A number outside the table raises a bad instruction's exception.
 ///
 /// # Safety
 ///
@@ -77,18 +82,19 @@ unsafe extern "C" {
 ///
 /// # Panics
 ///
-/// On a number outside the table or a stack argument that can't be copied
-/// in, which raise exceptions, or a trap not written yet: not yet.
+/// On a stack argument that can't be copied in, which raises an exception,
+/// or a trap not written yet: not yet. As `exception::raise`.
 unsafe extern "sysv64" fn system_call(frame: *mut TrapFrame) -> ! {
+    // SAFETY: guaranteed by the caller.
+    let rax = unsafe { (*frame).rax };
+    let eax = i32::from_le_bytes(rax.to_le_bytes()[..4].try_into().unwrap());
+    if let Some(trap) = usize::try_from(-i64::from(eax))
+        .ok()
+        .and_then(|index| MACH_TRAPS.get(index))
     {
         // SAFETY: guaranteed by the caller; only the thread touches its
         // user registers while it runs in the kernel.
         let frame = unsafe { &mut *frame };
-        let eax = i32::from_le_bytes(frame.rax.to_le_bytes()[..4].try_into().unwrap());
-        let trap = usize::try_from(-i64::from(eax))
-            .ok()
-            .and_then(|index| MACH_TRAPS.get(index))
-            .unwrap_or_else(|| panic!("_syscall64_range: not yet"));
         let mut arguments = [
             frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9, 0,
         ]
@@ -107,6 +113,10 @@ unsafe extern "sysv64" fn system_call(frame: *mut TrapFrame) -> ! {
             *argument = usize::from_le_bytes(bytes);
         }
         frame.rax = u64::from(trap.call(&arguments));
+    } else {
+        // As _syscall64_range, then user_trap's invalid opcode: the frame is
+        // not borrowed, as others may change it while the thread waits.
+        exception::raise(Exception::BadInstruction, INVALID_OPERATION, 0);
     }
     MachineState::return_to_user()
 }

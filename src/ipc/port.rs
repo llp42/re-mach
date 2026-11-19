@@ -206,6 +206,24 @@ impl Port {
         send
     }
 
+    /// Makes a send right for `port` from another, whose reference the
+    /// caller lends, as `ipc_port_copy_send` does: gives the new right's
+    /// reference, or none for a dead port.
+    ///
+    /// # Panics
+    ///
+    /// If `port` is alive and has no send right.
+    pub fn try_copy_send(port: &Reference<Self>) -> Option<Reference<Self>> {
+        let mut state = port.state.lock();
+        let send = state.active.then(|| {
+            assert!(state.send_rights > 0, "ipc_port_copy_send: no send right");
+            state.send_rights += 1;
+            port.clone()
+        });
+        drop(state);
+        send
+    }
+
     /// Releases a send right for `port`, which the caller gives with its
     /// reference, as `ipc_port_release_send` does: a dead port keeps no
     /// count.
