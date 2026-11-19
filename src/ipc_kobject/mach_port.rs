@@ -6,7 +6,8 @@
 
 use super::mig::{self, OutOfLine};
 use crate::error::Error;
-use crate::ipc::port::{PortName, PortType};
+use crate::ipc::MessageType;
+use crate::ipc::port::{Port, PortName, PortType, SendRight};
 use crate::ipc::space::Space;
 use crate::reference::Reference;
 use crate::{ipc, task};
@@ -21,6 +22,7 @@ mig::subsystem! {
     5 mach_port_destroy(task = task::space_of, name: PortName);
     6 mach_port_deallocate(task = task::space_of, name: PortName);
     7 mach_port_get_refs(task = task::space_of, name: PortName, right: u32) -> (refs: u32);
+    15 mach_port_insert_right(task = task::space_of, name: PortName, poly: SendRight);
 }
 
 /// Serves `mach_port_names`: the names `space` holds rights under, and
@@ -130,4 +132,28 @@ fn mach_port_get_refs(
 ) -> Result<u32, Error> {
     let space = space.unwrap_or_else(|| panic!("mach_port_get_refs: KERN_INVALID_TASK, not yet"));
     Ok(ipc::mach_port::get_refs(space, name, right))
+}
+
+/// Serves `mach_port_insert_right`: `poly`'s send right goes into `space`
+/// as `name`; on a failure it is released, as `ipc_kmsg_destroy` of the
+/// request does.
+///
+/// # Panics
+///
+/// With no space or no right: not yet. As `ipc::mach_port::insert_right`.
+fn mach_port_insert_right(
+    space: Option<&Reference<Space>>,
+    name: PortName,
+    poly: Option<SendRight>,
+) -> Result<(), Error> {
+    let space =
+        space.unwrap_or_else(|| panic!("mach_port_insert_right: KERN_INVALID_TASK, not yet"));
+    let poly =
+        poly.unwrap_or_else(|| panic!("mach_port_insert_right: KERN_INVALID_CAPABILITY, not yet"));
+    ipc::mach_port::insert_right(space, name, poly.into_reference(), MessageType::PortSend).map_err(
+        |(error, port)| {
+            Port::release_send(port);
+            error
+        },
+    )
 }

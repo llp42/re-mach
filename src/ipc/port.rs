@@ -359,6 +359,13 @@ impl SendRight {
     pub const fn new(port: Reference<Port>) -> Self {
         Self(ManuallyDrop::new(port))
     }
+
+    /// Its port's reference, which takes the right with it, unreleased.
+    pub fn into_reference(self) -> Reference<Port> {
+        let mut right = ManuallyDrop::new(self);
+        // SAFETY: `right` never drops, and its field is not used after.
+        unsafe { ManuallyDrop::take(&mut right.0) }
+    }
 }
 
 impl AsRef<Reference<Port>> for SendRight {

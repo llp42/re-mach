@@ -331,6 +331,16 @@ macro_rules! subsystem {
             @sort $name $head [$($ins)* ($in send_right)] [$($outs)*] [$($($rest)*)?] $out_list
         );
     };
+    // A send right in, which the routine keeps.
+    (
+        @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*]
+        [$in:ident: SendRight $(, $($rest:tt)*)?] $out_list:tt
+    ) => {
+        $crate::ipc_kobject::mig::subsystem!(
+            @sort $name $head [$($ins)* ($in kept_send_right)] [$($outs)*] [$($($rest)*)?]
+            $out_list
+        );
+    };
     // Out-of-line memory in.
     (
         @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*]
@@ -435,7 +445,8 @@ macro_rules! subsystem {
 
             /// Serves `request`, as MIG's stub does; the request's send rights
             /// and out-of-line memory are taken out of it, the rights released
-            /// as the call ends, the memory given to the routine.
+            /// as the call ends unless the routine keeps them, the memory given
+            /// to the routine.
             ///
             /// # Panics
             ///
@@ -518,6 +529,7 @@ macro_rules! subsystem {
     // Whether the request is complex: if any in is a right or memory.
     (@complex) => { false };
     (@complex send_right $($rest:ident)*) => { true };
+    (@complex kept_send_right $($rest:ident)*) => { true };
     (@complex out_of_line $($rest:ident)*) => { true };
     (@complex $kind:ident $($rest:ident)*) => { mig::subsystem!(@complex $($rest)*) };
     // A right's handle takes it out of the request, its slot cleared; null
@@ -550,9 +562,13 @@ macro_rules! subsystem {
             mig::OutOfLine::<$element>::new(copy, count)
         });
     };
+    (@take $request:ident $in:ident kept_send_right) => {
+        mig::subsystem! { @take $request $in send_right }
+    };
     (@take $request:ident $in:ident $kind:ident $($parameter:tt)*) => {};
     // Each kind's field: in the request, then in the reply.
     (@field request send_right $($intran:path)?) => { mig::Argument<usize> };
+    (@field request kept_send_right) => { mig::Argument<usize> };
     (@field request inline $type:ty) => { mig::Argument<$type> };
     (@field request count $element:ty, $max:literal) => { mig::Argument<u32> };
     (@field request out_of_line $element:ty) => { mig::Argument<usize> };
@@ -564,6 +580,9 @@ macro_rules! subsystem {
     // Its check: the word, whole, or the bits its kind checks.
     (@check $request:ident $in:ident send_right $($intran:path)?) => {
         $request.$in.word == mig::type_word($crate::ipc::MessageType::PortSend, 64, 1)
+    };
+    (@check $request:ident $in:ident kept_send_right) => {
+        mig::subsystem!(@check $request $in send_right)
     };
     (@check $request:ident $in:ident inline $type:ty) => {
         $request.$in.word & <$type as mig::Inline>::CHECKED == <$type as mig::Inline>::WORD
@@ -580,14 +599,16 @@ macro_rules! subsystem {
             && $request.$in.word >> 32 <= $max
     };
     // What the routine gets: the data; for a right, its intran's value, or
-    // its port's reference; for a count, the reply's array, cut to it; for
-    // out-of-line memory, its handle; for an inline array, its elements.
+    // its port's reference; for a kept right, its handle; for a count, the
+    // reply's array, cut to it; for out-of-line memory, its handle; for an
+    // inline array, its elements.
     (@pass $request:ident $reply:ident $in:ident send_right $intran:path) => {
         $in.as_deref().and_then($intran).as_deref()
     };
     (@pass $request:ident $reply:ident $in:ident send_right) => {
         $in.as_ref().map(AsRef::as_ref)
     };
+    (@pass $request:ident $reply:ident $in:ident kept_send_right) => { $in };
     (@pass $request:ident $reply:ident $in:ident inline $type:ty) => { $request.$in.data };
     (@pass $request:ident $reply:ident $in:ident count $element:ty, $max:literal) => {
         &mut $reply.$in.data[..usize::try_from($request.$in.data).unwrap().min($max)]
