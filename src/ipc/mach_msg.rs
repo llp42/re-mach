@@ -4,6 +4,7 @@
 //! The message trap.
 
 use core::ptr::{self, NonNull};
+use core::sync::atomic::Ordering;
 
 use intrusive_collections::UnsafeRef;
 
@@ -23,6 +24,7 @@ use crate::{ipc_kobject, smp};
 bitflags::bitflags! {
     /// What a message trap does, as Mach's option bits; only those used
     /// here.
+    #[derive(Clone, Copy)]
     struct Options: u32 {
         /// Send a message.
         const SEND = 1;
@@ -30,6 +32,8 @@ bitflags::bitflags! {
         const RECEIVE = 1 << 1;
         /// Give up receiving after the timeout.
         const RECEIVE_TIMEOUT = 1 << 8;
+        /// Send past the queue's limit; the kernel's alone.
+        const SEND_ALWAYS = 1 << 16;
     }
 }
 
@@ -242,13 +246,14 @@ pub fn trap(
 }
 
 /// Sends the message at `message`, `send_size` bytes, as `mach_msg_send`
-/// does; so far a simple message with no reply port to a port the kernel
-/// receives on. Gives `MACH_MSG_SUCCESS`.
+/// does; so far a simple message with no reply port, served if the kernel
+/// receives on its port, else queued. Gives `MACH_MSG_SUCCESS`.
 ///
 /// # Panics
 ///
 /// If no thread runs on the CPU, or the kernel's port is dead. On every
-/// other path: not yet; as `kernel_message::get` and `ipc_kobject::server`.
+/// other path: not yet; as `kernel_message::get`, `ipc_kobject::server`
+/// and `queue`.
 fn send(message: usize, send_size: u32) -> u32 {
     let thread = smp::current()
         .active_thread()
@@ -296,22 +301,79 @@ fn send(message: usize, send_size: u32) -> u32 {
     assert!(!complex, "ipc_kmsg_copyin: ipc_kmsg_copyin_body, not yet");
     // ipc_mqueue_send: served here if the kernel receives on the port.
     // SAFETY: from `into_raw`, the port lives while the message's reference
-    // does, which the server releases only once this borrow has ended.
+    // does, which the server releases or the queue takes only once this
+    // borrow has ended.
     let port_state = unsafe { destination.as_ref() }.state.lock();
-    assert!(
-        port_state.receiver == Receiver::Space(NonNull::from(&KERNEL_SPACE)),
-        "ipc_mqueue_send: a port the kernel does not receive on, not yet"
-    );
-    // A kernel port's receiver is cleared before it dies.
-    assert!(port_state.active, "ipc_mqueue_send: a dead kernel port");
-    drop(port_state);
-    let reply = ipc_kobject::server(request);
-    assert!(
-        reply.is_none(),
-        "ipc_mqueue_send: ipc_mqueue_send_always, not yet"
-    );
+    if port_state.receiver == Receiver::Space(NonNull::from(&KERNEL_SPACE)) {
+        // A kernel port's receiver is cleared before it dies.
+        assert!(port_state.active, "ipc_mqueue_send: a dead kernel port");
+        drop(port_state);
+        let reply = ipc_kobject::server(request);
+        assert!(
+            reply.is_none(),
+            "ipc_mqueue_send: ipc_mqueue_send_always, not yet"
+        );
+    } else {
+        drop(port_state);
+        // As mach_msg_send's options: MACH_SEND_TIMEOUT, not yet.
+        queue(request, Options::empty());
+    }
     // MACH_MSG_SUCCESS.
     0
+}
+
+/// Queues `message` on its destination, a port the kernel does not receive
+/// on, as `ipc_mqueue_send` does past the kernel's branch; `SEND_ALWAYS` in
+/// `options` passes the queue's limit. The port's oldest waiting receiver
+/// wakes once the port is unlocked, and takes the message itself.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU, or a waiting receiver is being freed. If
+/// the port is dead or in a set, or a send right finds its queue full: not
+/// yet.
+fn queue(message: KernelMessage, options: Options) {
+    let thread = smp::current()
+        .active_thread()
+        .expect("ipc_mqueue_send: no current thread");
+    // SAFETY: copied in, the destination is a port's exposed address, and
+    // the message holds a reference to it, which it keeps queued; this
+    // borrow ends at the unlock.
+    let port = unsafe { &*ptr::with_exposed_provenance::<Port>(message.header().remote_port) };
+    let mut port_state = port.state.lock();
+    assert!(port_state.active, "ipc_mqueue_send: a dead port, not yet");
+    // Under the limit, MACH_SEND_ALWAYS, or a send-once right: no wait.
+    assert!(
+        port_state.message_count < port_state.queue_limit
+            || options.contains(Options::SEND_ALWAYS)
+            || matches!(
+                message.header().bits.remote(),
+                Some(MessageType::PortSendOnce)
+            ),
+        "ipc_mqueue_send: a full queue, ip_blocked, not yet"
+    );
+    port_state.message_count += 1;
+    assert!(
+        port_state.set.is_none(),
+        "ipc_mqueue_send: a port in a set, not yet"
+    );
+    message.enqueue(&mut port_state.messages);
+    // The oldest, with a reference that keeps it through the wake.
+    let receiver = port_state.receivers.pop_back().map(|receiver| {
+        // SAFETY: a thread lives while it waits on a port's queue.
+        unsafe { Reference::upgrade(NonNull::from(&*receiver)) }
+            .expect("ipc_mqueue_send: a receiver being freed")
+    });
+    drop(port_state);
+    if let Some(receiver) = receiver {
+        // SAFETY: the reference keeps it alive through the wake, and a
+        // runnable thread holds its own.
+        sched::clear_wait(
+            unsafe { Reference::as_ptr(&receiver).as_ref() },
+            WaitResult::Awakened,
+        );
+    }
+    thread.task().messages_sent.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Receives a message on `name`, as `mach_msg_receive` does, waiting for one

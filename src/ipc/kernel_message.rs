@@ -7,7 +7,7 @@ use core::mem::{ManuallyDrop, offset_of};
 use core::ptr::{self, NonNull};
 use core::slice;
 
-use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
+use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use super::port::{KernelObject, Port, PortName};
 use super::space::Space;
@@ -218,6 +218,14 @@ impl KernelMessage {
         }
         // Freed outside the slot.
         drop(ManuallyDrop::into_inner(message));
+    }
+
+    /// Puts it last on `queue`, a port's, which takes it, as
+    /// `ipc_kmsg_enqueue` does.
+    pub(super) fn enqueue(self, queue: &mut LinkedList<QueueAdapter>) {
+        let message = ManuallyDrop::new(self);
+        // SAFETY: the buffer is ours alone, given up to the queue.
+        queue.push_back(unsafe { UnsafeRef::from_raw(message.0.as_ptr()) });
     }
 
     /// Copies the user's message at `address`, `size` bytes, into it, as

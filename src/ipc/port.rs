@@ -36,8 +36,8 @@ pub struct Port {
 
 /// A port's state under its lock; so far only whether it is alive, its
 /// receiver and its name there, its send and send-once rights, what it
-/// stands for, its set, its sequence number, its message queue and its
-/// protected payload.
+/// stands for, its set, its sequence number, its message queue, its count
+/// and limit, and its protected payload.
 pub(super) struct PortState {
     /// Whether it is alive.
     pub(super) active: bool,
@@ -59,6 +59,10 @@ pub(super) struct PortState {
     pub(super) sequence_number: u32,
     /// The messages queued on it, oldest first.
     pub(super) messages: LinkedList<kernel_message::QueueAdapter>,
+    /// How many messages are queued on it.
+    pub(super) message_count: u32,
+    /// How many messages it queues before senders wait.
+    pub(super) queue_limit: u32,
     /// The threads waiting to receive from it, latest first.
     pub(super) receivers: LinkedList<IpcQueueAdapter>,
     /// What its received messages carry in place of its name, if set.
@@ -87,6 +91,9 @@ impl Port {
                 set: None,
                 sequence_number: 0,
                 messages: LinkedList::new(kernel_message::QueueAdapter::NEW),
+                message_count: 0,
+                // MACH_PORT_QLIMIT_DEFAULT.
+                queue_limit: 5,
                 receivers: LinkedList::new(IpcQueueAdapter::NEW),
                 protected_payload: None,
             }),
