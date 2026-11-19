@@ -199,6 +199,8 @@ fn send(
         subcode,
     };
     mach_msg::send_always(message);
-    let status = mach_msg::receive_reply(&saved);
-    panic!("exception_raise_continue_slow: {status:#x}, not yet");
+    match mach_msg::receive_reply(&saved) {
+        Ok(_) => panic!("exception_raise_continue_slow: exception_parse_reply, not yet"),
+        Err(status) => panic!("exception_raise_continue_slow: {status:#x}, not yet"),
+    }
 }

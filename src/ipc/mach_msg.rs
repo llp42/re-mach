@@ -33,6 +33,8 @@ bitflags::bitflags! {
         const RECEIVE = 1 << 1;
         /// Give up receiving after the timeout.
         const RECEIVE_TIMEOUT = 1 << 8;
+        /// Ask for a dead-name notification on the received reply right.
+        const RECEIVE_NOTIFY = 1 << 9;
         /// Send past the queue's limit; the kernel's alone.
         const SEND_ALWAYS = 1 << 16;
     }
@@ -77,12 +79,7 @@ pub fn trap(
             options.contains(Options::RECEIVE) && !options.contains(Options::SEND),
             "mach_msg_trap: option {option:#x}, not yet"
         );
-        return receive(
-            receive_name,
-            options
-                .contains(Options::RECEIVE_TIMEOUT)
-                .then_some(timeout),
-        );
+        return receive(message, options, receive_size, receive_name, timeout);
     }
     let thread = smp::current()
         .active_thread()
@@ -396,19 +393,29 @@ fn queue(message: KernelMessage, options: Options) {
     thread.task().messages_sent.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Receives a message on `name`, as `mach_msg_receive` does, waiting for one
-/// at most `timeout` milliseconds if given; so far none comes. Gives
-/// `MACH_RCV_TIMED_OUT`.
+/// Receives a message on `name` into the user's buffer at `message`, at
+/// most `receive_size` bytes, as `mach_msg_receive` does with `options`,
+/// waiting for one at most `timeout` milliseconds with `RECEIVE_TIMEOUT`:
+/// its header and body are copied out to the receiver. Gives
+/// `MACH_MSG_SUCCESS`, or `MACH_RCV_TIMED_OUT`.
 ///
 /// # Panics
 ///
-/// If no thread runs on the CPU. On every other path: not yet; as
-/// `dequeue`.
+/// If no thread runs on the CPU. If the message is larger than
+/// `receive_size`, or with `RECEIVE_NOTIFY`: not yet. On every other path:
+/// not yet; as `dequeue`, `KernelMessage::copy_out_header`,
+/// `KernelMessage::copy_out_body` and `kernel_message::put`.
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the port's guard is moved into dequeue"
 )]
-fn receive(name: PortName, timeout: Option<u32>) -> u32 {
+fn receive(
+    message: usize,
+    options: Options,
+    receive_size: u32,
+    name: PortName,
+    timeout: u32,
+) -> u32 {
     let thread = smp::current()
         .active_thread()
         .expect("mach_msg_receive: no current thread");
@@ -445,20 +452,48 @@ fn receive(name: PortName, timeout: Option<u32>) -> u32 {
         port_state.set.is_none(),
         "ipc_mqueue_copyin: a port in a set, not yet"
     );
-    let status = dequeue(&port, port_state, timeout);
+    let result = dequeue(
+        &port,
+        port_state,
+        options
+            .contains(Options::RECEIVE_TIMEOUT)
+            .then_some(timeout),
+    );
     // ipc_object_release.
     drop(port);
-    status
+    let (mut received, sequence_number) = match result {
+        Ok(received) => received,
+        Err(status) => return status,
+    };
+    received.header_mut().sequence_number = sequence_number;
+    let size = received.header().size;
+    assert!(
+        size <= receive_size,
+        "mach_msg_receive: MACH_RCV_TOO_LARGE, not yet"
+    );
+    assert!(
+        !options.contains(Options::RECEIVE_NOTIFY),
+        "mach_msg_receive: MACH_RCV_NOTIFY, not yet"
+    );
+    // ipc_kmsg_copyout, with no notify port.
+    received.copy_out_header(space);
+    if received.header().bits.is_complex() {
+        received.copy_out_body(space, &thread.task().map);
+    }
+    kernel_message::put(message, received, size);
+    // MACH_MSG_SUCCESS.
+    0
 }
 
 /// Waits on `port`, a reply port the caller holds a reference to, for its
 /// reply, as `exception_raise` receives it: with no option, no size limit
-/// and no timeout.
+/// and no timeout; gives it with its sequence number, or the receive's
+/// status.
 ///
 /// # Panics
 ///
 /// If `port` is dead: not yet. As `dequeue`.
-pub fn receive_reply(port: &Port) -> u32 {
+pub fn receive_reply(port: &Port) -> Result<(KernelMessage, u32), u32> {
     let port_state = port.state.lock();
     assert!(
         port_state.active,
@@ -467,31 +502,44 @@ pub fn receive_reply(port: &Port) -> u32 {
     dequeue(port, port_state, None)
 }
 
-/// Takes a message off the queue of `port`, which `port_state` holds
-/// locked and alive, waiting for one at most `timeout` milliseconds if
-/// given, as `ipc_mqueue_receive` does; so far none comes. The port is
-/// unlocked. Gives `MACH_RCV_TIMED_OUT`.
+/// Takes the first message off the queue of `port`, which `port_state`
+/// holds locked and alive, waiting for one at most `timeout` milliseconds
+/// if given, as `ipc_mqueue_receive` does: gives it with its sequence
+/// number, taken now, else `MACH_RCV_TIMED_OUT`. The port is unlocked. A
+/// receiver a sender woke, off the port's receivers, looks at the queue
+/// again.
 ///
 /// # Panics
 ///
-/// If no thread runs on the CPU, or it wakes for no cause. If a message is
-/// queued, or wakes it: not yet.
+/// If no thread runs on the CPU, or it wakes for no cause. If the port
+/// dies while it waits: not yet.
 fn dequeue<'a>(
     port: &'a Port,
     mut port_state: SpinlockGuard<'a, PortState>,
     mut timeout: Option<u32>,
-) -> u32 {
+) -> Result<(KernelMessage, u32), u32> {
     let thread = smp::current()
         .active_thread()
         .expect("ipc_mqueue_receive: no current thread");
     // Under the queue's lock, the port's.
-    let status = loop {
-        assert!(
-            port_state.messages.is_empty(),
-            "ipc_mqueue_receive: a queued message, not yet"
-        );
+    loop {
+        if let Some(message) = KernelMessage::dequeue(&mut port_state.messages) {
+            let sequence_number = port_state.sequence_number;
+            port_state.sequence_number = sequence_number.wrapping_add(1);
+            // No sender waits on a full queue yet.
+            port_state.message_count -= 1;
+            drop(port_state);
+            thread
+                .task()
+                .messages_received
+                .fetch_add(1, Ordering::Relaxed);
+            return Ok((message, sequence_number));
+        }
         match timeout {
-            Some(0) => break MACH_RCV_TIMED_OUT,
+            Some(0) => {
+                drop(port_state);
+                return Err(MACH_RCV_TIMED_OUT);
+            }
             Some(milliseconds) => sched::will_wait_with_timeout(milliseconds),
             None => sched::will_wait(),
         }
@@ -503,11 +551,21 @@ fn dequeue<'a>(
         drop(port_state);
         sched::block();
         port_state = port.state.lock();
-        // Still queued, it woke for no message: MACH_RCV_IN_PROGRESS.
         assert!(
-            thread.is_queued_to_receive(),
-            "ipc_mqueue_receive: ith_state not MACH_RCV_IN_PROGRESS, not yet"
+            port_state.active,
+            "ipc_mqueue_receive: MACH_RCV_PORT_DIED, not yet"
         );
+        // A sender took it off the queue, and queued a message; if another
+        // receiver took that, it waits again, at once if its timer fired.
+        if !thread.is_queued_to_receive() {
+            if matches!(thread.wait_result(), WaitResult::TimedOut) {
+                timeout = Some(0);
+            }
+            // Else the time left is not tracked: a full wait (SC-D3, several
+            // receivers only).
+            continue;
+        }
+        // Still queued, it woke for no message: MACH_RCV_IN_PROGRESS.
         // SAFETY: still linked, it is on the one queue it joined, this one.
         unsafe { port_state.receivers.cursor_mut_from_ptr(thread) }.remove();
         match thread.wait_result() {
@@ -520,9 +578,7 @@ fn dequeue<'a>(
             }
             WaitResult::Awakened => panic!("ipc_mqueue_receive: awakened with no message"),
         }
-    };
-    drop(port_state);
-    status
+    }
 }
 
 /// The port of the send right alone that `name` denotes in `state`, as the

@@ -9,9 +9,10 @@ use core::slice;
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
+use super::object::{self, Object};
 use super::port::{KernelObject, Port, PortName};
 use super::space::Space;
-use super::{MessageType, object};
+use super::{MessageType, right};
 use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::error::Error;
 use crate::kalloc;
@@ -226,6 +227,14 @@ impl KernelMessage {
         let message = ManuallyDrop::new(self);
         // SAFETY: the buffer is ours alone, given up to the queue.
         queue.push_back(unsafe { UnsafeRef::from_raw(message.0.as_ptr()) });
+    }
+
+    /// The first message on `queue`, a port's, taken off it, as
+    /// `ipc_kmsg_rmqueue_first` does; `None` if it is empty.
+    pub(super) fn dequeue(queue: &mut LinkedList<QueueAdapter>) -> Option<Self> {
+        queue
+            .pop_front()
+            .map(|buffer| Self(NonNull::new(UnsafeRef::into_raw(buffer)).unwrap()))
     }
 
     /// Copies the user's message at `address`, `size` bytes, into it, as
@@ -458,6 +467,102 @@ impl KernelMessage {
         );
         // SAFETY: the header's place, within the buffer.
         unsafe { self.0.byte_add(OVERHEAD) }.cast()
+    }
+
+    /// Copies out its header to `space`, its receiver, as
+    /// `ipc_kmsg_copyout_header` does for a request: the reply port's
+    /// send-once right moves into a new entry, whose name is its remote
+    /// port; the destination's send right is consumed, its local port the
+    /// space's name for the port, if it receives on it, else null; the right
+    /// types swap. The space stays locked across both.
+    ///
+    /// # Panics
+    ///
+    /// For other right types, a dead space, reply port or destination, an
+    /// entry that can't be allocated, or a protected payload: not yet. As
+    /// `right::copy_out` and `object::copy_out_dest`.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the ports' guards are moved into right::copy_out and object::copy_out_dest"
+    )]
+    pub(super) fn copy_out_header(&mut self, space: &Space) {
+        let header = self.header_mut();
+        let bits = header.bits;
+        let request =
+            MessageBits::new(Some(MessageType::PortSend), Some(MessageType::PortSendOnce));
+        assert!(
+            bits == request || bits == request.with_complex(),
+            "ipc_kmsg_copyout_header: header bits {:#x}, not yet",
+            u32::from(bits)
+        );
+        // SAFETY: copied in or made by the kernel, both slots hold the exposed
+        // addresses of references given up by `into_raw`, which the handles
+        // take, as the slots are overwritten below.
+        let (destination, reply) = unsafe {
+            (
+                Reference::from_raw(
+                    NonNull::new(ptr::with_exposed_provenance_mut::<Port>(header.remote_port))
+                        .unwrap(),
+                ),
+                Reference::from_raw(
+                    NonNull::new(ptr::with_exposed_provenance_mut::<Port>(header.local_port))
+                        .unwrap(),
+                ),
+            )
+        };
+        let mut state = space.state.write();
+        assert!(
+            state.active,
+            "ipc_kmsg_copyout_header: MACH_RCV_HEADER_ERROR|MACH_MSG_IPC_SPACE, not yet"
+        );
+        // A send-once right has a name of its own: no reverse lookup.
+        let reply_name = match state.allocate() {
+            Ok((name, _)) => name,
+            Err(error) => {
+                panic!("ipc_kmsg_copyout_header: ipc_entry_alloc: {error:?}, not yet")
+            }
+        };
+        let reply_state = reply.state.lock();
+        assert!(
+            reply_state.active,
+            "ipc_kmsg_copyout_header: a dead reply port, not yet"
+        );
+        // The entry takes the right's reference.
+        let entry = right::copy_out(
+            &mut state,
+            reply_name,
+            MessageType::PortSendOnce,
+            &reply,
+            reply_state,
+        )
+        .expect("ipc_kmsg_copyout_header: a send-once right merged");
+        entry.object = Some(Object::Port(reply));
+        // Locked before the space is unlocked, so its receive right can't move
+        // between the two copy-outs.
+        let destination_state = destination.state.lock();
+        drop(state);
+        assert!(
+            destination_state.active,
+            "ipc_kmsg_copyout_header: a dead destination, not yet"
+        );
+        assert!(
+            destination_state.protected_payload.is_none(),
+            "ipc_kmsg_copyout_header: MACH_MSG_TYPE_PROTECTED_PAYLOAD, not yet"
+        );
+        let destination_name =
+            object::copy_out_dest(space, destination_state, MessageType::PortSend);
+        // The right's reference, as ipc_object_copyout_dest's io_release.
+        drop(destination);
+        let swapped =
+            MessageBits::new(Some(MessageType::PortSendOnce), Some(MessageType::PortSend));
+        header.bits = if bits.is_complex() {
+            swapped.with_complex()
+        } else {
+            swapped
+        };
+        // The names, zero-extended.
+        header.remote_port = usize::try_from(u32::from(reply_name)).unwrap();
+        header.local_port = usize::try_from(u32::from(destination_name)).unwrap();
     }
 
     /// Copies its body out to its receiver, as `ipc_kmsg_copyout_body`

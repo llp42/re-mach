@@ -6,13 +6,14 @@
 use core::ptr::NonNull;
 
 use super::entry::Rights;
-use super::port::{Port, PortName};
+use super::port::{Port, PortName, PortState, Receiver};
 use super::port_set::PortSet;
 use super::space::Space;
 use super::{MessageType, right};
 use crate::error::Error;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
+use crate::sync::SpinlockGuard;
 
 /// What an entry's rights are for.
 pub(super) enum Object {
@@ -217,6 +218,44 @@ pub(super) fn copy_out(
     }
     drop(state);
     Ok(name)
+}
+
+/// Consumes a message's destination right, of type `message_type`, for a
+/// port of locked state `port_state`, as `ipc_object_copyout_dest` does on
+/// its receive in `space`: gives the space's name for the port if it
+/// receives on it, else null. The port is unlocked; the caller drops the
+/// right's reference.
+///
+/// # Panics
+///
+/// If the port is dead or has no send right, or for a type that is not a
+/// right. For a send-once right: not yet.
+pub(super) fn copy_out_dest(
+    space: &Space,
+    mut port_state: SpinlockGuard<'_, PortState>,
+    message_type: MessageType,
+) -> PortName {
+    assert!(port_state.active, "ipc_object_copyout_dest: a dead port");
+    let name = match message_type {
+        MessageType::PortSend => {
+            port_state.send_rights = port_state
+                .send_rights
+                .checked_sub(1)
+                .expect("ipc_object_copyout_dest: no send right");
+            // No call makes a no-senders request yet: none to notify.
+            if port_state.receiver == Receiver::Space(NonNull::from(space)) {
+                port_state.receiver_name
+            } else {
+                PortName::NULL
+            }
+        }
+        MessageType::PortSendOnce => {
+            panic!("ipc_object_copyout_dest: MACH_MSG_TYPE_PORT_SEND_ONCE, not yet")
+        }
+        _ => panic!("ipc_object_copyout_dest: strange rights"),
+    };
+    drop(port_state);
+    name
 }
 
 /// Puts the right `message_type` names, for `port`, in `space` as `name`;

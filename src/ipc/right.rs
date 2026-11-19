@@ -97,10 +97,10 @@ pub(super) fn reverse<'a>(
 ///
 /// # Panics
 ///
-/// If `name` has no entry, or its entry holds the receive right with other
-/// rights or user references. If its user references would reach the
-/// maximum, or for a send-once right: not yet. For a type that is not a
-/// right.
+/// If `name` has no entry, its entry holds the receive right with other
+/// rights or user references, or a send-once right's entry is in use or
+/// the port has none. If its user references would reach the maximum: not
+/// yet. For a type that is not a right.
 pub(super) fn copy_out<'a>(
     state: &'a mut SpaceState,
     name: PortName,
@@ -148,7 +148,19 @@ pub(super) fn copy_out<'a>(
             takes.then_some(entry)
         }
         MessageType::PortSendOnce => {
-            panic!("ipc_right_copyout: MACH_MSG_TYPE_PORT_SEND_ONCE, not yet")
+            let entry = state
+                .map
+                .get_mut(name.key())
+                .expect("ipc_right_copyout: no entry");
+            assert!(
+                !entry.in_use() && port_state.send_once_rights > 0,
+                "ipc_right_copyout: a send-once right to an entry in use, or none"
+            );
+            drop(port_state);
+            // The entry takes the right and its reference.
+            entry.bits.rights |= Rights::SEND_ONCE;
+            entry.bits.user_references = 1;
+            Some(entry)
         }
         _ => panic!("ipc_right_copyout: strange rights"),
     }
