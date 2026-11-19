@@ -14,11 +14,12 @@ use super::kernel_message::{
     self, EXPAND_FACTOR, Header, KernelMessage, MessageBits, SAVED_MESSAGE_SIZE,
 };
 use super::object::Object;
-use super::port::{Port, PortName, Receiver};
+use super::port::{Port, PortName, PortState, Receiver};
 use super::space::{KERNEL_SPACE, SpaceState};
 use crate::arch::PAGE_SIZE;
 use crate::reference::Reference;
 use crate::sched::{self, WaitResult};
+use crate::sync::SpinlockGuard;
 use crate::{ipc_kobject, smp};
 
 bitflags::bitflags! {
@@ -382,9 +383,13 @@ fn queue(message: KernelMessage, options: Options) {
 ///
 /// # Panics
 ///
-/// If no thread runs on the CPU, or it wakes for no cause. On every other
-/// path: not yet.
-fn receive(name: PortName, mut timeout: Option<u32>) -> u32 {
+/// If no thread runs on the CPU. On every other path: not yet; as
+/// `dequeue`.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the port's guard is moved into dequeue"
+)]
+fn receive(name: PortName, timeout: Option<u32>) -> u32 {
     let thread = smp::current()
         .active_thread()
         .expect("mach_msg_receive: no current thread");
@@ -409,7 +414,7 @@ fn receive(name: PortName, mut timeout: Option<u32>) -> u32 {
     } else {
         panic!("ipc_mqueue_copyin: MACH_RCV_INVALID_NAME, not yet");
     };
-    let mut port_state = port.state.lock();
+    let port_state = port.state.lock();
     assert!(
         port_state.active
             && port_state.receiver_name == name
@@ -421,7 +426,30 @@ fn receive(name: PortName, mut timeout: Option<u32>) -> u32 {
         port_state.set.is_none(),
         "ipc_mqueue_copyin: a port in a set, not yet"
     );
-    // ipc_mqueue_receive, under the queue's lock, the port's.
+    let status = dequeue(&port, port_state, timeout);
+    // ipc_object_release.
+    drop(port);
+    status
+}
+
+/// Takes a message off the queue of `port`, which `port_state` holds
+/// locked and alive, waiting for one at most `timeout` milliseconds if
+/// given, as `ipc_mqueue_receive` does; so far none comes. The port is
+/// unlocked. Gives `MACH_RCV_TIMED_OUT`.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU, or it wakes for no cause. If a message is
+/// queued, or wakes it: not yet.
+fn dequeue<'a>(
+    port: &'a Port,
+    mut port_state: SpinlockGuard<'a, PortState>,
+    mut timeout: Option<u32>,
+) -> u32 {
+    let thread = smp::current()
+        .active_thread()
+        .expect("ipc_mqueue_receive: no current thread");
+    // Under the queue's lock, the port's.
     let status = loop {
         assert!(
             port_state.messages.is_empty(),
@@ -459,8 +487,6 @@ fn receive(name: PortName, mut timeout: Option<u32>) -> u32 {
         }
     };
     drop(port_state);
-    // ipc_object_release.
-    drop(port);
     status
 }
 
