@@ -18,6 +18,7 @@ mod gdt;
 mod hpet;
 mod idt;
 mod interrupt;
+mod mach_i386;
 mod machine_state;
 mod machine_task;
 mod memory_layout;
@@ -51,6 +52,7 @@ use crate::boot::{self, BootModule};
 use crate::clock;
 use crate::clock::time::TimeValue;
 use crate::error::Error;
+use crate::ipc::kernel_message::KernelMessage;
 use crate::machine::{self, CpuSubtype, CpuType, Slot};
 use crate::println;
 use crate::smp::{self, MachinePerCpu as _};
@@ -408,6 +410,10 @@ impl Machine for X86_64 {
 
     fn copy_in(source: usize, destination: &mut [u8]) -> Result<(), Error> {
         copy::copy_in(source, destination)
+    }
+
+    fn server_routine(id: i32) -> Option<fn(&mut KernelMessage, &mut KernelMessage)> {
+        mach_i386::routine(id)
     }
 
     fn efi_system_table() -> Option<u64> {

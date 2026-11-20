@@ -159,6 +159,16 @@ pub fn init_cpu() {
     unsafe { Cr0::update(|flags| flags.insert(Cr0Flags::TASK_SWITCHED)) };
 }
 
+/// The bytes `i386_XFLOAT_STATE` takes: its four-word head, then a saved
+/// state.
+///
+/// # Panics
+///
+/// Before `init`.
+pub(super) fn xstate_size() -> usize {
+    size_of::<[i32; 4]>() + *STATE_SIZE.get().expect("fpu: not set up")
+}
+
 /// Where a saved state's area starts in its buffer, past its header; the
 /// areas XSAVE writes are 64-byte aligned.
 const AREA_OFFSET: usize = 64;

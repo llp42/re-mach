@@ -8,11 +8,12 @@ mod gnumach;
 mod mach;
 mod mach_host;
 mod mach_port;
-mod mig;
+pub mod mig;
 
 use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
 
+use crate::arch::{self, Machine as _};
 use crate::ipc::MessageType;
 use crate::ipc::kernel_message::{Header, KernelMessage, MessageBits};
 use crate::ipc::port::Port;
@@ -58,6 +59,7 @@ pub fn server(mut request: KernelMessage) -> Option<KernelMessage> {
         .or_else(|| mach_host::routine(header.id))
         .or_else(|| device::routine(header.id))
         .or_else(|| gnumach::routine(header.id))
+        .or_else(|| arch::Current::server_routine(header.id))
         .unwrap_or_else(|| panic!("ipc_kobject_server: MIG_BAD_ID, not yet"));
     routine(&mut request, &mut reply);
     let kernel_task = task::KERNEL_TASK

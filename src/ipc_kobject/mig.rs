@@ -15,20 +15,20 @@ use crate::vm::object::Offset;
 
 /// An argument as MIG lays it out: its type word, then its data, padded to 8 bytes.
 #[repr(C)]
-pub(super) struct Argument<T> {
+pub struct Argument<T> {
     /// Its type word.
-    pub(super) word: u64,
+    pub word: u64,
     /// Its data.
-    pub(super) data: T,
+    pub data: T,
 }
 
 /// MIG's reply header, `mig_reply_header_t`.
 #[repr(C)]
-pub(super) struct ReplyHeader {
+pub struct ReplyHeader {
     /// The reply's header.
-    pub(super) header: Header,
+    pub header: Header,
     /// The routine's return code.
-    pub(super) return_code: Argument<u32>,
+    pub return_code: Argument<u32>,
 }
 
 /// MIG's type word, Mach's `mach_msg_type_t`, for `number` inline items of
@@ -62,7 +62,7 @@ const fn word(name: MessageType, size: u16, flags: u8, number: u32) -> u64 {
 ///
 /// `#[repr(C)]`, `#[repr(transparent)]` or primitive, aligned to at most 8
 /// bytes, every byte in a field (no padding), and any bytes make one.
-pub(super) unsafe trait Inline: Copy {
+pub unsafe trait Inline: Copy {
     /// MIG's type word for it.
     const WORD: u64;
     /// The word's bits MIG's stub checks: all of them.
@@ -687,4 +687,4 @@ macro_rules! subsystem {
     };
 }
 
-pub(super) use subsystem;
+pub(crate) use subsystem;

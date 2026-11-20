@@ -6,6 +6,7 @@ use core::ffi::CStr;
 
 use crate::boot::BootModule;
 use crate::error::Error;
+use crate::ipc::kernel_message::KernelMessage;
 
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
@@ -80,6 +81,10 @@ pub trait Machine {
     ///
     /// If no thread runs on the CPU.
     fn copy_in(source: usize, destination: &mut [u8]) -> Result<(), Error>;
+
+    /// The routine serving a request of `id` among the machine's own calls,
+    /// if one is written.
+    fn server_routine(id: i32) -> Option<fn(&mut KernelMessage, &mut KernelMessage)>;
 
     /// The EFI system table's physical address, when booted through UEFI.
     #[expect(dead_code, reason = "host_info reports it")]
