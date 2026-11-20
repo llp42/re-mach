@@ -295,14 +295,16 @@ impl Port {
     }
 
     /// Destroys the port, alive, cleared of its receiver and of locked state
-    /// `state`, as `ipc_port_destroy` does: it is dead and unlocked. The
-    /// caller then drops the reference GNU Mach's call consumes.
+    /// `state`, as `ipc_port_destroy` does: it is dead and unlocked, and its
+    /// queued messages are destroyed. The caller then drops the reference
+    /// GNU Mach's call consumes.
     ///
     /// # Panics
     ///
     /// If it is dead, in a set, its make-send count or sequence number is
-    /// not 0, or a thread waits to receive from it. If it has queued
-    /// messages or a kernel object: not yet.
+    /// not 0, a thread waits to receive from it, or a queued message is for
+    /// another port. If it has a kernel object: not yet. As
+    /// `KernelMessage::destroy`.
     pub(super) fn destroy(&self, mut state: SpinlockGuard<'_, PortState>) {
         assert!(state.active, "ipc_port_destroy: a dead port");
         assert!(
@@ -315,15 +317,29 @@ impl Port {
         state.receiver = Receiver::Dead(timestamp());
         drop(state);
         // The queue's lock is the port's.
-        let state = self.state.lock();
+        let mut state = self.state.lock();
         assert!(
             state.receivers.is_empty(),
             "ipc_port_destroy: a thread receiving"
         );
-        assert!(
-            state.messages.is_empty(),
-            "ipc_port_destroy: ipc_kmsg_destroy, not yet"
-        );
+        // Each queued message is destroyed with the port unlocked, its
+        // destination's reference released first.
+        while let Some(mut message) = kernel_message::KernelMessage::dequeue(&mut state.messages) {
+            state.message_count -= 1;
+            drop(state);
+            let header = message.header_mut();
+            assert!(
+                header.remote_port == ptr::from_ref(self).addr(),
+                "ipc_port_destroy: a message for another port"
+            );
+            // SAFETY: a queued message's destination slot holds a reference to
+            // its port, this one, given up by `into_raw`, which the handle
+            // takes; the caller's reference keeps the port alive after it.
+            drop(unsafe { Reference::from_raw(NonNull::from(self)) });
+            header.remote_port = 0;
+            message.destroy();
+            state = self.state.lock();
+        }
         assert!(
             state.kernel_object.is_none(),
             "ipc_port_destroy: ipc_kobject_destroy, not yet"

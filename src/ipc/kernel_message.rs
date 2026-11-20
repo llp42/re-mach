@@ -237,6 +237,50 @@ impl KernelMessage {
             .map(|buffer| Self(NonNull::new(UnsafeRef::into_raw(buffer)).unwrap()))
     }
 
+    /// Destroys it, as `ipc_kmsg_destroy` does: the rights its header
+    /// carries are released, as `ipc_kmsg_clean` does, then its buffer is
+    /// freed.
+    ///
+    /// # Panics
+    ///
+    /// For a send-once right, or a body that carries rights or memory: not
+    /// yet. For any other type than a send right.
+    pub(super) fn destroy(mut self) {
+        let header = self.header_mut();
+        let bits = header.bits;
+        for (slot, message_type) in [
+            (header.remote_port, bits.remote()),
+            (header.local_port, bits.local()),
+        ] {
+            // IO_VALID: neither null nor dead.
+            if matches!(slot, 0 | usize::MAX) {
+                continue;
+            }
+            // SAFETY: a header's port slot holds the exposed address of a
+            // reference to its port given up by `into_raw`, which the handle
+            // takes; the message is freed below.
+            let port = unsafe {
+                Reference::from_raw(
+                    NonNull::new(ptr::with_exposed_provenance_mut::<Port>(slot)).unwrap(),
+                )
+            };
+            // As ipc_object_destroy.
+            match message_type {
+                Some(MessageType::PortSend) => Port::release_send(port),
+                Some(MessageType::PortSendOnce) => {
+                    panic!("ipc_object_destroy: ipc_notify_send_once, not yet")
+                }
+                _ => panic!("ipc_object_destroy: strange rights"),
+            }
+        }
+        assert!(
+            !bits.is_complex(),
+            "ipc_kmsg_clean: ipc_kmsg_clean_body, not yet"
+        );
+        // As ikm_free.
+        drop(self);
+    }
+
     /// Copies the user's message at `address`, `size` bytes, into it, as
     /// `copyinmsg` does: its size is set, and its ports keep their names'
     /// 32 bits.
