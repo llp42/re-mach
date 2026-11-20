@@ -48,16 +48,17 @@ pub const MACH_RCV_INTERRUPTED: u32 = 0x1000_4005;
 
 /// Sends the message at `message`, `send_size` bytes, then receives one on
 /// `receive_name`, as `mach_msg_trap` does; so far a request to a port the
-/// kernel receives on, and its reply, or a send or a receive alone. Gives
-/// `MACH_MSG_SUCCESS`, or the receive's status.
+/// kernel receives on, and its reply, a reply sent then a receive, or a
+/// send or a receive alone. Gives `MACH_MSG_SUCCESS`, or the send's or the
+/// receive's status.
 ///
 /// # Panics
 ///
 /// If no thread runs on the CPU, or the reply port has no send-once right.
 /// On every other path: not yet; as `kernel_message::get`,
 /// `KernelMessage::copy_in_body`, `ipc_kobject::server`,
-/// `KernelMessage::copy_out_body`, `kernel_message::put`, `send` and
-/// `receive`.
+/// `KernelMessage::copy_out_body`, `kernel_message::put`, `send`,
+/// `send_message` and `receive`.
 #[expect(
     clippy::too_many_lines,
     reason = "mach_msg_trap's fast path, in GNU Mach's order"
@@ -101,6 +102,22 @@ pub fn trap(
         .unwrap_or_else(|| kernel_message::get(message, send_size));
     // fast_copyin.
     let header = request.header_mut();
+    // A reply, a moved send-once right and no reply port: sent, then the
+    // receive, as the general path does (no handoff).
+    let reply = MessageBits::new(Some(MessageType::PortSendOnce), None);
+    if header.bits == reply || header.bits == reply.with_complex() {
+        let status = send_message(request);
+        if status != 0 {
+            return status;
+        }
+        return receive(
+            message,
+            Options::RECEIVE,
+            receive_size,
+            receive_name,
+            timeout,
+        );
+    }
     // A copied send right for the destination, and a send-once right made
     // for the reply port; a complex message's rights go through
     // slow_copyin's ipc_kmsg_copyin_header the same way.
@@ -247,22 +264,31 @@ pub fn trap(
 }
 
 /// Sends the message at `message`, `send_size` bytes, as `mach_msg_send`
-/// does; so far a simple message with no reply port, its destination a
-/// copied send right or a moved send-once right, served if the kernel
-/// receives on its port, else queued. Gives `MACH_MSG_SUCCESS`.
+/// does. Gives its status.
+///
+/// # Panics
+///
+/// As `kernel_message::get` and `send_message`.
+fn send(message: usize, send_size: u32) -> u32 {
+    // ipc_kmsg_get.
+    send_message(kernel_message::get(message, send_size))
+}
+
+/// Sends `request`, copied from the current thread's user memory, as
+/// `mach_msg_send` does once it has the message; so far a simple message
+/// with no reply port, its destination a copied send right or a moved
+/// send-once right, served if the kernel receives on its port, else
+/// queued. Gives `MACH_MSG_SUCCESS`.
 ///
 /// # Panics
 ///
 /// If no thread runs on the CPU, or the kernel's port is dead. On every
-/// other path: not yet; as `kernel_message::get`, `ipc_kobject::server`
-/// and `queue`.
-fn send(message: usize, send_size: u32) -> u32 {
+/// other path: not yet; as `ipc_kobject::server` and `queue`.
+fn send_message(mut request: KernelMessage) -> u32 {
     let thread = smp::current()
         .active_thread()
         .expect("mach_msg_send: no current thread");
     let space = &thread.task().space;
-    // ipc_kmsg_get.
-    let mut request = kernel_message::get(message, send_size);
     // ipc_kmsg_copyin_header: so far an asynchronous message, a copied send
     // right for the destination, or a reply, a moved send-once right, and no
     // reply port.
