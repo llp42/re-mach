@@ -247,7 +247,8 @@ pub fn trap(
 }
 
 /// Sends the message at `message`, `send_size` bytes, as `mach_msg_send`
-/// does; so far a simple message with no reply port, served if the kernel
+/// does; so far a simple message with no reply port, its destination a
+/// copied send right or a moved send-once right, served if the kernel
 /// receives on its port, else queued. Gives `MACH_MSG_SUCCESS`.
 ///
 /// # Panics
@@ -263,12 +264,15 @@ fn send(message: usize, send_size: u32) -> u32 {
     // ipc_kmsg_get.
     let mut request = kernel_message::get(message, send_size);
     // ipc_kmsg_copyin_header: so far an asynchronous message, a copied send
-    // right for the destination and no reply port.
+    // right for the destination, or a reply, a moved send-once right, and no
+    // reply port.
     let header = request.header_mut();
     let complex = header.bits.is_complex();
-    let bits = MessageBits::new(Some(MessageType::CopySend), None);
+    let with_complex = |bits: MessageBits| if complex { bits.with_complex() } else { bits };
+    let copied = with_complex(MessageBits::new(Some(MessageType::CopySend), None));
+    let reply = with_complex(MessageBits::new(Some(MessageType::PortSendOnce), None));
     assert!(
-        header.bits == if complex { bits.with_complex() } else { bits },
+        header.bits == copied || header.bits == reply,
         "ipc_kmsg_copyin_header: header bits {:#x}, not yet",
         u32::from(header.bits)
     );
@@ -276,26 +280,67 @@ fn send(message: usize, send_size: u32) -> u32 {
         header.local_port == 0,
         "ipc_kmsg_copyin_header: MACH_SEND_INVALID_HEADER, not yet"
     );
-    let state = space.state.read();
-    assert!(state.active, "ipc_kmsg_copyin_header: abort_async, not yet");
-    // The message's reference, taken while the space's lock keeps the
-    // entry's own.
-    let port = send_right(
-        &state,
-        PortName::from(u32::try_from(header.remote_port).unwrap()),
-    )
-    .unwrap_or_else(|| panic!("ipc_kmsg_copyin_header: abort_async, not yet"))
-    .clone();
-    let mut port_state = port.state.lock();
-    drop(state);
-    assert!(
-        port_state.active,
-        "ipc_kmsg_copyin_header: a dead destination, not yet"
-    );
-    port_state.send_rights += 1;
-    drop(port_state);
-    let bits = MessageBits::new(Some(MessageType::PortSend), None);
-    header.bits = if complex { bits.with_complex() } else { bits };
+    let name = PortName::from(u32::try_from(header.remote_port).unwrap());
+    let port = if header.bits == copied {
+        let state = space.state.read();
+        assert!(state.active, "ipc_kmsg_copyin_header: abort_async, not yet");
+        // The message's reference, taken while the space's lock keeps the
+        // entry's own.
+        let port = send_right(&state, name)
+            .unwrap_or_else(|| panic!("ipc_kmsg_copyin_header: abort_async, not yet"))
+            .clone();
+        let mut port_state = port.state.lock();
+        drop(state);
+        assert!(
+            port_state.active,
+            "ipc_kmsg_copyin_header: a dead destination, not yet"
+        );
+        port_state.send_rights += 1;
+        drop(port_state);
+        header.bits = with_complex(MessageBits::new(Some(MessageType::PortSend), None));
+        port
+    } else {
+        // The reply case: the entry, exactly a send-once right, is freed, and
+        // the message takes its right and its reference.
+        let mut state = space.state.write();
+        assert!(state.active, "ipc_kmsg_copyin_header: abort_reply, not yet");
+        let entry = state
+            .lookup(name)
+            .filter(|entry| entry.bits.rights.bits() == Rights::SEND_ONCE.bits())
+            .unwrap_or_else(|| panic!("ipc_kmsg_copyin_header: abort_reply, not yet"));
+        assert!(
+            entry.bits.user_references == 1 && !entry.bits.message_accepted,
+            "ipc_kmsg_copyin_header: a send-once right's user references or message-accepted request"
+        );
+        assert!(
+            entry.request == 0,
+            "ipc_kmsg_copyin_header: a dead-name request, abort_reply, not yet"
+        );
+        let Some(Object::Port(port)) = &entry.object else {
+            panic!("ipc_kmsg_copyin_header: a send-once right with no port");
+        };
+        let port_state = port.state.lock();
+        assert!(
+            port_state.active,
+            "ipc_kmsg_copyin_header: a dead destination, abort_reply, not yet"
+        );
+        assert!(
+            port_state.send_once_rights > 0,
+            "ipc_kmsg_copyin_header: a port with no send-once right"
+        );
+        drop(port_state);
+        let entry = state
+            .map
+            .get_mut(name.key())
+            .expect("ipc_kmsg_copyin_header: no entry");
+        let Some(Object::Port(port)) = entry.object.take() else {
+            panic!("ipc_kmsg_copyin_header: a send-once right with no port");
+        };
+        state.deallocate(name);
+        drop(state);
+        header.bits = with_complex(MessageBits::new(Some(MessageType::PortSendOnce), None));
+        port
+    };
     // The header's slot takes the message's reference.
     let destination = Reference::into_raw(port);
     header.remote_port = destination.as_ptr().expose_provenance();
