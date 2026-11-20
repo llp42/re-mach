@@ -254,6 +254,10 @@ SPDX-FileName: include/mach/task_special_ports.h
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
 
+SPDX-FileName: include/mach/thread_info.h
+SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
+SPDX-License-Identifier: CMU-Mach
+
 SPDX-FileName: include/mach/time_value.h
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach

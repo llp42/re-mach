@@ -7,6 +7,7 @@ use core::fmt;
 use core::mem;
 use core::ops::Range;
 use core::ptr::{self, NonNull};
+use core::slice;
 use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
 };
@@ -74,7 +75,7 @@ pub enum Quantum {
 const TIMER_RATE: u32 = 1_000_000;
 
 /// A thread.
-#[expect(dead_code, reason = "the scheduler and thread_info read them")]
+#[expect(dead_code, reason = "thread_freeze reads may_assign")]
 pub struct Thread {
     /// Its place in the sleep queue it waits on.
     sleep_link: LinkedListAtomicLink,
@@ -197,6 +198,120 @@ impl TryFrom<i32> for SpecialPort {
             _ => Err(number),
         }
     }
+}
+
+/// What a thread is doing, as `thread_info` reports it.
+#[derive(Clone, Copy)]
+enum RunState {
+    /// Running, or waiting to run.
+    Running,
+    /// Stopped.
+    Stopped,
+    /// Waiting for an event.
+    Waiting,
+    /// Waiting uninterruptibly.
+    Uninterruptible,
+    /// Halted at a clean point.
+    Halted,
+}
+
+impl TryFrom<ThreadState> for RunState {
+    type Error = ThreadState;
+
+    /// The run state `state` shows, in Mach's order; none if it shows none.
+    fn try_from(state: ThreadState) -> Result<Self, ThreadState> {
+        if state.contains(ThreadState::HALTED) {
+            Ok(Self::Halted)
+        } else if state.contains(ThreadState::RUN) {
+            Ok(Self::Running)
+        } else if state.contains(ThreadState::UNINTERRUPTIBLE) {
+            Ok(Self::Uninterruptible)
+        } else if state.contains(ThreadState::SUSPENDED) {
+            Ok(Self::Stopped)
+        } else if state.contains(ThreadState::WAIT) {
+            Ok(Self::Waiting)
+        } else {
+            Err(state)
+        }
+    }
+}
+
+/// Mach's `TH_STATE_*` number.
+impl From<RunState> for i32 {
+    fn from(state: RunState) -> Self {
+        match state {
+            RunState::Running => 1,
+            RunState::Stopped => 2,
+            RunState::Waiting => 3,
+            RunState::Uninterruptible => 4,
+            RunState::Halted => 5,
+        }
+    }
+}
+
+/// Mach's `rpc_time_value_t`.
+#[repr(C)]
+struct RpcTimeValue {
+    seconds: i64,
+    microseconds: i32,
+    /// Padding to 8 bytes, zero.
+    padding: i32,
+}
+
+/// Cut to microseconds, as `TIME_VALUE64_TO_TIME_VALUE`.
+#[expect(
+    clippy::fallible_impl_from,
+    reason = "a time's nanoseconds are under a second"
+)]
+impl From<TimeValue> for RpcTimeValue {
+    fn from(time: TimeValue) -> Self {
+        Self {
+            seconds: time.seconds,
+            microseconds: i32::try_from(time.nanoseconds / 1000).unwrap(),
+            padding: 0,
+        }
+    }
+}
+
+/// Mach's `time_value64_t`.
+#[repr(C)]
+struct TimeValue64 {
+    seconds: i64,
+    nanoseconds: i64,
+}
+
+impl From<TimeValue> for TimeValue64 {
+    fn from(time: TimeValue) -> Self {
+        Self {
+            seconds: time.seconds,
+            nanoseconds: time.nanoseconds,
+        }
+    }
+}
+
+/// Mach's `thread_basic_info`: 32 words.
+#[repr(C)]
+struct BasicInfo {
+    user_time: RpcTimeValue,
+    system_time: RpcTimeValue,
+    /// Recent processor use, per mille.
+    cpu_usage: i32,
+    base_priority: i32,
+    current_priority: i32,
+    /// A `RunState`'s number; 0 for none.
+    run_state: i32,
+    /// `TH_FLAGS_*`.
+    flags: i32,
+    /// The stops users asked for.
+    suspend_count: i32,
+    /// Scheduler ticks asleep.
+    sleep_time: i32,
+    /// Padding to 8 bytes, zero.
+    padding: i32,
+    creation_time: RpcTimeValue,
+    user_time64: TimeValue64,
+    system_time64: TimeValue64,
+    creation_time64: TimeValue64,
 }
 
 /// 5/8 to the power of a number of seconds, as two shifts: `x >> first`,
@@ -1238,6 +1353,103 @@ impl Thread {
         let result = unsafe { thread.machine_state.write_state(flavor, state) };
         thread.release();
         result
+    }
+
+    /// Writes its basic information into `info`, as `thread_info`'s
+    /// `THREAD_BASIC_INFO` does; `info`'s length is the count asked for.
+    /// Gives the count written.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` for a count short of the record without its 64-bit
+    /// times.
+    pub(super) fn basic_info(&self, info: &mut [i32]) -> Result<usize, Error> {
+        let count = size_of::<BasicInfo>() / size_of::<i32>();
+        let short_count = mem::offset_of!(BasicInfo, user_time64) / size_of::<i32>();
+        if info.len() < short_count {
+            return Err(Error::InvalidArgument);
+        }
+        let state = self.state();
+        // As update_priority for a thread not running, without storing.
+        let mut cpu_usage = self.cpu_usage.load(Ordering::Relaxed);
+        let mut priority = self.sched_pri.load(Ordering::Relaxed);
+        let ticks = sched::scheduler_tick().wrapping_sub(self.sched_stamp.load(Ordering::Relaxed));
+        if !state.contains(ThreadState::RUN) && ticks != 0 {
+            let untaken = |time: &AtomicU64, charged: &AtomicU64| {
+                let delta = time
+                    .load(Ordering::Relaxed)
+                    .saturating_sub(charged.load(Ordering::Relaxed));
+                u32::try_from(delta).unwrap_or(u32::MAX)
+            };
+            let delta = untaken(&self.system_time, &self.charged_system_time)
+                .wrapping_add(untaken(&self.user_time, &self.charged_user_time));
+            // SAFETY: a thread's set lives while the thread is in it.
+            let set = unsafe { &*self.set.load(Ordering::Acquire) };
+            let (aged_cpu_usage, aged_sched_usage) = if ticks > 30 {
+                (0, 0)
+            } else {
+                let shifts = AGING[usize::try_from(ticks).unwrap()];
+                let cpu_usage = cpu_usage
+                    .wrapping_add(self.cpu_delta.load(Ordering::Relaxed))
+                    .wrapping_add(delta);
+                let sched_usage = self
+                    .sched_usage
+                    .load(Ordering::Relaxed)
+                    .wrapping_add(self.sched_delta.load(Ordering::Relaxed))
+                    .wrapping_add(delta.wrapping_mul(set.load()));
+                (aged(cpu_usage, shifts), aged(sched_usage, shifts))
+            };
+            cpu_usage = aged_cpu_usage;
+            if self.usage_sets_priority() {
+                let base = Priority::try_from(self.priority.load(Ordering::Relaxed)).unwrap();
+                priority = u32::from(base.aged_by(aged_sched_usage));
+            }
+        }
+        let time = |microseconds: &AtomicU64| {
+            let microseconds = microseconds.load(Ordering::Relaxed);
+            TimeValue {
+                seconds: i64::try_from(microseconds / u64::from(TIMER_RATE)).unwrap(),
+                nanoseconds: i64::try_from(microseconds % u64::from(TIMER_RATE) * 1000).unwrap(),
+            }
+        };
+        let user_time = time(&self.user_time);
+        let system_time = time(&self.system_time);
+        let basic = BasicInfo {
+            user_time: user_time.into(),
+            system_time: system_time.into(),
+            // Per mille (TH_USAGE_SCALE), corrected by 3/5 for the 5/8 aging.
+            cpu_usage: i32::try_from(cpu_usage / (TIMER_RATE / 1000) * 3 / 5).unwrap(),
+            base_priority: i32::try_from(self.priority.load(Ordering::Relaxed)).unwrap(),
+            current_priority: i32::try_from(priority).unwrap(),
+            run_state: RunState::try_from(state).map_or(0, i32::from),
+            // TH_FLAGS_IDLE; never TH_FLAGS_SWAPPED, as stacks are kept.
+            flags: if state.contains(ThreadState::IDLE) {
+                2
+            } else {
+                0
+            },
+            suspend_count: i32::try_from(self.user_stop_count.load(Ordering::Relaxed)).unwrap(),
+            // As after update_priority, which makes its stamp current.
+            sleep_time: 0,
+            padding: 0,
+            // As read_time_stamp; no host_set_time yet, so no offset.
+            creation_time: self.creation_time.into(),
+            user_time64: user_time.into(),
+            // The system time, where Mach's copies the user time.
+            system_time64: system_time.into(),
+            creation_time64: self.creation_time.into(),
+        };
+        // The 64-bit times only for the whole record's count, as Mach's.
+        let written = if info.len() == count {
+            count
+        } else {
+            short_count
+        };
+        // SAFETY: `count` words of integers, `repr(C)` with no implicit
+        // padding.
+        let words = unsafe { slice::from_raw_parts(ptr::from_ref(&basic).cast::<i32>(), written) };
+        info[..written].copy_from_slice(words);
+        Ok(info.len().min(count))
     }
 
     /// Its task, which lives while it has threads.

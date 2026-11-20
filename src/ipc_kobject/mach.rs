@@ -25,6 +25,8 @@ mig::subsystem! {
     17 thread_get_state(target_thread = thread::of, flavor: i32)
         -> (old_state: [u32; ..1024], CountInOut);
     18 thread_set_state(target_thread = thread::of, flavor: i32, new_state: [u32; ..1024]);
+    19 thread_info(target_thread = thread::of, flavor: i32)
+        -> (thread_info_out: [i32; ..1024], CountInOut);
     21 vm_allocate(
         target_task = task::map_of,
         address: VirtualAddress,
@@ -115,6 +117,33 @@ fn thread_set_state(
     // are never freed yet.
     let thread = thread.map(|thread| unsafe { Reference::as_ptr(thread).as_ref() });
     Thread::write_state(thread, flavor, state)
+}
+
+/// Serves `thread_info`: up to `info.len()` integers of `flavor` for
+/// `thread`; gives how many.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no thread or a flavor Mach lacks; as
+/// `Thread::basic_info`.
+///
+/// # Panics
+///
+/// For `THREAD_SCHED_INFO`: not yet.
+fn thread_info(
+    thread: Option<&Reference<Thread>>,
+    flavor: i32,
+    info: &mut [i32],
+) -> Result<usize, Error> {
+    let Some(thread) = thread else {
+        return Err(Error::InvalidArgument);
+    };
+    // THREAD_BASIC_INFO, THREAD_SCHED_INFO.
+    match flavor {
+        1 => thread.basic_info(info),
+        2 => panic!("thread_info: THREAD_SCHED_INFO, not yet"),
+        _ => Err(Error::InvalidArgument),
+    }
 }
 
 /// Serves `vm_allocate`: `size` bytes of zero-filled memory mapped into
