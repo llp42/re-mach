@@ -177,6 +177,28 @@ pub struct ThreadPorts {
     pub(super) reply: Option<Reference<Port>>,
 }
 
+/// A thread's special port, by Mach's `THREAD_*_PORT` number.
+#[derive(Clone, Copy)]
+pub enum SpecialPort {
+    /// `THREAD_KERNEL_PORT`: the send right it hands out for its port.
+    Kernel,
+    /// `THREAD_EXCEPTION_PORT`: its exception port.
+    Exception,
+}
+
+impl TryFrom<i32> for SpecialPort {
+    type Error = i32;
+
+    /// The special port Mach's number `number` names, if any.
+    fn try_from(number: i32) -> Result<Self, i32> {
+        match number {
+            1 => Ok(Self::Kernel),
+            3 => Ok(Self::Exception),
+            _ => Err(number),
+        }
+    }
+}
+
 /// 5/8 to the power of a number of seconds, as two shifts: `x >> first`,
 /// plus `x >> second`, or minus `x >> -second` when negative.
 const AGING: [(u32, i32); 32] = [
@@ -592,6 +614,40 @@ impl Thread {
         // the current thread halts only after its last trap.
         let port = mem::ManuallyDrop::new(unsafe { Reference::from_raw(port) });
         Port::copy_send(&port)
+    }
+
+    /// Sets its special port `which` to `port`, as `thread_set_special_port`
+    /// does; the old right is released after its lock.
+    ///
+    /// # Errors
+    ///
+    /// `Failure` if it has no port; `port` is released.
+    ///
+    /// # Panics
+    ///
+    /// If `which` is its kernel port: not yet.
+    pub(super) fn set_special_port(
+        &self,
+        which: SpecialPort,
+        port: Option<SendRight>,
+    ) -> Result<(), Error> {
+        let mut ports = self.ports.lock();
+        // `terminate_ipc` empties its port before it takes the lock, then
+        // releases what a slot holds.
+        if self.self_port.load(Ordering::Acquire).is_null() {
+            drop(ports);
+            drop(port);
+            return Err(Error::Failure);
+        }
+        let slot = match which {
+            SpecialPort::Exception => &mut ports.exception,
+            SpecialPort::Kernel => panic!("thread_set_special_port: THREAD_KERNEL_PORT, not yet"),
+        };
+        let old = mem::replace(slot, port);
+        drop(ports);
+        // As ipc_port_release_send.
+        drop(old);
+        Ok(())
     }
 
     /// Makes its port stand for nothing, as `ipc_thread_disable` does.

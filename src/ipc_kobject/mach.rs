@@ -43,6 +43,7 @@ mig::subsystem! {
     59 task_set_special_port(task = task::of, which_port: i32, special_port: SendRight);
     61 thread_create(parent_task = task::of) -> (child_thread: Port);
     63 thread_resume(target_thread = thread::of);
+    68 thread_set_special_port(thread = thread::of, which_port: i32, special_port: SendRight);
     89 vm_map(
         target_task = task::map_of,
         address: VirtualAddress,
@@ -294,6 +295,32 @@ fn thread_resume(thread: Option<&Reference<Thread>>) -> Result<(), Error> {
     // SAFETY: the handle keeps the thread alive through the call, and its
     // own reference after; threads are never freed yet.
     unsafe { Reference::as_ptr(thread).as_ref() }.resume()
+}
+
+/// Serves `thread_set_special_port`: `thread`'s special port numbered
+/// `which_port` becomes `special_port`.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no thread, or if `which_port` names no special
+/// port; as `Thread::set_special_port`. The right is released, as
+/// `ipc_kmsg_destroy` of the request does.
+///
+/// # Panics
+///
+/// As `Thread::set_special_port`.
+fn thread_set_special_port(
+    thread: Option<&Reference<Thread>>,
+    which_port: i32,
+    special_port: Option<SendRight>,
+) -> Result<(), Error> {
+    let Some(thread) = thread else {
+        return Err(Error::InvalidArgument);
+    };
+    let Ok(which) = thread::SpecialPort::try_from(which_port) else {
+        return Err(Error::InvalidArgument);
+    };
+    thread.set_special_port(which, special_port)
 }
 
 /// Serves `vm_map`: `size` bytes of `memory_object` from `offset`, or a
