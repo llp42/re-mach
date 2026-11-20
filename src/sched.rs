@@ -621,8 +621,8 @@ fn invoke(old: &'static Thread, new: &'static Thread) {
 
 /// Puts `thread`, just switched from, where its state says: back on a run
 /// queue if it runs on, nowhere if an idle thread; one suspended outside a
-/// wait stops, halted or not, and one that waits stops running, unless
-/// suspended in an interruptible wait.
+/// wait or in an interruptible one stops, halted or not, waking the thread
+/// waiting for it to stop; one that waits otherwise stops running.
 ///
 /// # Panics
 ///
@@ -634,10 +634,11 @@ pub fn dispatch(thread: &'static Thread) {
             if [
                 ThreadState::RUN | ThreadState::SUSPENDED,
                 ThreadState::RUN | ThreadState::SUSPENDED | ThreadState::HALTED,
+                ThreadState::RUN | ThreadState::WAIT | ThreadState::SUSPENDED,
             ]
             .contains(&state) =>
         {
-            thread.remove_state(ThreadState::RUN);
+            thread.stop();
         }
         state
             if [
