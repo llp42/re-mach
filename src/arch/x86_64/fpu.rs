@@ -15,6 +15,7 @@ use super::MachineState;
 use super::cpuid;
 use super::memory_layout::PAGE_SIZE;
 use super::per_cpu::PerCpu;
+use crate::error::Error;
 use crate::slab::RawCache;
 use crate::smp::{self, MachinePerCpu as _};
 use crate::sync::{CriticalSection, OnceLock};
@@ -31,6 +32,17 @@ enum Save {
     /// XSAVEOPT: as XSAVE, skipping the states unchanged since the last
     /// restore.
     XsaveOptimized,
+}
+
+impl Save {
+    /// Its number in `i386_XFLOAT_STATE`, GNU Mach's `fp_save_kind`.
+    const fn number(self) -> u32 {
+        match self {
+            Self::Fxsave => 1,
+            Self::Xsave => 2,
+            Self::XsaveOptimized => 3,
+        }
+    }
 }
 
 /// The save instruction, once `init` picks it.
@@ -166,7 +178,7 @@ pub fn init_cpu() {
 ///
 /// Before `init`.
 pub(super) fn xstate_size() -> usize {
-    size_of::<[i32; 4]>() + *STATE_SIZE.get().expect("fpu: not set up")
+    size_of::<ExtendedFloatState>() + *STATE_SIZE.get().expect("fpu: not set up")
 }
 
 /// Where a saved state's area starts in its buffer, past its header; the
@@ -423,6 +435,20 @@ impl FloatState {
     pub(super) const COUNT: usize = size_of::<Self>() / size_of::<u32>();
 }
 
+/// `i386_xfloat_state`'s head; a saved state follows it as
+/// `i386_xfp_save`, `xstate_size` bytes in all.
+#[repr(C)]
+struct ExtendedFloatState {
+    /// The FPU's kind: `FP_387FX`, 4, with FXSAVE.
+    kind: u32,
+    /// Whether the state is valid.
+    initialized: u32,
+    /// The exception status: 0.
+    exception_status: u32,
+    /// How the state that follows was saved: `Save::number`.
+    save_kind: u32,
+}
+
 /// The abridged tag word of a full one: a bit set for each register not
 /// empty (3).
 fn abridged_tag(tag: u16) -> u8 {
@@ -577,4 +603,176 @@ pub(super) unsafe fn read_state(state: &MachineState) -> FloatState {
             .map(|register| *register.first_chunk().unwrap()),
         exception_status: 0,
     }
+}
+
+/// Writes `state`'s thread's floating-point state into `words` as
+/// `i386_XFLOAT_STATE`, from the buffer its last switch saved: the head,
+/// then the saved state field by field, its padding 0.
+///
+/// # Panics
+///
+/// For a thread with no floating-point state, or XSAVE: not yet.
+///
+/// # Safety
+///
+/// `state`'s thread is stopped, and `words` holds `xstate_size` bytes.
+pub(super) unsafe fn read_extended_state(state: &MachineState, words: &mut [u32]) {
+    let buffer = state.fpu.load(Ordering::Relaxed);
+    assert!(
+        !buffer.is_null(),
+        "fpu_get_state: no floating-point state, not yet"
+    );
+    let save = *SAVE.get().expect("fpu: not set up");
+    assert!(
+        matches!(save, Save::Fxsave),
+        "fpu_get_state: XSAVE, not yet"
+    );
+    let head = ExtendedFloatState {
+        kind: 4,
+        // Saved: fp_valid.
+        initialized: 1,
+        exception_status: 0,
+        save_kind: save.number(),
+    };
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "a saved state's area is 64-byte aligned"
+    )]
+    // SAFETY: as in `read_state`.
+    let area = unsafe { &*buffer.add(AREA_OFFSET).cast::<SaveArea>() };
+    let saved = SaveArea {
+        control: area.control,
+        status: area.status,
+        // The abridged tag word, raw.
+        tag: area.tag,
+        reserved: area.reserved,
+        opcode: area.opcode,
+        // The low halves; the 64-bit form has no selectors.
+        instruction_pointer: area.instruction_pointer & 0xffff_ffff,
+        data_pointer: area.data_pointer & 0xffff_ffff,
+        mxcsr: area.mxcsr,
+        mxcsr_mask: area.mxcsr_mask,
+        registers: area.registers,
+        xmm: area.xmm,
+        padding: [0; 96],
+        components: area.components,
+        compaction: area.compaction,
+        header_reserved: area.header_reserved,
+    };
+    let size = *STATE_SIZE.get().expect("fpu: not set up");
+    // SAFETY: guaranteed by the caller: `words` holds the head, a
+    // `SaveArea`, then the rest of a saved state, as the buffer holds that
+    // rest past its area.
+    unsafe {
+        let start = words.as_mut_ptr().cast::<u8>();
+        start.cast::<ExtendedFloatState>().write_unaligned(head);
+        let user = start.add(size_of::<ExtendedFloatState>());
+        user.cast::<SaveArea>().write_unaligned(saved);
+        // The states past the header: none under FXSAVE.
+        user.add(size_of::<SaveArea>()).copy_from_nonoverlapping(
+            buffer.add(AREA_OFFSET + size_of::<SaveArea>()),
+            size - size_of::<SaveArea>(),
+        );
+    }
+}
+
+/// Sets `state`'s thread's floating-point state from `words`, an
+/// `i386_XFLOAT_STATE`, in the buffer its next use loads: the whole area
+/// rewritten field by field, MXCSR and its mask cut to `MXCSR_MASK`, its
+/// padding 0.
+///
+/// # Errors
+///
+/// `InvalidArgument` for a valid state saved otherwise than the kernel
+/// saves.
+///
+/// # Panics
+///
+/// For the current thread, an invalid state, a thread with no
+/// floating-point state, or XSAVE: not yet.
+///
+/// # Safety
+///
+/// `state`'s thread is stopped, or is the current thread; `words` holds
+/// `xstate_size` bytes.
+pub(super) unsafe fn write_extended_state(
+    state: &MachineState,
+    words: &[u32],
+) -> Result<(), Error> {
+    let start = words.as_ptr().cast::<u8>();
+    // SAFETY: guaranteed by the caller: `words` starts with a head, and any
+    // bytes make one.
+    let head = unsafe { start.cast::<ExtendedFloatState>().read_unaligned() };
+    let save = *SAVE.get().expect("fpu: not set up");
+    if head.initialized != 0 && head.save_kind != save.number() {
+        return Err(Error::InvalidArgument);
+    }
+    assert!(
+        !smp::current()
+            .active_thread()
+            .is_some_and(|current| ptr::eq(current.machine_state(), state)),
+        "fpu_set_state: the current thread, not yet"
+    );
+    assert!(
+        head.initialized != 0,
+        "fpu_set_state: an invalid state, not yet"
+    );
+    let buffer = state.fpu.load(Ordering::Relaxed);
+    assert!(
+        !buffer.is_null(),
+        "fpu_set_state: no floating-point state, not yet"
+    );
+    assert!(
+        matches!(save, Save::Fxsave),
+        "fpu_set_state: XSAVE, not yet"
+    );
+    // SAFETY: guaranteed by the caller: a `SaveArea` follows the head, and
+    // any bytes make one.
+    let user = unsafe {
+        start
+            .add(size_of::<ExtendedFloatState>())
+            .cast::<SaveArea>()
+            .read_unaligned()
+    };
+    let mask = MXCSR_MASK.load(Ordering::Relaxed);
+    let area = SaveArea {
+        control: user.control,
+        status: user.status,
+        // The abridged tag word, raw.
+        tag: user.tag,
+        reserved: user.reserved,
+        opcode: user.opcode,
+        // Zero-extended; the 64-bit form has no selectors.
+        instruction_pointer: user.instruction_pointer & 0xffff_ffff,
+        data_pointer: user.data_pointer & 0xffff_ffff,
+        mxcsr: user.mxcsr & mask,
+        mxcsr_mask: user.mxcsr_mask & mask,
+        registers: user.registers,
+        xmm: user.xmm,
+        padding: [0; 96],
+        components: user.components,
+        compaction: user.compaction,
+        header_reserved: user.header_reserved,
+    };
+    let size = *STATE_SIZE.get().expect("fpu: not set up");
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "a saved state's area is 64-byte aligned"
+    )]
+    // SAFETY: guaranteed by the caller: the thread is stopped, so no FPU
+    // holds its state and nothing reads the buffer until it runs again;
+    // under FXSAVE its area is a `SaveArea`, and `words` holds the rest of
+    // a saved state past the one given.
+    unsafe {
+        let destination = buffer.add(AREA_OFFSET);
+        destination.cast::<SaveArea>().write(area);
+        // The states past the header: none under FXSAVE.
+        destination
+            .add(size_of::<SaveArea>())
+            .copy_from_nonoverlapping(
+                start.add(size_of::<ExtendedFloatState>() + size_of::<SaveArea>()),
+                size - size_of::<SaveArea>(),
+            );
+    }
+    Ok(())
 }

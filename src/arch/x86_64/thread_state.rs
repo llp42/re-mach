@@ -18,6 +18,9 @@ pub(super) enum StateFlavor {
     Debug,
     /// `i386_FSGS_BASE_STATE`: the FS and GS bases.
     FsGsBase,
+    /// `i386_XFLOAT_STATE`: the whole saved FPU state, as the save
+    /// instruction lays it out.
+    ExtendedFloat,
 }
 
 impl TryFrom<i32> for StateFlavor {
@@ -31,6 +34,7 @@ impl TryFrom<i32> for StateFlavor {
             5 => Ok(Self::RegistersAndSegments),
             6 => Ok(Self::Debug),
             7 => Ok(Self::FsGsBase),
+            8 => Ok(Self::ExtendedFloat),
             _ => Err(number),
         }
     }

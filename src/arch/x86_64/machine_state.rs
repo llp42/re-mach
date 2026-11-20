@@ -340,6 +340,16 @@ impl MachineThread for MachineState {
             Ok(StateFlavor::FsGsBase) => {
                 panic!("thread_getstatus: i386_FSGS_BASE_STATE, not yet")
             }
+            Ok(StateFlavor::ExtendedFloat) => {
+                let count = fpu::xstate_size() / size_of::<u32>();
+                let Some(words) = state.get_mut(..count) else {
+                    return Err(Error::InvalidArgument);
+                };
+                // SAFETY: guaranteed by the caller: its thread is stopped;
+                // `words` holds `xstate_size` bytes.
+                unsafe { fpu::read_extended_state(self, words) };
+                Ok(count)
+            }
             Err(flavor) => panic!("thread_getstatus: flavor {flavor}, not yet"),
         }
     }
@@ -419,6 +429,15 @@ impl MachineThread for MachineState {
                     self.load_user_bases();
                 }
                 Ok(())
+            }
+            Ok(StateFlavor::ExtendedFloat) => {
+                let count = fpu::xstate_size() / size_of::<u32>();
+                let Some(words) = state.get(..count) else {
+                    return Err(Error::InvalidArgument);
+                };
+                // SAFETY: guaranteed by the caller: its thread is stopped, or
+                // is the current thread; `words` holds `xstate_size` bytes.
+                unsafe { fpu::write_extended_state(self, words) }
             }
             Err(flavor) => panic!("thread_setstatus: flavor {flavor}, not yet"),
         }
