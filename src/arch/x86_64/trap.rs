@@ -16,16 +16,21 @@ use x86_64::registers::rflags::RFlags;
 use x86_64::structures::gdt::SegmentSelector;
 use x86_64::structures::idt::{ExceptionVector, InterruptStackFrameValue, PageFaultErrorCode};
 
-use super::memory_layout::{MAX_USER_ADDRESS, PAGE_SIZE};
+use super::memory_layout::{MAX_USER_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE};
 use super::per_cpu::KERNEL_STACK;
 use super::serial::Serial;
 use super::thread_state::UserRegisters;
 use super::{MachineState, fpu, gdt};
+use crate::exception::{self, Exception};
 use crate::smp;
 use crate::thread::MachineThread as _;
 use crate::vm::fault::Purpose;
 use crate::vm::kernel::KERNEL_MAP;
 use crate::vm::{self, Protection};
+
+/// `EXC_I386_PGFLT`: the code of a bad access's exception at a kernel
+/// address.
+const PAGE_FAULT: i32 = 14;
 
 // Each entry pushes a zero error code, unless the CPU pushed one, and its
 // vector; the common path saves the registers as a `TrapFrame`. A trap from
@@ -317,33 +322,35 @@ impl fmt::Display for TrapFrame {
 }
 
 /// Takes a trap from user mode, then returns the thread to user mode: a page
-/// fault is resolved in its task's map, and a use of the FPU that traps
-/// gives the thread the FPU, loaded with its state.
+/// fault is resolved in its task's map or raises an exception, and a use of
+/// the FPU that traps gives the thread the FPU, loaded with its state.
+///
+/// # Safety
+///
+/// `frame` is the current thread's user registers in its machine state.
 ///
 /// # Panics
 ///
-/// On any other trap, or a page fault that does not resolve or is in kernel
-/// space: they raise exceptions, not yet.
-extern "sysv64" fn user_trap(frame: &TrapFrame) -> ! {
+/// On any other trap, which raises an exception: not yet. As
+/// `raise_page_fault`.
+unsafe extern "sysv64" fn user_trap(frame: *const TrapFrame) -> ! {
     let cr2 = Cr2::read_raw();
+    // The frame is read, not borrowed, as others may change it while the
+    // thread waits.
+    // SAFETY: guaranteed by the caller.
+    let flags = unsafe { (*frame).interrupted.cpu_flags };
     // The interrupt gate turned interrupts off; user mode had them on.
-    if frame.interrupted.cpu_flags.contains(RFlags::INTERRUPT_FLAG) {
+    if flags.contains(RFlags::INTERRUPT_FLAG) {
         interrupts::enable();
     }
-    let vector = u8::try_from(frame.vector)
+    // SAFETY: guaranteed by the caller.
+    let vector = u8::try_from(unsafe { (*frame).vector })
         .ok()
         .and_then(|vector| ExceptionVector::try_from(vector).ok());
     match vector {
         Some(ExceptionVector::Page) => {
-            let address = usize::try_from(cr2).unwrap();
-            assert!(
-                address < MAX_USER_ADDRESS,
-                "i386_exception: a page fault in kernel space, not yet"
-            );
-            let thread = smp::current()
-                .active_thread()
-                .expect("user_trap: no current thread");
-            let code = PageFaultErrorCode::from_bits_truncate(frame.error_code);
+            // SAFETY: guaranteed by the caller.
+            let code = PageFaultErrorCode::from_bits_truncate(unsafe { (*frame).error_code });
             // An instruction fetch asks for running alone.
             let access = if code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
                 Protection::READ | Protection::WRITE
@@ -352,18 +359,12 @@ extern "sysv64" fn user_trap(frame: &TrapFrame) -> ! {
             } else {
                 Protection::READ
             };
-            vm::fault::fault(
-                &thread.task().map,
-                address & !(PAGE_SIZE - 1),
-                access,
-                Purpose::Access,
-            )
-            .unwrap_or_else(|error| {
-                panic!("user_page_fault_continue: i386_exception {error:?}, not yet")
-            });
+            raise_page_fault(usize::try_from(cr2).unwrap(), access);
         }
         Some(ExceptionVector::DeviceNotAvailable) => fpu::no_extension_fault(),
         _ => {
+            // SAFETY: guaranteed by the caller.
+            let frame = unsafe { &*frame };
             let _ = write!(
                 Serial,
                 "user trap {}, code {:#x}, cr2 {cr2:#x}\r\n{frame}",
@@ -373,6 +374,35 @@ extern "sysv64" fn user_trap(frame: &TrapFrame) -> ! {
         }
     }
     MachineState::return_to_user()
+}
+
+/// Faults the page at `address` in the current thread's map, asking for
+/// `access`, as `user_trap` does; if it does not resolve, raises a bad
+/// access exception with the fault's error, or, at or above the kernel map
+/// base, at once with `EXC_I386_PGFLT`.
+///
+/// # Panics
+///
+/// With no current thread. As `vm::fault::fault` and `exception::raise`.
+fn raise_page_fault(address: usize, access: Protection) {
+    let subcode = u64::try_from(address).unwrap().cast_signed();
+    if address >= MIN_KERNEL_ADDRESS {
+        exception::raise(Exception::BadAccess, PAGE_FAULT, subcode);
+        return;
+    }
+    let thread = smp::current()
+        .active_thread()
+        .expect("user_trap: no current thread");
+    if let Err(error) = vm::fault::fault(
+        &thread.task().map,
+        address & !(PAGE_SIZE - 1),
+        access,
+        Purpose::Access,
+    ) {
+        // user_page_fault_continue: the fault's error is the code.
+        let code = i32::try_from(u32::from(error)).unwrap();
+        exception::raise(Exception::BadAccess, code, subcode);
+    }
 }
 
 /// Takes a trap from kernel mode: a page fault on a user address is

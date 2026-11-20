@@ -14,6 +14,8 @@ use crate::thread::Thread;
 /// An exception, by Mach's `EXC_*` names; only those raised so far.
 #[derive(Clone, Copy)]
 pub enum Exception {
+    /// `EXC_BAD_ACCESS`: memory that could not be accessed.
+    BadAccess,
     /// `EXC_BAD_INSTRUCTION`: an instruction that failed.
     BadInstruction,
 }
@@ -22,6 +24,7 @@ impl Exception {
     /// Its number, Mach's.
     const fn number(self) -> i32 {
         match self {
+            Self::BadAccess => 1,
             Self::BadInstruction => 2,
         }
     }
