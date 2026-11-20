@@ -390,13 +390,16 @@ pub fn send_always(message: KernelMessage) {
 /// Queues `message` on its destination, a port the kernel does not receive
 /// on, as `ipc_mqueue_send` does past the kernel's branch; `SEND_ALWAYS` in
 /// `options` passes the queue's limit. The port's oldest waiting receiver
-/// wakes once the port is unlocked, and takes the message itself.
+/// wakes once the port is unlocked, and takes the message itself; an
+/// orphaned reply port with every send-once right now in its queue is then
+/// destroyed (SC-D2).
 ///
 /// # Panics
 ///
-/// If no thread runs on the CPU, or a waiting receiver is being freed. If
-/// the port is dead or in a set, or a send right finds its queue full: not
-/// yet.
+/// If no thread runs on the CPU, a waiting receiver is being freed, or an
+/// orphaned reply port has send rights. If the port is dead or in a set,
+/// or a send right finds its queue full: not yet. As
+/// `Port::deallocate_reply`.
 fn queue(message: KernelMessage, options: Options) {
     let thread = smp::current()
         .active_thread()
@@ -429,6 +432,22 @@ fn queue(message: KernelMessage, options: Options) {
         unsafe { Reference::upgrade(NonNull::from(&*receiver)) }
             .expect("ipc_mqueue_send: a receiver being freed")
     });
+    // An orphaned reply port with every send-once right in its queue has no
+    // receiver to come: destroyed below, with a reference of its own.
+    let orphan = (port_state.orphaned && port_state.send_once_rights_queued()).then(|| {
+        assert!(
+            port_state.send_rights == 0,
+            "ipc_mqueue_send: an orphaned reply port with send rights"
+        );
+        // Only its ended thread received on it.
+        assert!(
+            receiver.is_none(),
+            "ipc_mqueue_send: a receiver on an orphaned reply port"
+        );
+        // SAFETY: the message just queued holds a reference to it.
+        unsafe { Reference::upgrade(NonNull::from(port)) }
+            .expect("ipc_mqueue_send: a port being freed")
+    });
     drop(port_state);
     if let Some(receiver) = receiver {
         // SAFETY: the reference keeps it alive through the wake, and a
@@ -437,6 +456,10 @@ fn queue(message: KernelMessage, options: Options) {
             unsafe { Reference::as_ptr(&receiver).as_ref() },
             WaitResult::Awakened,
         );
+    }
+    if let Some(orphan) = orphan {
+        orphan.deallocate_reply();
+        drop(orphan);
     }
     thread.task().messages_sent.fetch_add(1, Ordering::Relaxed);
 }

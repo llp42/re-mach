@@ -37,7 +37,8 @@ pub struct Port {
 /// A port's state under its lock; so far only whether it is alive, its
 /// receiver and its name there, its send and send-once rights, what it
 /// stands for, its set, its sequence number, its message queue, its count
-/// and limit, and its protected payload.
+/// and limit, its protected payload, and whether it is an orphaned reply
+/// port.
 pub(super) struct PortState {
     /// Whether it is alive.
     pub(super) active: bool,
@@ -67,6 +68,9 @@ pub(super) struct PortState {
     pub(super) receivers: LinkedList<IpcQueueAdapter>,
     /// What its received messages carry in place of its name, if set.
     pub(super) protected_payload: Option<u64>,
+    /// Whether, as a reply port, its thread ended: it is destroyed once every
+    /// send-once right for it sits in its own queue.
+    pub(super) orphaned: bool,
 }
 
 // SAFETY: its pointers are to spaces, sets, kernel objects, queued messages
@@ -96,6 +100,7 @@ impl Port {
                 queue_limit: 5,
                 receivers: LinkedList::new(IpcQueueAdapter::NEW),
                 protected_payload: None,
+                orphaned: false,
             }),
         }
     }
@@ -208,6 +213,53 @@ impl Port {
         state.send_rights += 1;
         drop(state);
         port.clone()
+    }
+
+    /// Gives up `port`, the reply port of a thread that ends, with the
+    /// thread's reference, which drops (SC-D2): with send-once rights out of
+    /// its queue, it is orphaned, destroyed once they all sit there.
+    ///
+    /// # Panics
+    ///
+    /// If it is dead, not a reply port, or has send rights. With no
+    /// send-once right out of its queue: not yet.
+    pub fn orphan_reply(port: Reference<Self>) {
+        let mut state = port.state.lock();
+        assert!(
+            state.active
+                && state.receiver == Receiver::Space(NonNull::from(&space::REPLY_SPACE))
+                && state.send_rights == 0,
+            "orphan_reply: not a live reply port, or one with send rights"
+        );
+        assert!(
+            !state.send_once_rights_queued(),
+            "orphan_reply: ipc_port_dealloc_reply, not yet"
+        );
+        state.orphaned = true;
+        drop(state);
+        drop(port);
+    }
+
+    /// Destroys the port, which receives kernel replies, as
+    /// `ipc_port_dealloc_reply` does: its receiver goes, then it is
+    /// destroyed. The caller then drops the reference GNU Mach's call
+    /// consumes.
+    ///
+    /// # Panics
+    ///
+    /// If it is dead or not a reply port. As `destroy`.
+    pub(super) fn deallocate_reply(&self) {
+        let mut state = self.state.lock();
+        assert!(state.active, "ipc_port_dealloc_special: a dead port");
+        assert!(
+            state.receiver_name != PortName::NULL
+                && state.receiver == Receiver::Space(NonNull::from(&space::REPLY_SPACE)),
+            "ipc_port_dealloc_special: not the reply space's"
+        );
+        // Its receiver goes; `destroy` marks it dead.
+        state.receiver_name = PortName::NULL;
+        state.clear_receiver();
+        self.destroy(state);
     }
 
     /// Makes a send-once right for `port` from its receive right, whose
@@ -372,6 +424,23 @@ impl Port {
 }
 
 impl PortState {
+    /// Whether every send-once right for it sits in its own queue, one per
+    /// queued message whose destination is a send-once right; a right in
+    /// flight counts as out, so this errs toward false. Under its lock.
+    pub(super) fn send_once_rights_queued(&self) -> bool {
+        let queued = self
+            .messages
+            .iter()
+            .filter(|buffer| {
+                matches!(
+                    buffer.header().bits.remote(),
+                    Some(MessageType::PortSendOnce)
+                )
+            })
+            .count();
+        usize::try_from(self.send_once_rights).unwrap() == queued
+    }
+
     /// Readies its port's receive right to be destroyed, its port alive, as
     /// `ipc_port_clear_receiver` does.
     ///

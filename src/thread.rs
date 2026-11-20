@@ -605,13 +605,14 @@ impl Thread {
     }
 
     /// Ends its ipc, as `ipc_thread_terminate` does: its slots emptied, its
-    /// naked send rights released and its port destroyed; the names tasks
-    /// hold for the port stay, as rights to a dead port.
+    /// naked send rights released, its reply port given up and its port
+    /// destroyed; the names tasks hold for the port stay, as rights to a dead
+    /// port.
     ///
     /// # Panics
     ///
-    /// If it has no port: not yet. As `Port::release_send` and
-    /// `Port::deallocate_kernel`.
+    /// If it has no port: not yet. As `Port::release_send`,
+    /// `Port::orphan_reply` and `Port::deallocate_kernel`.
     fn terminate_ipc(&self) {
         // Each slot is emptied before its reference goes: a later read finds
         // no port.
@@ -623,9 +624,16 @@ impl Thread {
             // SAFETY: the slot kept the send right's reference, given up here.
             Port::release_send(unsafe { Reference::from_raw(send) });
         }
+        let mut ports = self.ports.lock();
+        let exception = ports.exception.take();
+        let reply = ports.reply.take();
+        drop(ports);
         // Released after the lock, as it drops.
-        let exception = self.ports.lock().exception.take();
         drop(exception);
+        // Its reply port, given up beside them (SC-D2).
+        if let Some(reply) = reply {
+            Port::orphan_reply(reply);
+        }
         port.deallocate_kernel();
         drop(port);
     }

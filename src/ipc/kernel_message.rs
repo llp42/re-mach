@@ -134,6 +134,13 @@ intrusive_adapter!(
     pub(super) QueueAdapter = UnsafeRef<Buffer>: Buffer { link => LinkedListAtomicLink }
 );
 
+impl Buffer {
+    /// Its message's header.
+    pub(super) const fn header(&self) -> &Header {
+        &self.header
+    }
+}
+
 /// The bytes a buffer holds before its message.
 const OVERHEAD: usize = offset_of!(Buffer, header);
 
