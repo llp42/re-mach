@@ -1275,6 +1275,11 @@ impl Thread {
     fn add_asts(&self, asts: Ast) {
         self.asts.fetch_or(asts.bits(), Ordering::Relaxed);
     }
+
+    /// Clears `asts` on it.
+    fn remove_asts(&self, asts: Ast) {
+        self.asts.fetch_and(!asts.bits(), Ordering::Relaxed);
+    }
 }
 
 // SAFETY: its count is its own, and every thread is a box of `CACHE`, which
@@ -1340,8 +1345,9 @@ unsafe impl Counted for Thread {
         // stack_free, with no token or critical section held: the free takes
         // the kernel map's lock and waits for a shootdown.
         // SAFETY: the thread is not the current one and has stopped for good:
-        // the reaper saw it off its CPU (on that same CPU; lock note 10.3)
-        // before dropping the dead list's reference; this runs once.
+        // the reaper, or thread_terminate's halt, saw it off its CPU (on that
+        // same CPU; lock note 10.3) before dropping the dead list's or its
+        // being alive's reference; this runs once.
         unsafe { vm::kernel::free_stack(this.kernel_stack.get().expect("stack_free: no stack")) };
         // No event counter exists for evc_notify_abort.
         let machine_state = NonNull::new(UnsafeRef::into_raw(this.machine_state.clone())).unwrap();
@@ -1450,20 +1456,25 @@ pub fn kernel_thread(task: &'static Task, start: fn() -> !) -> Result<(), Error>
 /// Halts the current thread on its way out of the kernel, as
 /// `thread_halt_self` does: one ending itself gives up its ipc, is held,
 /// joins its CPU's dead threads, halted, wakes the reaper and blocks for
-/// good.
+/// good; one asked to halt shows it has, and blocks until it is resumed.
 ///
 /// # Panics
 ///
-/// If no thread runs on the CPU, or it runs again after its last block. If
-/// it is only asked to halt: not yet.
+/// If no thread runs on the CPU, or an ending one runs again after its last
+/// block.
 pub fn halt_self() {
     let thread = smp::current()
         .active_thread()
         .expect("thread_halt_self: no current thread");
-    assert!(
-        thread.asts().contains(Ast::TERMINATE),
-        "thread_halt_self: asked to halt, not yet"
-    );
+    if !thread.asts().contains(Ast::TERMINATE) {
+        // Asked to halt; its resume clears HALTED.
+        let section = CriticalSection::enter();
+        thread.insert_state(ThreadState::HALTED);
+        thread.remove_asts(Ast::HALT);
+        drop(section);
+        sched::block();
+        return;
+    }
     thread.terminate_ipc();
     thread.hold();
     // It stays on this CPU until it blocks: the list it joins and the
