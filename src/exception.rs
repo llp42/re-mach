@@ -3,6 +3,8 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Exceptions: a thread's faults, sent to its exception port or its task's.
 
+use core::ptr::{self, NonNull};
+
 use crate::ipc::MessageType;
 use crate::ipc::kernel_message::{Header, KernelMessage, MessageBits};
 use crate::ipc::mach_msg;
@@ -32,6 +34,9 @@ impl Exception {
 
 /// `MACH_EXCEPTION_ID`: the request's id.
 const REQUEST_ID: i32 = 2400;
+
+/// `MACH_EXCEPTION_REPLY_ID`: the reply's id.
+const REPLY_ID: i32 = 2500;
 
 /// `exc_port_proto`: the type word of one inline send right.
 const PORT_WORD: u64 =
@@ -75,6 +80,20 @@ struct Request {
     subcode_word: u64,
     /// The subcode.
     subcode: i64,
+}
+
+/// The reply to an exception, as `mig_reply_header_t` lays it out: the
+/// code's type word, then the code; its hole is a field.
+#[repr(C)]
+struct Reply {
+    /// Its header.
+    header: Header,
+    /// The code's type word.
+    code_word: u64,
+    /// The code: `KERN_SUCCESS` if the exception was handled.
+    code: i32,
+    /// The hole after it.
+    code_hole: u32,
 }
 
 /// Sends the current thread's exception, with its code and subcode, to its
@@ -159,17 +178,18 @@ fn try_task(thread: &Thread, exception: Exception, code: i32, subcode: i64) {
 /// port of send right `destination`, with send rights `thread_port` and
 /// `task_port`, the three given with their references, then waits for the
 /// reply on the thread's reply port, as `exception_raise` does by its slow
-/// path; an interrupted wait gives `Ok` if the thread is to halt.
+/// path: `Ok` for a reply of `KERN_SUCCESS`, or an interrupted wait if the
+/// thread is to halt.
 ///
 /// # Errors
 ///
-/// A failed reply's code: not yet.
+/// The reply's code, if not `KERN_SUCCESS`.
 ///
 /// # Panics
 ///
-/// If no message buffer or reply port can be allocated. At the reply, or a
-/// wait that ends otherwise: not yet. As `mach_msg::send_always` and
-/// `mach_msg::receive_reply`.
+/// If no message buffer or reply port can be allocated. If the wait ends
+/// otherwise: not yet. As `mach_msg::send_always`,
+/// `mach_msg::receive_reply`, `Port::release_send_once` and `parse_reply`.
 fn send(
     thread: &Thread,
     destination: Reference<Port>,
@@ -237,7 +257,24 @@ fn send(
     // halts on its way out of the kernel.
     loop {
         match mach_msg::receive_reply(&saved) {
-            Ok(_) => panic!("exception_raise_continue_slow: exception_parse_reply, not yet"),
+            Ok((reply, _)) => {
+                // As ipc_port_release of ith_port.
+                drop(saved);
+                // SAFETY: copied in, the reply's destination is the exposed
+                // address of the reply port's reference, its send-once
+                // right's, which the handle takes; the slot is not read
+                // again.
+                let port = unsafe {
+                    Reference::from_raw(
+                        NonNull::new(ptr::with_exposed_provenance_mut::<Port>(
+                            reply.header().remote_port,
+                        ))
+                        .unwrap(),
+                    )
+                };
+                Port::release_send_once(port);
+                return parse_reply(reply);
+            }
             Err(mach_msg::MACH_RCV_INTERRUPTED) => {
                 if thread.should_halt() {
                     return Ok(());
@@ -246,4 +283,35 @@ fn send(
             Err(status) => panic!("exception_raise_continue_slow: {status:#x}, not yet"),
         }
     }
+}
+
+/// Takes `reply`, an exception's reply whose destination right is already
+/// released, as `exception_parse_reply` does: `Ok` for its code
+/// `KERN_SUCCESS`; its buffer goes back to the CPU's cache.
+///
+/// # Errors
+///
+/// Its code, if not `KERN_SUCCESS`.
+///
+/// # Panics
+///
+/// If it is not an exception's reply (`MIG_REPLY_MISMATCH`): not yet.
+fn parse_reply(reply: KernelMessage) -> Result<(), i32> {
+    let header = reply.header();
+    assert!(
+        header.bits == MessageBits::new(Some(MessageType::PortSendOnce), None)
+            && header.size == u32::try_from(size_of::<Reply>()).unwrap()
+            && header.id == REPLY_ID,
+        "exception_parse_reply: MIG_REPLY_MISMATCH, not yet"
+    );
+    // SAFETY: `Reply` is `repr(C)`, a `Header` first, then integers only;
+    // the message is one's size.
+    let fields = unsafe { reply.layout::<Reply>() };
+    assert!(
+        fields.code_word == CODE_WORD,
+        "exception_parse_reply: MIG_REPLY_MISMATCH, not yet"
+    );
+    let code = fields.code;
+    reply.cache_or_free();
+    if code == 0 { Ok(()) } else { Err(code) }
 }

@@ -333,6 +333,22 @@ impl Port {
         drop(port);
     }
 
+    /// Releases a send-once right for `port`, which the caller gives with
+    /// its reference, as `ipc_port_release_sonce` does.
+    ///
+    /// # Panics
+    ///
+    /// If `port` has no send-once right.
+    pub fn release_send_once(port: Reference<Self>) {
+        let mut state = port.state.lock();
+        state.send_once_rights = state
+            .send_once_rights
+            .checked_sub(1)
+            .expect("ipc_port_release_sonce: no send-once right");
+        drop(state);
+        drop(port);
+    }
+
     /// Puts a send right for `port`, which the caller gives with its
     /// reference, in `space`, as `ipc_port_copyout_send` does; gives its
     /// name there.
