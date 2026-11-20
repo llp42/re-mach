@@ -83,20 +83,38 @@ struct Request {
 ///
 /// # Panics
 ///
-/// With no current thread. If the thread has an exception port: not yet.
-/// As `try_task`.
+/// With no current thread. If the reply from the thread's exception port
+/// fails: not yet. As `Thread::retrieve_self`, `Task::retrieve_self`,
+/// `send` and `try_task`.
 pub fn raise(exception: Exception, code: i32, subcode: i64) {
     let thread = smp::current()
         .active_thread()
         .expect("exception: no current thread");
-    // As retrieve_thread_exception.
+    // As retrieve_thread_exception: a send right, if the port is alive.
     let ports = thread.ports.lock();
-    assert!(
-        ports.exception.is_none(),
-        "exception: the thread's exception port, not yet"
-    );
+    let port = ports
+        .exception
+        .as_ref()
+        .and_then(|port| Port::try_copy_send(port.as_ref()));
     drop(ports);
-    try_task(thread, exception, code, subcode);
+    let Some(port) = port else {
+        try_task(thread, exception, code, subcode);
+        return;
+    };
+    // As ith_exc saved: a failed reply tries the task's port.
+    if send(
+        thread,
+        port,
+        thread.retrieve_self(),
+        thread.task().retrieve_self(),
+        exception,
+        code,
+        subcode,
+    )
+    .is_err()
+    {
+        panic!("exception_raise_continue_slow: exception_try_task, not yet");
+    }
 }
 
 /// Sends `thread`'s exception to its task's exception port, as
@@ -104,8 +122,9 @@ pub fn raise(exception: Exception, code: i32, subcode: i64) {
 ///
 /// # Panics
 ///
-/// If the task has no port. With no live exception port: not yet. As
-/// `Thread::retrieve_self`, `Task::retrieve_self` and `send`.
+/// If the task has no port. With no live exception port, or if its reply
+/// fails: not yet. As `Thread::retrieve_self`, `Task::retrieve_self` and
+/// `send`.
 fn try_task(thread: &Thread, exception: Exception, code: i32, subcode: i64) {
     let task = thread.task();
     // As retrieve_task_exception: a send right, if the port is alive.
@@ -120,7 +139,8 @@ fn try_task(thread: &Thread, exception: Exception, code: i32, subcode: i64) {
         .and_then(|port| Port::try_copy_send(port.as_ref()));
     drop(ports);
     let port = port.unwrap_or_else(|| panic!("exception_no_server: not yet"));
-    send(
+    // As ith_exc cleared: the last port tried.
+    if send(
         thread,
         port,
         thread.retrieve_self(),
@@ -128,14 +148,22 @@ fn try_task(thread: &Thread, exception: Exception, code: i32, subcode: i64) {
         exception,
         code,
         subcode,
-    );
+    )
+    .is_err()
+    {
+        panic!("exception_raise_continue_slow: exception_no_server, not yet");
+    }
 }
 
 /// Sends `thread`'s exception, with its code and subcode, to the exception
 /// port of send right `destination`, with send rights `thread_port` and
 /// `task_port`, the three given with their references, then waits for the
 /// reply on the thread's reply port, as `exception_raise` does by its slow
-/// path; an interrupted wait returns if the thread is to halt.
+/// path; an interrupted wait gives `Ok` if the thread is to halt.
+///
+/// # Errors
+///
+/// A failed reply's code: not yet.
 ///
 /// # Panics
 ///
@@ -150,7 +178,7 @@ fn send(
     exception: Exception,
     code: i32,
     subcode: i64,
-) {
+) -> Result<(), i32> {
     // A buffer first, with nothing locked.
     let mut message =
         KernelMessage::allocate_saved().unwrap_or_else(|_| panic!("exception_raise: no buffer"));
@@ -212,7 +240,7 @@ fn send(
             Ok(_) => panic!("exception_raise_continue_slow: exception_parse_reply, not yet"),
             Err(mach_msg::MACH_RCV_INTERRUPTED) => {
                 if thread.should_halt() {
-                    return;
+                    return Ok(());
                 }
             }
             Err(status) => panic!("exception_raise_continue_slow: {status:#x}, not yet"),
