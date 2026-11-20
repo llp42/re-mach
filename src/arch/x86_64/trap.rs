@@ -384,7 +384,7 @@ unsafe extern "sysv64" fn user_trap(frame: *const TrapFrame) -> ! {
 /// # Panics
 ///
 /// With no current thread. As `vm::fault::fault` and `exception::raise`.
-fn raise_page_fault(address: usize, access: Protection) {
+pub(super) fn raise_page_fault(address: usize, access: Protection) {
     let subcode = u64::try_from(address).unwrap().cast_signed();
     if address >= MIN_KERNEL_ADDRESS {
         exception::raise(Exception::BadAccess, PAGE_FAULT, subcode);

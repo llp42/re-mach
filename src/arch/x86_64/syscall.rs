@@ -9,12 +9,14 @@ use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{Efer, EferFlags, LStar, SFMask, Star};
 use x86_64::registers::rflags::RFlags;
 
+use super::memory_layout::MAX_USER_ADDRESS;
 use super::per_cpu::{KERNEL_STACK, PRIVILEGE_STACK, USER_STACK};
-use super::trap::TrapFrame;
+use super::trap::{TrapFrame, raise_page_fault};
 use super::{MachineState, copy, gdt};
 use crate::exception::{self, Exception};
 use crate::syscall::MACH_TRAPS;
 use crate::thread::MachineThread as _;
+use crate::vm::Protection;
 
 /// `EXC_I386_INVOP`: the code of a bad instruction's exception.
 const INVALID_OPERATION: i32 = 1;
@@ -74,7 +76,8 @@ unsafe extern "C" {
 /// Runs the system call `frame` holds: the Mach trap its eax names,
 /// negated, with its register arguments, and those past the sixth from the
 /// user stack; the result goes to its rax, and the thread returns to user
-/// mode. A number outside the table raises a bad instruction's exception.
+/// mode. A number outside the table raises a bad instruction's exception,
+/// and a stack argument that can't be copied in a page fault's.
 ///
 /// # Safety
 ///
@@ -82,8 +85,8 @@ unsafe extern "C" {
 ///
 /// # Panics
 ///
-/// On a stack argument that can't be copied in, which raises an exception,
-/// or a trap not written yet: not yet. As `exception::raise`.
+/// On a trap not written yet: not yet. As `exception::raise` and
+/// `raise_page_fault`.
 unsafe extern "sysv64" fn system_call(frame: *mut TrapFrame) -> ! {
     // SAFETY: guaranteed by the caller.
     let rax = unsafe { (*frame).rax };
@@ -104,15 +107,31 @@ unsafe extern "sysv64" fn system_call(frame: *mut TrapFrame) -> ! {
             .unwrap()
             .wrapping_add(8);
         let count = trap.argument_count().max(6);
-        for (index, argument) in arguments[6..count].iter_mut().enumerate() {
-            let mut bytes = [0; 8];
-            assert!(
-                copy::copy_in(stack.wrapping_add(8 * index), &mut bytes).is_ok(),
-                "_syscall64_addr_push: not yet"
-            );
-            *argument = usize::from_le_bytes(bytes);
+        // As _syscall64_args_stack: their end checked by hand, then each
+        // from the last to the first; the first that fails is the fault's.
+        let end = stack.wrapping_add(8 * (count - 6));
+        let fault = if count > 6 && end >= MAX_USER_ADDRESS {
+            Some(end)
+        } else {
+            let mut fault = None;
+            for (index, argument) in arguments[6..count].iter_mut().enumerate().rev() {
+                let address = stack.wrapping_add(8 * index);
+                let mut bytes = [0; 8];
+                if copy::copy_in(address, &mut bytes).is_err() {
+                    fault = Some(address);
+                    break;
+                }
+                *argument = usize::from_le_bytes(bytes);
+            }
+            fault
+        };
+        match fault {
+            None => frame.rax = u64::from(trap.call(&arguments)),
+            // _syscall64_addr_push: user_trap's page fault, reading; the
+            // frame is not used past here, as others may change it while
+            // the thread waits.
+            Some(address) => raise_page_fault(address, Protection::READ),
         }
-        frame.rax = u64::from(trap.call(&arguments));
     } else {
         // As _syscall64_range, then user_trap's invalid opcode: the frame is
         // not borrowed, as others may change it while the thread waits.
