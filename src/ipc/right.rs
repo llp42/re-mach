@@ -270,10 +270,9 @@ fn check<'a>(state: &SpaceState, entry: &'a Entry) -> SpinlockGuard<'a, PortStat
 /// If the space is dead, `name` has no entry, a dead name has no user
 /// references, a request, an object or a message-accepted request, or a
 /// send right has no user references, no port or a port with no send
-/// right. If a dead name or a send right has more than one user reference,
-/// a send right has a dead-name or message-accepted request, or for a
-/// send-once or any other right: not yet. As `check` and
-/// `SpaceState::deallocate`.
+/// right. If a dead name has more than one user reference, a send right's
+/// last has a dead-name or message-accepted request, or for a send-once or
+/// any other right: not yet. As `check` and `SpaceState::deallocate`.
 pub(super) fn deallocate(mut state: SleepLockWriteGuard<'_, SpaceState>, name: PortName) {
     assert!(state.active, "ipc_right_dealloc: a dead space");
     let entry = state
@@ -303,10 +302,22 @@ pub(super) fn deallocate(mut state: SleepLockWriteGuard<'_, SpaceState>, name: P
             "ipc_right_dealloc: a send right with no user references"
         );
         let mut port_state = check(&state, entry);
-        assert!(
-            entry.bits.user_references == 1,
-            "ipc_right_dealloc: a send right's user references above 1, not yet"
-        );
+        if entry.bits.user_references > 1 {
+            assert!(
+                port_state.send_rights > 0,
+                "ipc_right_dealloc: a port with no send right"
+            );
+            drop(port_state);
+            // One user reference fewer; the right and the port stay.
+            state
+                .map
+                .get_mut(name.key())
+                .expect("ipc_right_dealloc: no entry")
+                .bits
+                .user_references -= 1;
+            drop(state);
+            return;
+        }
         port_state.send_rights = port_state
             .send_rights
             .checked_sub(1)
