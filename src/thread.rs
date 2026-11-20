@@ -933,27 +933,67 @@ impl Thread {
         Ok(())
     }
 
-    /// Ends it, as `thread_terminate` does: its port stands for nothing,
-    /// and the current thread, no longer alive, halts as it leaves the
-    /// kernel.
+    /// Ends it, as `thread_terminate` does: its port stands for nothing;
+    /// the current thread, no longer alive, halts as it leaves the kernel;
+    /// another is halted, gives up its ipc and the reference of its being
+    /// alive.
+    ///
+    /// # Errors
+    ///
+    /// `Failure` if another thread is no longer alive.
     ///
     /// # Panics
     ///
-    /// For another thread than the current: not yet.
-    pub(super) fn terminate(&self) {
+    /// If no thread runs on the CPU. If the current task or thread is no
+    /// longer alive: not yet. As `halt` and `terminate_ipc`.
+    pub(super) fn terminate(&self) -> Result<(), Error> {
         self.disable_ipc();
+        let current = smp::current()
+            .active_thread()
+            .expect("thread_terminate: no current thread");
+        if ptr::eq(current, self) {
+            let section = CriticalSection::enter();
+            if self.active.swap(false, Ordering::Relaxed) {
+                self.add_asts(Ast::TERMINATE);
+            }
+            smp::current().add_asts(Ast::TERMINATE);
+            drop(section);
+            return Ok(());
+        }
+        let members = current.task().members.lock();
         assert!(
-            smp::current()
+            members.active && current.active.load(Ordering::Relaxed),
+            "thread_terminate: the current thread being ended, not yet"
+        );
+        drop(members);
+        // Someone else got there first.
+        if !self.active.swap(false, Ordering::Relaxed) {
+            return Err(Error::Failure);
+        }
+        self.halt();
+        self.terminate_ipc();
+        // thread_deallocate: the reference of its being alive.
+        // SAFETY: an alive thread holds that reference, given up here, once,
+        // as it is no longer alive; the caller's keeps it until the call
+        // ends.
+        drop(unsafe { Reference::from_raw(NonNull::from(self)) });
+        Ok(())
+    }
+
+    /// Halts it at a clean point, leaving it suspended, as `thread_halt`
+    /// does when it must.
+    ///
+    /// # Panics
+    ///
+    /// If it is the current thread. Always else: not yet.
+    fn halt(&self) {
+        assert!(
+            !smp::current()
                 .active_thread()
                 .is_some_and(|current| ptr::eq(current, self)),
-            "thread_terminate: another thread, not yet"
+            "thread_halt: trying to halt current thread."
         );
-        let section = CriticalSection::enter();
-        if self.active.swap(false, Ordering::Relaxed) {
-            self.add_asts(Ast::TERMINATE);
-        }
-        smp::current().add_asts(Ast::TERMINATE);
-        drop(section);
+        panic!("thread_halt: not yet");
     }
 
     /// Writes `thread`'s machine state of `flavor` into `state`, as

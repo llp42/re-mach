@@ -62,7 +62,7 @@ mig::subsystem! {
 ///
 /// # Errors
 ///
-/// `InvalidArgument` for no thread.
+/// `InvalidArgument` for no thread; as `Thread::terminate`.
 ///
 /// # Panics
 ///
@@ -71,8 +71,7 @@ fn thread_terminate(thread: Option<&Reference<Thread>>) -> Result<(), Error> {
     let Some(thread) = thread else {
         return Err(Error::InvalidArgument);
     };
-    thread.terminate();
-    Ok(())
+    thread.terminate()
 }
 
 /// Serves `thread_get_state`: `thread`'s machine state of `flavor`, in at
