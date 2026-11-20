@@ -7,6 +7,9 @@
 /// A thread state's flavor, as Mach numbers it on x86; only those written
 /// so far.
 pub(super) enum StateFlavor {
+    /// `i386_THREAD_STATE`: the user registers; a set forces the user
+    /// segments.
+    Registers,
     /// `i386_REGS_SEGS_STATE`: the user registers and segments.
     RegistersAndSegments,
     /// `i386_DEBUG_STATE`: the debug registers.
@@ -21,6 +24,7 @@ impl TryFrom<i32> for StateFlavor {
     /// The flavor of Mach's number `number`, if it is one written here.
     fn try_from(number: i32) -> Result<Self, i32> {
         match number {
+            1 => Ok(Self::Registers),
             5 => Ok(Self::RegistersAndSegments),
             6 => Ok(Self::Debug),
             7 => Ok(Self::FsGsBase),

@@ -15,6 +15,7 @@ use x86_64::structures::gdt::SegmentSelector;
 use x86_64::{PrivilegeLevel, VirtAddr};
 
 use super::fpu;
+use super::gdt::{USER_CODE, USER_DATA};
 use super::memory_layout::MAX_USER_ADDRESS;
 use super::per_cpu::PerCpu;
 use super::thread_state::{FsGsBase, StateFlavor, UserRegisters};
@@ -304,7 +305,7 @@ impl MachineThread for MachineState {
 
     unsafe fn read_state(&self, flavor: i32, state: &mut [u32]) -> Result<usize, Error> {
         match StateFlavor::try_from(flavor) {
-            Ok(StateFlavor::RegistersAndSegments) => {
+            Ok(StateFlavor::Registers | StateFlavor::RegistersAndSegments) => {
                 let Some(words) = state.first_chunk_mut::<{ UserRegisters::COUNT }>() else {
                     return Err(Error::InvalidArgument);
                 };
@@ -334,7 +335,7 @@ impl MachineThread for MachineState {
 
     unsafe fn write_state(&self, flavor: i32, state: &[u32]) -> Result<(), Error> {
         match StateFlavor::try_from(flavor) {
-            Ok(StateFlavor::RegistersAndSegments) => {
+            Ok(kind @ (StateFlavor::Registers | StateFlavor::RegistersAndSegments)) => {
                 let Some(words) = state.first_chunk::<{ UserRegisters::COUNT }>() else {
                     return Err(Error::InvalidArgument);
                 };
@@ -345,17 +346,23 @@ impl MachineThread for MachineState {
                         .cast::<UserRegisters>()
                         .read_unaligned()
                 };
-                // Only the selectors' low 16 bits count; each must be a user
-                // one, not null.
-                registers.cs &= 0xffff;
-                registers.ss &= 0xffff;
-                let user = |selector: u32| {
-                    selector != 0
-                        && SegmentSelector(u16::try_from(selector).unwrap()).rpl()
-                            == PrivilegeLevel::Ring3
-                };
-                if !(user(registers.cs) && user(registers.ss)) {
-                    return Err(Error::InvalidArgument);
+                if matches!(kind, StateFlavor::Registers) {
+                    // The user selectors, whatever the state holds.
+                    registers.cs = u32::from(USER_CODE.0);
+                    registers.ss = u32::from(USER_DATA.0);
+                } else {
+                    // Only the selectors' low 16 bits count; each must be a
+                    // user one, not null.
+                    registers.cs &= 0xffff;
+                    registers.ss &= 0xffff;
+                    let user = |selector: u32| {
+                        selector != 0
+                            && SegmentSelector(u16::try_from(selector).unwrap()).rpl()
+                                == PrivilegeLevel::Ring3
+                    };
+                    if !(user(registers.cs) && user(registers.ss)) {
+                        return Err(Error::InvalidArgument);
+                    }
                 }
                 // SAFETY: guaranteed by the caller: its thread is stopped, so
                 // nothing else reads or writes its user registers.
