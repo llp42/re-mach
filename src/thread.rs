@@ -1141,6 +1141,38 @@ impl Thread {
         }
     }
 
+    /// Stops it once more for users, as `thread_suspend` does: the first
+    /// stop suspends it, and the current thread blocks on its way out of the
+    /// kernel.
+    ///
+    /// # Panics
+    ///
+    /// If it waits uninterruptibly, or is another thread the first stop
+    /// must wait for: not yet.
+    pub(super) fn suspend(&self) {
+        let section = CriticalSection::enter();
+        assert!(
+            !self.state().contains(ThreadState::UNINTERRUPTIBLE),
+            "thread_suspend: TH_UNINT, not yet"
+        );
+        let first = self.user_stop_count.fetch_add(1, Ordering::Relaxed) == 0;
+        if first {
+            self.hold();
+        }
+        drop(section);
+        if !first {
+            return;
+        }
+        let _section = CriticalSection::enter();
+        let cpu = smp::current();
+        assert!(
+            cpu.active_thread()
+                .is_some_and(|current| ptr::eq(current, self)),
+            "thread_suspend: thread_dowait, not yet"
+        );
+        cpu.add_asts(Ast::BLOCK);
+    }
+
     /// Lifts one stop users asked for, and the suspension it holds; a thread
     /// no longer suspended at all is no longer halted either, and runs
     /// unless it waits.

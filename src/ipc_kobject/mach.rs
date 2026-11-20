@@ -44,6 +44,7 @@ mig::subsystem! {
     27 vm_write(target_task = task::map_of, address: VirtualAddress, data: OutOfLine<u8>);
     59 task_set_special_port(task = task::of, which_port: i32, special_port: SendRight);
     61 thread_create(parent_task = task::of) -> (child_thread: Port);
+    62 thread_suspend(target_thread = thread::of);
     63 thread_resume(target_thread = thread::of);
     68 thread_set_special_port(thread = thread::of, which_port: i32, special_port: SendRight);
     89 vm_map(
@@ -306,6 +307,23 @@ fn thread_create(task: Option<&Reference<Task>>) -> Result<Reference<Port>, Erro
     // Its first run returns to user mode, as thread_bootstrap_return.
     thread.start(arch::MachineState::return_to_user);
     Ok(Thread::convert_to_port(thread))
+}
+
+/// Serves `thread_suspend`: stops `thread` once more for users.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no thread.
+///
+/// # Panics
+///
+/// As `Thread::suspend`.
+fn thread_suspend(thread: Option<&Reference<Thread>>) -> Result<(), Error> {
+    let Some(thread) = thread else {
+        return Err(Error::InvalidArgument);
+    };
+    thread.suspend();
+    Ok(())
 }
 
 /// Serves `thread_resume`: lifts one stop users asked for on `thread`.
