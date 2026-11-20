@@ -13,6 +13,7 @@ use crate::host::HOST;
 use crate::ipc::mach_msg;
 use crate::ipc::port::{Port, PortName};
 use crate::reference::Reference;
+use crate::thread::MachineThread as _;
 use crate::{print, smp};
 
 /// A Mach trap, as the table holds it.
@@ -20,6 +21,9 @@ pub enum MachTrap {
     /// What it runs, given the caller's arguments, and how many it takes;
     /// its result goes to the caller's rax, zero-extended.
     Written(fn(&[usize; 7]) -> u32, usize),
+    /// The same, for a trap that may set the caller's registers itself:
+    /// with no result, they stay as it set them.
+    SetsRegisters(fn(&[usize; 7]) -> Option<u32>, usize),
     /// Not written yet: GNU Mach's name for it.
     NotYet(&'static str),
 }
@@ -28,19 +32,21 @@ impl MachTrap {
     /// How many arguments it takes; none if not written yet.
     pub const fn argument_count(&self) -> usize {
         match self {
-            Self::Written(_, count) => *count,
+            Self::Written(_, count) | Self::SetsRegisters(_, count) => *count,
             Self::NotYet(_) => 0,
         }
     }
 
-    /// Runs it with `arguments`, giving its result.
+    /// Runs it with `arguments`, giving its result for the caller's rax, if
+    /// any.
     ///
     /// # Panics
     ///
     /// If it is not written yet.
-    pub fn call(&self, arguments: &[usize; 7]) -> u32 {
+    pub fn call(&self, arguments: &[usize; 7]) -> Option<u32> {
         match self {
-            Self::Written(function, _) => function(arguments),
+            Self::Written(function, _) => Some(function(arguments)),
+            Self::SetsRegisters(function, _) => function(arguments),
             Self::NotYet(name) => panic!("{name}: not yet"),
         }
     }
@@ -84,7 +90,7 @@ pub static MACH_TRAPS: [MachTrap; COUNT] = {
     traps[74] = MachTrap::NotYet("syscall_mach_port_insert_right");
     traps[75] = MachTrap::NotYet("syscall_mach_port_allocate_name");
     traps[76] = MachTrap::NotYet("syscall_thread_depress_abort");
-    traps[77] = MachTrap::NotYet("thread_set_self_state");
+    traps[77] = MachTrap::SetsRegisters(set_self_state, 3);
     traps
 };
 
@@ -185,6 +191,50 @@ fn host_self(_: &[usize; 7]) -> u32 {
         .active_thread()
         .expect("mach_host_self: no current thread");
     Port::copy_out_send(send, &thread.task().space).into()
+}
+
+/// Sets the caller's own state of the flavor in its first argument's low
+/// half from the words at its second, as many as its third's low half, as
+/// `thread_set_self_state`: copied in first. Gives no result once set, so
+/// the caller returns to user mode with that state, else the error.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU; as `MachineThread::write_own_state`.
+fn set_self_state(arguments: &[usize; 7]) -> Option<u32> {
+    /// The most words a state copied in may have.
+    const MAX_COUNT: usize = 150;
+    let thread = smp::current()
+        .active_thread()
+        .expect("thread_set_self_state: no current thread");
+    let flavor = i32::from_le_bytes(
+        u32::try_from(arguments[0] & 0xffff_ffff)
+            .unwrap()
+            .to_le_bytes(),
+    );
+    let count = arguments[2] & 0xffff_ffff;
+    if count == 0 || count > MAX_COUNT {
+        return Some(Error::InvalidArgument.into());
+    }
+    let mut bytes = [0; 4 * MAX_COUNT];
+    let bytes = &mut bytes[..4 * count];
+    if arch::Current::copy_in(arguments[1], bytes).is_err() {
+        return Some(Error::InvalidArgument.into());
+    }
+    let mut state = [0; MAX_COUNT];
+    for (word, chunk) in state.iter_mut().zip(bytes.as_chunks::<4>().0) {
+        *word = u32::from_ne_bytes(*chunk);
+    }
+    // SAFETY: the current thread, in its system call, whose user registers
+    // nothing borrows while a trap runs.
+    let result = unsafe {
+        thread
+            .machine_state()
+            .write_own_state(flavor, &state[..count])
+    };
+    // Set, no result: back to user mode with the state, as
+    // thread_exception_return.
+    result.err().map(u32::from)
 }
 
 /// How many bytes `print` copies in at a time, at most.

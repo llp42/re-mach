@@ -75,9 +75,9 @@ unsafe extern "C" {
 
 /// Runs the system call `frame` holds: the Mach trap its eax names,
 /// negated, with its register arguments, and those past the sixth from the
-/// user stack; the result goes to its rax, and the thread returns to user
-/// mode. A number outside the table raises a bad instruction's exception,
-/// and a stack argument that can't be copied in a page fault's.
+/// user stack; the result, if any, goes to its rax, and the thread returns
+/// to user mode. A number outside the table raises a bad instruction's
+/// exception, and a stack argument that can't be copied in a page fault's.
 ///
 /// # Safety
 ///
@@ -96,14 +96,21 @@ unsafe extern "sysv64" fn system_call(frame: *mut TrapFrame) -> ! {
         .and_then(|index| MACH_TRAPS.get(index))
     {
         // SAFETY: guaranteed by the caller; only the thread touches its
-        // user registers while it runs in the kernel.
-        let frame = unsafe { &mut *frame };
+        // user registers while it runs in the kernel. The borrow ends before
+        // the trap, which may set them.
+        let registers = unsafe { &*frame };
         let mut arguments = [
-            frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9, 0,
+            registers.rdi,
+            registers.rsi,
+            registers.rdx,
+            registers.r10,
+            registers.r8,
+            registers.r9,
+            0,
         ]
         .map(|argument| usize::try_from(argument).unwrap());
         // Past the sixth, from the user stack, above the return address.
-        let stack = usize::try_from(frame.interrupted.stack_pointer.as_u64())
+        let stack = usize::try_from(registers.interrupted.stack_pointer.as_u64())
             .unwrap()
             .wrapping_add(8);
         let count = trap.argument_count().max(6);
@@ -126,7 +133,12 @@ unsafe extern "sysv64" fn system_call(frame: *mut TrapFrame) -> ! {
             fault
         };
         match fault {
-            None => frame.rax = u64::from(trap.call(&arguments)),
+            None => {
+                if let Some(result) = trap.call(&arguments) {
+                    // SAFETY: as above; no borrow of them is alive.
+                    unsafe { (*frame).rax = u64::from(result) };
+                }
+            }
             // _syscall64_addr_push: user_trap's page fault, reading; the
             // frame is not used past here, as others may change it while
             // the thread waits.

@@ -404,6 +404,15 @@ impl MachineThread for MachineState {
         )
     }
 
+    unsafe fn write_own_state(&self, flavor: i32, state: &[u32]) -> Result<(), Error> {
+        // As thread_set_syscall_return: KERN_SUCCESS.
+        // SAFETY: guaranteed by the caller: nothing borrows them.
+        unsafe { (*self.user.get()).rax = 0 };
+        // SAFETY: guaranteed by the caller: the current thread in a system
+        // call, its user registers not borrowed.
+        unsafe { self.write_state(flavor, state) }
+    }
+
     unsafe fn terminate(state: NonNull<Self>) {
         // SAFETY: guaranteed by the caller; its thread's last switch moved
         // the TSS's and the CPU's stack pointers to the next thread.

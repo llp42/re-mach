@@ -374,11 +374,29 @@ pub trait MachineThread: Sized {
     /// # Safety
     ///
     /// Its thread is stopped, or is the current thread and `flavor` is one
-    /// `writes_own_state` names.
+    /// `writes_own_state` names, or is the current thread in a system call
+    /// and nothing borrows its user registers.
     unsafe fn write_state(&self, flavor: i32, state: &[u32]) -> Result<(), Error>;
     /// Whether a thread writes its own state of `flavor` directly, without
     /// being stopped.
     fn writes_own_state(flavor: i32) -> bool;
+    /// Sets the current thread's own user state of `flavor` from `state`,
+    /// as `thread_set_self_state` does: its system call's result is
+    /// `KERN_SUCCESS` first, which the state may replace.
+    ///
+    /// # Errors
+    ///
+    /// As `write_state`.
+    ///
+    /// # Panics
+    ///
+    /// As `write_state`.
+    ///
+    /// # Safety
+    ///
+    /// Its thread is the current thread, in a system call, and nothing
+    /// borrows its user registers.
+    unsafe fn write_own_state(&self, flavor: i32, state: &[u32]) -> Result<(), Error>;
     /// Frees `state`, with its floating-point state.
     ///
     /// # Safety
