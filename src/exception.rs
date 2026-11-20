@@ -75,7 +75,8 @@ struct Request {
 }
 
 /// Sends the current thread's exception, with its code and subcode, to its
-/// exception port, else its task's, as `exception` does.
+/// exception port, else its task's, as `exception` does; it returns if the
+/// thread is to halt meanwhile.
 ///
 /// # Panics
 ///
@@ -131,12 +132,13 @@ fn try_task(thread: &Thread, exception: Exception, code: i32, subcode: i64) {
 /// port of send right `destination`, with send rights `thread_port` and
 /// `task_port`, the three given with their references, then waits for the
 /// reply on the thread's reply port, as `exception_raise` does by its slow
-/// path.
+/// path; an interrupted wait returns if the thread is to halt.
 ///
 /// # Panics
 ///
-/// If no message buffer or reply port can be allocated. At the reply: not
-/// yet. As `mach_msg::send_always` and `mach_msg::receive_reply`.
+/// If no message buffer or reply port can be allocated. At the reply, or a
+/// wait that ends otherwise: not yet. As `mach_msg::send_always` and
+/// `mach_msg::receive_reply`.
 fn send(
     thread: &Thread,
     destination: Reference<Port>,
@@ -199,8 +201,18 @@ fn send(
         subcode,
     };
     mach_msg::send_always(message);
-    match mach_msg::receive_reply(&saved) {
-        Ok(_) => panic!("exception_raise_continue_slow: exception_parse_reply, not yet"),
-        Err(status) => panic!("exception_raise_continue_slow: {status:#x}, not yet"),
+    // exception_raise_continue_slow: an interrupted wait goes on, unless the
+    // thread is to halt: it returns then, the saved reference dropped, and
+    // halts on its way out of the kernel.
+    loop {
+        match mach_msg::receive_reply(&saved) {
+            Ok(_) => panic!("exception_raise_continue_slow: exception_parse_reply, not yet"),
+            Err(mach_msg::MACH_RCV_INTERRUPTED) => {
+                if thread.should_halt() {
+                    return;
+                }
+            }
+            Err(status) => panic!("exception_raise_continue_slow: {status:#x}, not yet"),
+        }
     }
 }

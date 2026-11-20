@@ -1018,11 +1018,15 @@ impl Thread {
     }
 
     /// Halts it at a clean point, leaving it suspended, as `thread_halt`
-    /// does when it must.
+    /// does when it must: once it stops, an interruptible wait it is in
+    /// ends, and until it halts itself it is made to run, uninterruptibly,
+    /// so that it notices.
     ///
     /// # Panics
     ///
-    /// If it is the current thread. Always else: not yet.
+    /// If it is the current thread, or, not halted, is anything but
+    /// suspended once stopped. If another thread is halting it: not yet. As
+    /// `wait_until_stopped`.
     fn halt(&self) {
         assert!(
             !smp::current()
@@ -1030,7 +1034,48 @@ impl Thread {
                 .is_some_and(|current| ptr::eq(current, self)),
             "thread_halt: trying to halt current thread."
         );
-        panic!("thread_halt: not yet");
+        // SAFETY: the caller's reference keeps it alive through the call, and
+        // the run queue holds it only until it stops, before the call returns.
+        let thread = unsafe { &*ptr::from_ref(self) };
+        let section = CriticalSection::enter();
+        if self.state().contains(ThreadState::HALTED) {
+            self.suspend_count.fetch_add(1, Ordering::Relaxed);
+            drop(section);
+            return;
+        }
+        self.hold();
+        assert!(
+            !self.asts().contains(Ast::HALT),
+            "thread_halt: another thread halting it, not yet"
+        );
+        self.add_asts(Ast::HALT);
+        drop(section);
+        loop {
+            self.wait_until_stopped();
+            let section = CriticalSection::enter();
+            // clear_wait's interrupt_only: an uninterruptible wait goes on.
+            if !self.state().contains(ThreadState::UNINTERRUPTIBLE) {
+                sched::clear_wait(thread, WaitResult::Interrupted);
+            }
+            if self.state().contains(ThreadState::HALTED) {
+                drop(section);
+                return;
+            }
+            // GNU Mach's threads at a clean continuation halt here; re-mach
+            // has no swap functions.
+            assert!(
+                self.state() & ThreadState::SCHEDULING == ThreadState::SUSPENDED,
+                "thread_halt"
+            );
+            self.insert_state(ThreadState::RUN | ThreadState::UNINTERRUPTIBLE);
+            sched::make_runnable(thread, Preemption::Forbidden);
+            drop(section);
+        }
+    }
+
+    /// Whether it is to halt or end, as `thread_should_halt` tells.
+    pub(super) fn should_halt(&self) -> bool {
+        self.asts().intersects(Ast::HALT | Ast::TERMINATE)
     }
 
     /// Writes `thread`'s machine state of `flavor` into `state`, as

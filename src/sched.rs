@@ -69,6 +69,8 @@ pub enum WaitResult {
     Awakened,
     /// Its timer ran out.
     TimedOut,
+    /// It was interrupted.
+    Interrupted,
 }
 
 impl WaitResult {
@@ -77,6 +79,7 @@ impl WaitResult {
         match self {
             Self::Awakened => 0,
             Self::TimedOut => 1,
+            Self::Interrupted => 2,
         }
     }
 }
@@ -89,6 +92,7 @@ impl TryFrom<u8> for WaitResult {
         match number {
             0 => Ok(Self::Awakened),
             1 => Ok(Self::TimedOut),
+            2 => Ok(Self::Interrupted),
             _ => Err(number),
         }
     }
@@ -498,13 +502,13 @@ pub fn wakeup(event: Event) {
 }
 
 /// Cancels `thread`'s timer and ends its wait with `result`, on its home
-/// CPU: it leaves the sleep queue of its event and runs; a thread not
-/// waiting is left as it is.
+/// CPU: it leaves the sleep queue of its event and runs, unless suspended
+/// in an interruptible wait, where it stays stopped; a thread not waiting
+/// is left as it is.
 ///
 /// # Panics
 ///
-/// If it runs already, is suspended in an interruptible wait, or waits on
-/// another CPU's sleep queue: not yet.
+/// If it runs already, or waits on another CPU's sleep queue: not yet.
 pub fn clear_wait(thread: &'static Thread, result: WaitResult) {
     let _section = CriticalSection::enter();
     if let Some(event) = thread.wait_event() {
@@ -525,6 +529,12 @@ pub fn clear_wait(thread: &'static Thread, result: WaitResult) {
     clock::timeout::reset_timeout_check(thread.timer());
     let state = thread.state();
     if !state.contains(ThreadState::WAIT) {
+        return;
+    }
+    if state == ThreadState::WAIT | ThreadState::SUSPENDED {
+        // Its wait ends; suspended, it does not run.
+        thread.set_state(state - ThreadState::WAIT);
+        thread.set_wait_result(result);
         return;
     }
     assert!(

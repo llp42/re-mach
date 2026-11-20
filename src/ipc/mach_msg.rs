@@ -43,6 +43,9 @@ bitflags::bitflags! {
 /// A receive's status when no message came in time, as Mach numbers it.
 const MACH_RCV_TIMED_OUT: u32 = 0x1000_4003;
 
+/// A receive's status when its wait was interrupted, as Mach numbers it.
+pub const MACH_RCV_INTERRUPTED: u32 = 0x1000_4005;
+
 /// Sends the message at `message`, `send_size` bytes, then receives one on
 /// `receive_name`, as `mach_msg_trap` does; so far a request to a port the
 /// kernel receives on, and its reply, or a send or a receive alone. Gives
@@ -575,6 +578,10 @@ fn dequeue<'a>(
                     "ipc_mqueue_receive: timed out with no timeout"
                 );
                 timeout = Some(0);
+            }
+            WaitResult::Interrupted => {
+                drop(port_state);
+                return Err(MACH_RCV_INTERRUPTED);
             }
             WaitResult::Awakened => panic!("ipc_mqueue_receive: awakened with no message"),
         }

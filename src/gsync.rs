@@ -200,6 +200,7 @@ pub fn wait(
             drop(waiters);
             Err(Error::TimedOut)
         }
+        WaitResult::Interrupted => panic!("gsync_wait: KERN_INTERRUPTED, not yet"),
     }
 }
 
