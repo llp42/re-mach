@@ -986,25 +986,26 @@ impl Thread {
         }
     }
 
-    /// Lifts one suspension; a thread no longer suspended runs.
+    /// Lifts one suspension; a thread no longer suspended is no longer
+    /// halted either, and runs unless it waits or already runs.
     ///
     /// # Panics
     ///
-    /// If, no longer suspended, it waits or runs: not yet.
+    /// As `sched::make_runnable`.
     pub(super) fn release(&'static self) {
         let _section = CriticalSection::enter();
         if self.suspend_count.fetch_sub(1, Ordering::Relaxed) != 1 {
             return;
         }
-        if let Err(state) = self.state.compare_exchange(
-            ThreadState::SUSPENDED.bits(),
-            ThreadState::RUN.bits(),
+        let state = self.state.fetch_and(
+            !(ThreadState::SUSPENDED | ThreadState::HALTED).bits(),
             Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            panic!("thread_release: thread {self:p} in state {state:#x}, not yet");
+        );
+        if state & (ThreadState::WAIT | ThreadState::RUN).bits() == 0 {
+            self.state
+                .fetch_or(ThreadState::RUN.bits(), Ordering::Relaxed);
+            sched::make_runnable(self, Preemption::Allowed);
         }
-        sched::make_runnable(self, Preemption::Allowed);
     }
 
     /// Lifts one stop users asked for, and the suspension it holds; a thread
