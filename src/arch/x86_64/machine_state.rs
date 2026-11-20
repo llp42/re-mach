@@ -14,7 +14,7 @@ use x86_64::registers::model_specific::{FsBase, KernelGsBase};
 use x86_64::structures::gdt::SegmentSelector;
 use x86_64::{PrivilegeLevel, VirtAddr};
 
-use super::fpu;
+use super::fpu::{self, FloatState};
 use super::gdt::{USER_CODE, USER_DATA};
 use super::memory_layout::MAX_USER_ADDRESS;
 use super::per_cpu::PerCpu;
@@ -321,6 +321,21 @@ impl MachineThread for MachineState {
                 }
                 Ok(UserRegisters::COUNT)
             }
+            Ok(StateFlavor::Float) => {
+                let Some(words) = state.first_chunk_mut::<{ FloatState::COUNT }>() else {
+                    return Err(Error::InvalidArgument);
+                };
+                // SAFETY: guaranteed by the caller: its thread is stopped.
+                let float = unsafe { fpu::read_state(self) };
+                // SAFETY: `words` holds a `FloatState`'s bytes, which its
+                // fields, padding included, all set.
+                unsafe {
+                    ptr::from_mut(words)
+                        .cast::<FloatState>()
+                        .write_unaligned(float);
+                }
+                Ok(FloatState::COUNT)
+            }
             Ok(StateFlavor::Debug) => panic!("thread_getstatus: i386_DEBUG_STATE, not yet"),
             Ok(StateFlavor::FsGsBase) => {
                 panic!("thread_getstatus: i386_FSGS_BASE_STATE, not yet")
@@ -367,6 +382,18 @@ impl MachineThread for MachineState {
                 // SAFETY: guaranteed by the caller: its thread is stopped, so
                 // nothing else reads or writes its user registers.
                 unsafe { &mut *self.user.get() }.set_registers(&registers);
+                Ok(())
+            }
+            Ok(StateFlavor::Float) => {
+                let Some(words) = state.first_chunk::<{ FloatState::COUNT }>() else {
+                    return Err(Error::InvalidArgument);
+                };
+                // SAFETY: `words` holds a `FloatState`'s bytes, and any bytes
+                // make one.
+                let float = unsafe { ptr::from_ref(words).cast::<FloatState>().read_unaligned() };
+                // SAFETY: guaranteed by the caller: its thread is stopped, or
+                // is the current thread.
+                unsafe { fpu::write_state(self, &float) };
                 Ok(())
             }
             Ok(StateFlavor::Debug) => panic!("thread_setstatus: i386_DEBUG_STATE, not yet"),

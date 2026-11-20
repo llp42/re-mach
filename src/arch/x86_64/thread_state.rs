@@ -10,6 +10,8 @@ pub(super) enum StateFlavor {
     /// `i386_THREAD_STATE`: the user registers; a set forces the user
     /// segments.
     Registers,
+    /// `i386_FLOAT_STATE`: the x87 state, as the 387 lays it out.
+    Float,
     /// `i386_REGS_SEGS_STATE`: the user registers and segments.
     RegistersAndSegments,
     /// `i386_DEBUG_STATE`: the debug registers.
@@ -25,6 +27,7 @@ impl TryFrom<i32> for StateFlavor {
     fn try_from(number: i32) -> Result<Self, i32> {
         match number {
             1 => Ok(Self::Registers),
+            2 => Ok(Self::Float),
             5 => Ok(Self::RegistersAndSegments),
             6 => Ok(Self::Debug),
             7 => Ok(Self::FsGsBase),

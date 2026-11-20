@@ -148,6 +148,10 @@ SPDX-FileName: i386/include/mach/i386/exception.h
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
 
+SPDX-FileName: i386/include/mach/i386/fp_reg.h
+SPDX-FileCopyrightText: 1992-1989 Carnegie Mellon University
+SPDX-License-Identifier: CMU-Mach
+
 SPDX-FileName: i386/include/mach/i386/thread_status.h
 SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
 SPDX-FileContributor: Avadis Tevanian, Jr.
