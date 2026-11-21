@@ -620,13 +620,14 @@ impl KernelMessage {
     /// does: each send right moves into `space`, and its name there replaces
     /// its port inline, or goes out of line to memory allocated in `map`,
     /// whose address replaces the ports' array; out-of-line memory moves
-    /// into `map`, and its address replaces its copy.
+    /// into `map`, and its address replaces its copy; empty out-of-line data
+    /// gets address 0.
     ///
     /// # Panics
     ///
-    /// If an item carries rights other than send rights, a port is null or
-    /// dead, a right can't be copied out, out-of-line data is empty, or its
-    /// memory can't be allocated or copied out: not yet. As
+    /// If empty out-of-line data has an address. If an item carries rights
+    /// other than send rights, a port is null or dead, a right can't be
+    /// copied out, or memory can't be allocated or copied out: not yet. As
     /// `object::copy_out` and `Map::copy_out`.
     #[expect(
         clippy::too_many_lines,
@@ -714,12 +715,14 @@ impl KernelMessage {
                 word &= !(1 << 31);
                 offset += length;
             } else {
-                assert!(
-                    length != 0,
-                    "ipc_kmsg_copyout_body: empty out-of-line data, not yet"
-                );
                 let data = usize::from_le_bytes(message[offset..offset + 8].try_into().unwrap());
-                let address = if let Some((array, address)) = names {
+                let address = if length == 0 {
+                    assert!(
+                        data == 0,
+                        "ipc_kmsg_copyout_body: empty out-of-line data with an address"
+                    );
+                    VirtualAddress::from(0)
+                } else if let Some((array, address)) = names {
                     // SAFETY: the ports' array, as above, their names in it now.
                     let slots = unsafe { slice::from_raw_parts(array.as_ptr(), count) };
                     // Each name's 32 bits, as copyout_port.
