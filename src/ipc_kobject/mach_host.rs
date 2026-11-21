@@ -24,6 +24,7 @@ mig::subsystem! {
     6 processor_set_default(host = ipc_host::host) -> (default_set: Port);
     8 processor_set_create(host = ipc_host::privileged_host) -> (new_set: Port, new_name: Port);
     9 processor_set_destroy(set = ipc_host::set_of);
+    22 task_priority(task = task::of, priority: i32, change_threads: Boolean);
     34 host_get_time(host = ipc_host::host) -> (current_time: RpcTimeValue);
     35 host_reboot(host = ipc_host::privileged_host, options: i32);
     38 host_info(host = ipc_host::host, flavor: i32) -> (info: [i32; ..1024], CountInOut);
@@ -131,6 +132,36 @@ fn processor_set_destroy(set: Option<&Reference<ProcessorSet>>) -> Result<(), Er
         return Err(Error::InvalidArgument);
     };
     set.destroy()
+}
+
+/// Serves `task_priority`: sets `task`'s priority to `priority`, its
+/// threads' too for `change_threads`.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no task or a priority past the lowest; as
+/// `Task::set_priority`.
+///
+/// # Panics
+///
+/// As `Task::set_priority`.
+fn task_priority(
+    task: Option<&Reference<Task>>,
+    priority: i32,
+    change_threads: Boolean,
+) -> Result<(), Error> {
+    let Some(task) = task else {
+        return Err(Error::InvalidArgument);
+    };
+    let priority = u32::try_from(priority)
+        .map_err(|_| Error::InvalidArgument)
+        .and_then(Priority::try_from)?;
+    let threads = if bool::from(change_threads) {
+        Threads::Changed
+    } else {
+        Threads::Kept
+    };
+    task.set_priority(priority, threads)
 }
 
 /// Serves `host_get_time`: the time of day for `host`.

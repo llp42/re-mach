@@ -1673,6 +1673,31 @@ impl Thread {
         self.compute_priority();
     }
 
+    /// Sets its base priority to `priority` unless that outranks its cap, as
+    /// `thread_priority` does without `set_max`.
+    ///
+    /// # Errors
+    ///
+    /// `Failure` if `priority` outranks its cap.
+    ///
+    /// # Panics
+    ///
+    /// If it is depressed: not yet; as `compute_priority`.
+    pub(super) fn try_set_priority(&self, priority: Priority) -> Result<(), Error> {
+        let _section = CriticalSection::enter();
+        let max_priority = Priority::try_from(self.max_priority.load(Ordering::Relaxed)).unwrap();
+        if priority.outranks(max_priority) {
+            return Err(Error::Failure);
+        }
+        assert!(
+            self.depressed_from.load(Ordering::Relaxed) < 0,
+            "thread_priority: a depressed thread, not yet"
+        );
+        self.priority.store(u32::from(priority), Ordering::Relaxed);
+        self.compute_priority();
+        Ok(())
+    }
+
     /// Sets its base priority, while it runs.
     pub(super) fn set_priority(&self, priority: Priority) {
         self.priority.store(u32::from(priority), Ordering::Relaxed);

@@ -754,6 +754,35 @@ impl Task {
         Ok(info.len().min(count))
     }
 
+    /// Sets its priority, which its new threads take, to `priority`, and its
+    /// threads' as `threads` says, as `task_priority` does.
+    ///
+    /// # Errors
+    ///
+    /// `NoAccess` if `priority` outranks its cap; `Failure` if a thread's
+    /// cap refuses it, the other threads changed still.
+    ///
+    /// # Panics
+    ///
+    /// As `Thread::try_set_priority`.
+    pub(super) fn set_priority(&self, priority: Priority, threads: Threads) -> Result<(), Error> {
+        let mut members = self.members.lock();
+        if priority.outranks(members.max_priority) {
+            return Err(Error::NoAccess);
+        }
+        members.priority = priority;
+        let mut result = Ok(());
+        if matches!(threads, Threads::Changed) {
+            for thread in &members.threads {
+                if thread.try_set_priority(priority).is_err() {
+                    result = Err(Error::Failure);
+                }
+            }
+        }
+        drop(members);
+        result
+    }
+
     /// Caps its priority at `max_priority` for `host`, a host's port: its
     /// priority as `base` says, and its threads' as `threads` says, as
     /// `task_max_priority` does.
