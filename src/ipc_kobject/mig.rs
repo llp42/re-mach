@@ -91,6 +91,11 @@ pub(super) unsafe trait Element: Copy {
         // The long-form bit, bit 30; not inline.
         word(Self::NAME, Self::SIZE, 1 << 6, number)
     }
+
+    /// How many of an inline array of `number` its routine reads: all.
+    fn readable(number: usize) -> usize {
+        number
+    }
 }
 
 /// An out-of-line array a routine gives or gets: the copy holding it, and
@@ -189,6 +194,17 @@ impl From<Boolean> for bool {
 #[repr(transparent)]
 pub(super) struct StringC<const N: usize>(pub(super) [u8; N]);
 
+/// A character of a C string of variable length, MIG's `c_string[*: N]`.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub(super) struct StringChar(u8);
+
+impl From<StringChar> for u8 {
+    fn from(character: StringChar) -> Self {
+        character.0
+    }
+}
+
 /// A device's name, MIG's `dev_name_t`: a C string of 128 bytes, in one
 /// long-form item.
 #[derive(Clone, Copy)]
@@ -272,6 +288,18 @@ unsafe impl Inline for DeviceName {
 unsafe impl Element for u8 {
     const NAME: MessageType = MessageType::Byte;
     const SIZE: u16 = 8;
+}
+
+// SAFETY: `repr(transparent)` over a `u8`.
+unsafe impl Element for StringChar {
+    const NAME: MessageType = MessageType::StringC;
+    const SIZE: u16 = 8;
+
+    /// To the array's padding: its routine reads a C string to its NUL, as
+    /// GNU Mach's do, whatever the number says.
+    fn readable(number: usize) -> usize {
+        number.next_multiple_of(8)
+    }
 }
 
 // SAFETY: a primitive.
@@ -645,7 +673,7 @@ macro_rules! subsystem {
     // What the routine gets: the data; for a right, its intran's value, or
     // its port's reference; for a kept right, its handle; for a count, the
     // reply's array, cut to it; for out-of-line memory, its handle; for an
-    // inline array, its elements.
+    // inline array, the elements its routine reads.
     (@pass $request:ident $reply:ident $in:ident send_right $intran:path) => {
         $in.as_deref().and_then($intran).as_deref()
     };
@@ -659,7 +687,9 @@ macro_rules! subsystem {
     };
     (@pass $request:ident $reply:ident $in:ident out_of_line $element:ty) => { $in };
     (@pass $request:ident $reply:ident $in:ident array $element:ty, $max:literal) => {
-        &$in[..usize::try_from($request.$in.word >> 32).unwrap()]
+        &$in[..<$element as mig::Element>::readable(
+            usize::try_from($request.$in.word >> 32).unwrap(),
+        )]
     };
     // What the routine gives: the data; for a count array, how many it
     // filled; for an out-of-line array, its copy; for an array of send

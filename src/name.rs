@@ -28,6 +28,20 @@ impl Name {
         }
     }
 
+    /// Sets it to `bytes` up to their first NUL, cut to fit with its final
+    /// NUL, as `strncpy` does.
+    pub fn set_bytes(&self, bytes: impl IntoIterator<Item = u8>) {
+        let mut length = 0;
+        let bytes = bytes.into_iter().take_while(|&byte| byte != 0);
+        for (byte, other) in self.0[..NAME_SIZE - 1].iter().zip(bytes) {
+            byte.store(other, Ordering::Relaxed);
+            length += 1;
+        }
+        for byte in &self.0[length..] {
+            byte.store(0, Ordering::Relaxed);
+        }
+    }
+
     /// Sets it to `other` in parentheses, `other` cut byte-wise to fit, as
     /// `"(%.*s)"` names a child task.
     pub fn set_parenthesized(&self, other: &Self) {

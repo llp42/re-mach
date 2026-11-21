@@ -681,6 +681,11 @@ impl Task {
         );
         drop(members);
     }
+
+    /// Names it `name`, up to its first NUL, cut to fit.
+    pub(super) fn set_name(&self, name: impl IntoIterator<Item = u8>) {
+        self.members.lock().name.set_bytes(name);
+    }
 }
 
 // SAFETY: its count is its own, and `free` frees nothing yet.
