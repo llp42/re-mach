@@ -102,6 +102,11 @@ impl Map {
         self.phys_map
     }
 
+    /// How much it maps, in bytes, read under its read lock.
+    pub fn size(&self) -> usize {
+        self.contents.read().size
+    }
+
     /// A new empty map of `bounds` over `phys_map`, a user task's, with one
     /// reference, its size limited to the memory's.
     ///

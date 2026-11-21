@@ -72,7 +72,7 @@ impl AtomicTimeValue {
     }
 
     /// Its value.
-    pub(super) fn load(&self) -> TimeValue {
+    pub fn load(&self) -> TimeValue {
         TimeValue {
             seconds: self.seconds.load(Ordering::Relaxed),
             nanoseconds: self.nanoseconds.load(Ordering::Relaxed),

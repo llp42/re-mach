@@ -5,14 +5,15 @@
 
 use core::mem::{self, ManuallyDrop};
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize};
+use core::slice;
+use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
-use crate::arch::{self, MAX_USER_ADDRESS, MIN_USER_ADDRESS, Machine as _};
+use crate::arch::{self, MAX_USER_ADDRESS, MIN_USER_ADDRESS, Machine as _, PAGE_SIZE};
 use crate::ast::Ast;
 use crate::clock;
-use crate::clock::time::AtomicTimeValue;
+use crate::clock::time::{AtomicTimeValue, TimeValue};
 use crate::error::Error;
 use crate::ipc::port::{KernelObject, Port, SendRight};
 use crate::ipc::space::Space;
@@ -23,7 +24,7 @@ use crate::sched::{Priority, USER_PRIORITY};
 use crate::slab::{Cache, CacheBox};
 use crate::smp;
 use crate::sync::{CriticalSection, OnceLock, Spinlock, Token};
-use crate::thread::{TaskThreadAdapter, Thread};
+use crate::thread::{RpcTimeValue, TIMER_RATE, TaskThreadAdapter, Thread, TimeValue64};
 use crate::vm::VirtualAddress;
 use crate::vm::kernel::KERNEL_MAP;
 use crate::vm::map::Map;
@@ -131,6 +132,26 @@ pub struct TaskMembers {
     thread_count: u32,
     /// The task's name, ending with a NUL.
     pub(super) name: Name,
+}
+
+/// Mach's `task_basic_info`: 30 words.
+#[repr(C)]
+struct BasicInfo {
+    /// The stops users asked for.
+    suspend_count: i32,
+    base_priority: i32,
+    /// How much its map maps, in bytes.
+    virtual_size: usize,
+    /// How much its physical map maps, in bytes.
+    resident_size: usize,
+    /// Its ended threads' time in user mode.
+    user_time: RpcTimeValue,
+    /// Its ended threads' time in the kernel.
+    system_time: RpcTimeValue,
+    creation_time: RpcTimeValue,
+    user_time64: TimeValue64,
+    system_time64: TimeValue64,
+    creation_time64: TimeValue64,
 }
 
 impl Task {
@@ -347,6 +368,60 @@ impl Task {
             );
         }
         drop(members);
+    }
+
+    /// Writes its basic information into `info`, as `task_info`'s
+    /// `TASK_BASIC_INFO` does; `info`'s length is the count asked for.
+    /// Gives the count written.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` for a count short of the record without its 64-bit
+    /// times.
+    pub(super) fn basic_info(&self, info: &mut [i32]) -> Result<usize, Error> {
+        let count = size_of::<BasicInfo>() / size_of::<i32>();
+        let short_count = mem::offset_of!(BasicInfo, user_time64) / size_of::<i32>();
+        if info.len() < short_count {
+            return Err(Error::InvalidArgument);
+        }
+        let virtual_size = self.map.size();
+        let resident_size = self.map.phys_map().resident_count() * PAGE_SIZE;
+        let time = |microseconds: &AtomicU64| {
+            let microseconds = microseconds.load(Ordering::Relaxed);
+            TimeValue {
+                seconds: i64::try_from(microseconds / u64::from(TIMER_RATE)).unwrap(),
+                nanoseconds: i64::try_from(microseconds % u64::from(TIMER_RATE) * 1000).unwrap(),
+            }
+        };
+        let members = self.members.lock();
+        let user_time = time(&self.total_user_time);
+        let system_time = time(&self.total_system_time);
+        // As read_time_stamp; no host_set_time yet, so no offset.
+        let creation_time = self.creation_time.load();
+        let basic = BasicInfo {
+            suspend_count: i32::try_from(members.user_stop_count).unwrap(),
+            base_priority: i32::try_from(u32::from(members.priority)).unwrap(),
+            virtual_size,
+            resident_size,
+            user_time: user_time.into(),
+            system_time: system_time.into(),
+            creation_time: creation_time.into(),
+            user_time64: user_time.into(),
+            system_time64: system_time.into(),
+            creation_time64: creation_time.into(),
+        };
+        drop(members);
+        // The 64-bit times only for the whole record's count, as Mach's.
+        let written = if info.len() == count {
+            count
+        } else {
+            short_count
+        };
+        // SAFETY: `count` words of integers, `repr(C)` with no implicit
+        // padding.
+        let words = unsafe { slice::from_raw_parts(ptr::from_ref(&basic).cast::<i32>(), written) };
+        info[..written].copy_from_slice(words);
+        Ok(info.len().min(count))
     }
 
     /// Caps its priority at `max_priority`, as the boot script does with

@@ -85,6 +85,9 @@ pub trait MachinePhysMap {
     /// If it is the kernel's, or it is active on another CPU: not yet.
     fn protect(&self, range: Range<usize>, protection: Protection);
 
+    /// How many pages it maps, as `pmap_resident_count` reads it.
+    fn resident_count(&self) -> usize;
+
     /// Maps kernel `address` to the page at `physical`, read-write.
     fn enter_kernel(address: usize, physical: PhysAddr);
     /// The page `enter_kernel` mapped kernel `address` to; `None` if none.

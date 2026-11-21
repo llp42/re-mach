@@ -21,6 +21,8 @@ use crate::vm::{self, Inheritance, Protection, VirtualAddress};
 
 mig::subsystem! {
     base 2000;
+    12 task_info(target_task = task::of, flavor: i32)
+        -> (task_info_out: [i32; ..1024], CountInOut);
     16 thread_terminate(target_thread = thread::of);
     17 thread_get_state(target_thread = thread::of, flavor: i32)
         -> (old_state: [u32; ..1024], CountInOut);
@@ -60,6 +62,34 @@ mig::subsystem! {
         max_protection: u32,
         inheritance: u32
     ) -> (address: VirtualAddress);
+}
+
+/// Serves `task_info`: up to `info.len()` integers of `flavor` for `task`;
+/// gives how many.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no task or a flavor Mach lacks; as
+/// `Task::basic_info`.
+///
+/// # Panics
+///
+/// For `TASK_EVENTS_INFO` and `TASK_THREAD_TIMES_INFO`: not yet.
+fn task_info(
+    task: Option<&Reference<Task>>,
+    flavor: i32,
+    info: &mut [i32],
+) -> Result<usize, Error> {
+    let Some(task) = task else {
+        return Err(Error::InvalidArgument);
+    };
+    // TASK_BASIC_INFO, TASK_EVENTS_INFO, TASK_THREAD_TIMES_INFO.
+    match flavor {
+        1 => task.basic_info(info),
+        2 => panic!("task_info: TASK_EVENTS_INFO, not yet"),
+        3 => panic!("task_info: TASK_THREAD_TIMES_INFO, not yet"),
+        _ => Err(Error::InvalidArgument),
+    }
 }
 
 /// Serves `thread_terminate`: ends `thread`.

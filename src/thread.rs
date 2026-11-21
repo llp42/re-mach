@@ -72,7 +72,7 @@ pub enum Quantum {
 }
 
 /// A thread's timer ticks a second: thread times count microseconds.
-const TIMER_RATE: u32 = 1_000_000;
+pub const TIMER_RATE: u32 = 1_000_000;
 
 /// A thread.
 #[expect(dead_code, reason = "thread_freeze reads may_assign")]
@@ -251,7 +251,7 @@ impl From<RunState> for i32 {
 
 /// Mach's `rpc_time_value_t`.
 #[repr(C)]
-struct RpcTimeValue {
+pub struct RpcTimeValue {
     seconds: i64,
     microseconds: i32,
     /// Padding to 8 bytes, zero.
@@ -275,7 +275,7 @@ impl From<TimeValue> for RpcTimeValue {
 
 /// Mach's `time_value64_t`.
 #[repr(C)]
-struct TimeValue64 {
+pub struct TimeValue64 {
     seconds: i64,
     nanoseconds: i64,
 }
@@ -1437,15 +1437,7 @@ impl Thread {
                 priority = u32::from(base.aged_by(aged_sched_usage));
             }
         }
-        let time = |microseconds: &AtomicU64| {
-            let microseconds = microseconds.load(Ordering::Relaxed);
-            TimeValue {
-                seconds: i64::try_from(microseconds / u64::from(TIMER_RATE)).unwrap(),
-                nanoseconds: i64::try_from(microseconds % u64::from(TIMER_RATE) * 1000).unwrap(),
-            }
-        };
-        let user_time = time(&self.user_time);
-        let system_time = time(&self.system_time);
+        let (user_time, system_time) = self.read_times();
         let basic = BasicInfo {
             user_time: user_time.into(),
             system_time: system_time.into(),
@@ -1482,6 +1474,18 @@ impl Thread {
         let words = unsafe { slice::from_raw_parts(ptr::from_ref(&basic).cast::<i32>(), written) };
         info[..written].copy_from_slice(words);
         Ok(info.len().min(count))
+    }
+
+    /// Its user and system times, as `thread_read_times` reads them.
+    fn read_times(&self) -> (TimeValue, TimeValue) {
+        let time = |microseconds: &AtomicU64| {
+            let microseconds = microseconds.load(Ordering::Relaxed);
+            TimeValue {
+                seconds: i64::try_from(microseconds / u64::from(TIMER_RATE)).unwrap(),
+                nanoseconds: i64::try_from(microseconds % u64::from(TIMER_RATE) * 1000).unwrap(),
+            }
+        };
+        (time(&self.user_time), time(&self.system_time))
     }
 
     /// Its task, which lives while it has threads.

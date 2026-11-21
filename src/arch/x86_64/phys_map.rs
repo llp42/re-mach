@@ -502,6 +502,10 @@ impl MachinePhysMap for PhysMap {
         drop(tables);
     }
 
+    fn resident_count(&self) -> usize {
+        self.resident.load(Ordering::Relaxed)
+    }
+
     fn enter_kernel(address: usize, physical: PhysAddr) {
         enter_kernel_page(address, physical, KERNEL_PAGE);
     }
