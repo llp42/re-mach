@@ -141,6 +141,8 @@ pub struct Thread {
     argument: AtomicPtr<()>,
     /// Its kernel stack, which it keeps for life; set as it is created.
     kernel_stack: OnceLock<KernelStack>,
+    /// The function it starts in; set as it is started.
+    start_function: OnceLock<fn() -> !>,
     /// The processor it last ran on; null before it first runs.
     last_processor: AtomicPtr<Processor>,
     /// Whether a thread waits for it to stop, on the event of this flag.
@@ -608,6 +610,7 @@ impl Thread {
             }),
             argument: AtomicPtr::new(ptr::null_mut()),
             kernel_stack: OnceLock::new(),
+            start_function: OnceLock::new(),
             last_processor: AtomicPtr::new(ptr::null_mut()),
             wake_active: AtomicBool::new(false),
             bound: AtomicPtr::new(ptr::null_mut()),
@@ -707,14 +710,18 @@ impl Thread {
     }
 
     /// Makes it start in `function` once it first runs: its stack is set to
-    /// enter it.
+    /// enter it, and the function kept, as `thread_start` keeps it.
     ///
     /// # Panics
     ///
-    /// If it has no stack, which `create` gives it.
+    /// If it has no stack, which `create` gives it, or was started already.
     pub fn start(&self, function: fn() -> !) {
         let stack = self.kernel_stack.get().expect("thread_start: no stack");
         self.machine_state.attach_stack(stack, function);
+        assert!(
+            self.start_function.set(function).is_ok(),
+            "thread_start: started already"
+        );
     }
 
     /// A send right for `thread`'s port, made as `convert_thread_to_port`
@@ -1266,8 +1273,9 @@ impl Thread {
 
     /// Halts it at a clean point, leaving it suspended, as `thread_halt`
     /// does when it must: once it stops, an interruptible wait it is in
-    /// ends, and until it halts itself it is made to run, uninterruptibly,
-    /// so that it notices.
+    /// ends; never run and to start in user mode, it halts at once, else
+    /// until it halts itself it is made to run, uninterruptibly, so that it
+    /// notices.
     ///
     /// # Panics
     ///
@@ -1308,8 +1316,21 @@ impl Thread {
                 drop(section);
                 return;
             }
-            // GNU Mach's threads at a clean continuation halt here; re-mach
-            // has no swap functions.
+            // At a clean point, as at Mach's thread_bootstrap_return: never
+            // run, and to start in user mode; re-mach has none of Mach's
+            // other clean continuations.
+            let user_mode: fn() -> ! = arch::MachineState::return_to_user;
+            if self.last_processor().is_none()
+                && self
+                    .start_function
+                    .get()
+                    .is_some_and(|&start| ptr::fn_addr_eq(start, user_mode))
+            {
+                self.insert_state(ThreadState::HALTED);
+                self.remove_asts(Ast::HALT);
+                drop(section);
+                return;
+            }
             assert!(
                 self.state() & ThreadState::SCHEDULING == ThreadState::SUSPENDED,
                 "thread_halt"
