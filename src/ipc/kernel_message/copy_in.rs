@@ -6,16 +6,20 @@
 use core::ptr;
 
 use super::KernelMessage;
-use super::header::Header;
+use super::header::{Header, MessageBits};
 use crate::arch::{self, Machine as _};
 use crate::error::Error;
 use crate::ipc::port::{KernelObject, Port, PortName};
 use crate::ipc::space::Space;
-use crate::ipc::{MessageType, object};
+use crate::ipc::{MessageType, object, right};
 use crate::reference::Reference;
 use crate::slab::CacheBox;
 use crate::vm::VirtualAddress;
 use crate::vm::map::{Map, Source};
+
+/// A send's status when its destination can't be copied in, as Mach
+/// numbers it.
+const MACH_SEND_INVALID_DEST: u32 = 0x1000_0003;
 
 impl KernelMessage {
     /// Copies the user's message at `address`, `size` bytes, into it, as
@@ -39,20 +43,127 @@ impl KernelMessage {
         Ok(())
     }
 
+    /// Copies in the rights its header names from `space`, the sender's, as
+    /// `ipc_kmsg_copyin_header` does once its common cases give up: each
+    /// name becomes the exposed address of its port, which the message's
+    /// right holds, and each type the carried right's. So far a destination
+    /// name with no entry, which fails, or a receive right's name for both
+    /// ports, a send right and a send-once right made from it.
+    ///
+    /// # Errors
+    ///
+    /// `MACH_SEND_INVALID_DEST` if the destination name has no entry.
+    ///
+    /// # Panics
+    ///
+    /// If the header is invalid, the space is dead, the reply port can't be
+    /// copied in, or for other names or types: not yet. As
+    /// `right::copy_in_check`, `right::make_send` and
+    /// `right::make_send_once`.
+    pub(in crate::ipc) fn copy_in_header(&mut self, space: &Space) -> Result<(), u32> {
+        let header = self.header_mut();
+        let bits = header.bits;
+        // MACH_MSG_TYPE_PORT_ANY_SEND; in a header to copy in, PortSend and
+        // PortSendOnce are MOVE_SEND and MOVE_SEND_ONCE.
+        let any_send = |message_type: MessageType| {
+            matches!(
+                message_type,
+                MessageType::PortSend
+                    | MessageType::PortSendOnce
+                    | MessageType::CopySend
+                    | MessageType::MakeSend
+                    | MessageType::MakeSendOnce
+            )
+        };
+        let destination_name = PortName::from(u32::try_from(header.remote_port).unwrap());
+        let reply_name = PortName::from(u32::try_from(header.local_port).unwrap());
+        // Its common case for a request gives up where the trap's fast case
+        // did, at the destination's entry.
+        let Some(destination_type) = bits.remote().filter(|&message_type| any_send(message_type))
+        else {
+            panic!("ipc_kmsg_copyin_header: MACH_SEND_INVALID_HEADER, not yet");
+        };
+        let reply_type = bits.local();
+        assert!(
+            reply_type.map_or(reply_name == PortName::NULL, any_send),
+            "ipc_kmsg_copyin_header: MACH_SEND_INVALID_HEADER, not yet"
+        );
+        let state = space.state.write();
+        assert!(
+            state.active,
+            "ipc_kmsg_copyin_header: a dead space, not yet"
+        );
+        let (destination, reply) = if destination_name == reply_name {
+            let entry = state.lookup(destination_name).unwrap_or_else(|| {
+                panic!("ipc_kmsg_copyin_header: ipc_entry_lookup_failed, not yet")
+            });
+            // A null name has no entry.
+            let reply_type = reply_type.expect("ipc_kmsg_copyin_header: a reply port with no type");
+            assert!(
+                right::copy_in_check(&state, entry, reply_type),
+                "ipc_kmsg_copyin_header: MACH_SEND_INVALID_REPLY, not yet"
+            );
+            // Made from the receive right, which can't die: so far a send
+            // right and a send-once right.
+            let (MessageType::MakeSend, MessageType::MakeSendOnce) = (destination_type, reply_type)
+            else {
+                panic!(
+                    "ipc_kmsg_copyin_header: types {} and {} for one name, not yet",
+                    destination_type.number(),
+                    reply_type.number()
+                );
+            };
+            (
+                right::make_send(space, &state, destination_name),
+                right::make_send_once(space, &state, reply_name),
+            )
+        } else if !reply_name.is_valid() {
+            panic!("ipc_kmsg_copyin_header: no reply port, not yet");
+        } else {
+            // So far a destination name with no entry.
+            assert!(
+                state.lookup(destination_name).is_none(),
+                "ipc_kmsg_copyin_header: a destination's and a reply port's entries, not yet"
+            );
+            assert!(
+                !destination_name.is_valid(),
+                "ipc_entry_lookup_failed: a valid name, not yet"
+            );
+            // invalid_dest.
+            drop(state);
+            return Err(MACH_SEND_INVALID_DEST);
+        };
+        drop(state);
+        // As ipc_object_copyin_type.
+        let carried =
+            MessageBits::new(Some(MessageType::PortSend), Some(MessageType::PortSendOnce));
+        header.bits = if bits.is_complex() {
+            carried.with_complex()
+        } else {
+            carried
+        };
+        // The header's slots take the message's references.
+        header.remote_port = Reference::into_raw(destination)
+            .as_ptr()
+            .expose_provenance();
+        header.local_port = Reference::into_raw(reply).as_ptr().expose_provenance();
+        Ok(())
+    }
+
     /// Copies in its body's rights from `space` and its out-of-line memory
     /// from `map`, the sender's, as `ipc_kmsg_copyin_body` does: each inline
     /// port's name, its 32 bits, becomes the exposed address of its port,
     /// which the message's right holds, a null name a null port; out-of-line
     /// memory is copied in, its source kept, and the copy's exposed address
-    /// replaces its address.
+    /// replaces its address. With neither, the message becomes simple.
     ///
     /// # Panics
     ///
     /// If a type is invalid or the body too small, ports are out of line,
     /// out-of-line memory is empty or to be deallocated, or goes to a port
     /// that takes it as page lists, a right is not a copied or made send
-    /// right, a name is dead, or no item carries a right or memory: not
-    /// yet. As `object::copy_in` and `Map::copy_in`.
+    /// right, or a name is dead: not yet. As `object::copy_in` and
+    /// `Map::copy_in`.
     pub(in crate::ipc) fn copy_in_body(&mut self, space: &Space, map: &Map) {
         // SAFETY: copied in, the destination is a port's exposed address, and
         // the message holds a reference to it.
@@ -157,9 +268,9 @@ impl KernelMessage {
             }
             offset = offset.next_multiple_of(8);
         }
-        assert!(
-            complex,
-            "ipc_kmsg_copyin_body: no rights or memory, MACH_MSGH_BITS_COMPLEX cleared, not yet"
-        );
+        if !complex {
+            let header = self.header_mut();
+            header.bits = header.bits.without_complex();
+        }
     }
 }

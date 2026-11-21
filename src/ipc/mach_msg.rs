@@ -14,7 +14,7 @@ use super::kernel_message::header::{Header, MessageBits};
 use super::kernel_message::{self, EXPAND_FACTOR, KernelMessage, SAVED_MESSAGE_SIZE};
 use super::object::Object;
 use super::port::{Port, PortName, PortState, Receiver};
-use super::space::{KERNEL_SPACE, Space, SpaceState};
+use super::space::{KERNEL_SPACE, SpaceState};
 use crate::arch::PAGE_SIZE;
 use crate::reference::Reference;
 use crate::sched::{self, WaitResult};
@@ -39,10 +39,6 @@ bitflags::bitflags! {
     }
 }
 
-/// A send's status when its destination can't be copied in, as Mach
-/// numbers it.
-const MACH_SEND_INVALID_DEST: u32 = 0x1000_0003;
-
 /// A receive's status when no message came in time, as Mach numbers it.
 const MACH_RCV_TIMED_OUT: u32 = 0x1000_4003;
 
@@ -52,16 +48,17 @@ pub const MACH_RCV_INTERRUPTED: u32 = 0x1000_4005;
 /// Sends the message at `message`, `send_size` bytes, then receives one on
 /// `receive_name`, as `mach_msg_trap` does; so far a request to a port the
 /// kernel receives on, and its reply, a request to a name with no entry,
-/// which fails, a reply sent then a receive, or a send or a receive alone.
-/// Gives `MACH_MSG_SUCCESS`, or the send's or the receive's status.
+/// which fails, a message to the sender's own receive right or a reply,
+/// sent then received, or a send or a receive alone. Gives
+/// `MACH_MSG_SUCCESS`, or the send's or the receive's status.
 ///
 /// # Panics
 ///
 /// If no thread runs on the CPU, or the reply port has no send-once right.
 /// On every other path: not yet; as `kernel_message::get`,
-/// `copy_in_header`, `KernelMessage::copy_in_body`, `ipc_kobject::server`,
-/// `KernelMessage::copy_out_body`, `kernel_message::put`, `send`,
-/// `send_message` and `receive`.
+/// `KernelMessage::copy_in_header`, `KernelMessage::copy_in_body`,
+/// `ipc_kobject::server`, `KernelMessage::copy_out_body`,
+/// `kernel_message::put`, `send`, `send_message`, `queue` and `receive`.
 #[expect(
     clippy::too_many_lines,
     reason = "mach_msg_trap's fast path, in GNU Mach's order"
@@ -103,6 +100,34 @@ pub fn trap(
         .flatten()
         .and_then(|mut cached| cached.copy_in(message, send_size).is_ok().then_some(cached))
         .unwrap_or_else(|| kernel_message::get(message, send_size));
+    // slow_copyin: the general copy-in, then slow_send and slow_get_rcv_port
+    // (no handoff); a failed copy-in frees the message.
+    let slow_copy_in = |mut request: KernelMessage| {
+        if let Err(status) = request.copy_in_header(space) {
+            // ikm_free.
+            drop(request);
+            return status;
+        }
+        if request.header().bits.is_complex() {
+            request.copy_in_body(space, &thread.task().map);
+        }
+        // SAFETY: copied in, the destination is a port's exposed address, and
+        // the message holds a reference to it; this borrow ends at the unlock.
+        let destination =
+            unsafe { &*ptr::with_exposed_provenance::<Port>(request.header().remote_port) };
+        assert!(
+            destination.state.lock().receiver != Receiver::Space(NonNull::from(&KERNEL_SPACE)),
+            "mach_msg_trap: kernel_send from slow_copyin, not yet"
+        );
+        queue(request, Options::empty());
+        receive(
+            message,
+            Options::RECEIVE,
+            receive_size,
+            receive_name,
+            timeout,
+        )
+    };
     // fast_copyin.
     let header = request.header_mut();
     // A reply, a moved send-once right and no reply port: sent, then the
@@ -126,11 +151,9 @@ pub fn trap(
     // slow_copyin's ipc_kmsg_copyin_header the same way.
     let complex = header.bits.is_complex();
     let bits = MessageBits::new(Some(MessageType::CopySend), Some(MessageType::MakeSendOnce));
-    assert!(
-        header.bits == if complex { bits.with_complex() } else { bits },
-        "mach_msg_trap: header bits {:#x}, not yet",
-        u32::from(header.bits)
-    );
+    if header.bits != if complex { bits.with_complex() } else { bits } {
+        return slow_copy_in(request);
+    }
     let reply_name = PortName::from(u32::try_from(header.local_port).unwrap());
     assert!(
         reply_name == receive_name,
@@ -145,13 +168,9 @@ pub fn trap(
         &state,
         PortName::from(u32::try_from(header.remote_port).unwrap()),
     ) else {
-        // abort_request_copyin, then slow_copyin: ipc_kmsg_copyin fails at
-        // the header.
+        // abort_request_copyin.
         drop(state);
-        let status = copy_in_header(header, space);
-        // ikm_free.
-        drop(request);
-        return status;
+        return slow_copy_in(request);
     };
     let Some(Object::Port(reply_port)) = &reply.object else {
         panic!("mach_msg_trap: an entry with no port");
@@ -690,36 +709,6 @@ fn dequeue<'a>(
             WaitResult::Awakened => panic!("ipc_mqueue_receive: awakened with no message"),
         }
     }
-}
-
-/// Copies in the rights `header` names in `space`, as
-/// `ipc_kmsg_copyin_header` does; so far a request whose destination name
-/// has no entry, which fails. Gives `MACH_SEND_INVALID_DEST`.
-///
-/// # Panics
-///
-/// If the space is dead, or the destination name has an entry or is
-/// valid: not yet.
-fn copy_in_header(header: &Header, space: &Space) -> u32 {
-    let name = PortName::from(u32::try_from(header.remote_port).unwrap());
-    // Its common case for a request finds no entry either; the general
-    // case looks the destination up first, whatever the reply port.
-    let state = space.state.write();
-    assert!(
-        state.active,
-        "ipc_kmsg_copyin_header: a dead space, not yet"
-    );
-    assert!(
-        state.lookup(name).is_none(),
-        "ipc_kmsg_copyin_header: ipc_right_copyin, not yet"
-    );
-    assert!(
-        !name.is_valid(),
-        "ipc_entry_lookup_failed: a valid name, not yet"
-    );
-    // invalid_dest.
-    drop(state);
-    MACH_SEND_INVALID_DEST
 }
 
 /// The port of the send right alone that `name` denotes in `state`, as the

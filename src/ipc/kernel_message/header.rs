@@ -86,6 +86,11 @@ impl MessageBits {
     pub const fn with_complex(self) -> Self {
         Self(self.0 | Self::COMPLEX)
     }
+
+    /// The same bits, simple.
+    pub const fn without_complex(self) -> Self {
+        Self(self.0 & !Self::COMPLEX)
+    }
 }
 
 impl From<MessageBits> for u32 {
