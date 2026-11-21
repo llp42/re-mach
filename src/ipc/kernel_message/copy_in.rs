@@ -47,8 +47,9 @@ impl KernelMessage {
     /// `ipc_kmsg_copyin_header` does once its common cases give up: each
     /// name becomes the exposed address of its port, which the message's
     /// right holds, and each type the carried right's. So far a destination
-    /// name with no entry, which fails, or a receive right's name for both
-    /// ports, a send right and a send-once right made from it.
+    /// name with no entry, which fails, or a send right made from the
+    /// destination's receive right and a send-once right from the reply
+    /// port's, under one name or two.
     ///
     /// # Errors
     ///
@@ -56,9 +57,9 @@ impl KernelMessage {
     ///
     /// # Panics
     ///
-    /// If the header is invalid, the space is dead, the reply port can't be
-    /// copied in, or for other names or types: not yet. As
-    /// `right::copy_in_check`, `right::make_send` and
+    /// If the header is invalid, the space is dead, a valid name has no
+    /// entry, the reply's right can't be copied in, or for other names or
+    /// types: not yet. As `right::copy_in_check`, `right::make_send` and
     /// `right::make_send_once`.
     pub(in crate::ipc) fn copy_in_header(&mut self, space: &Space) -> Result<(), u32> {
         let header = self.header_mut();
@@ -120,18 +121,38 @@ impl KernelMessage {
         } else if !reply_name.is_valid() {
             panic!("ipc_kmsg_copyin_header: no reply port, not yet");
         } else {
-            // So far a destination name with no entry.
+            if state.lookup(destination_name).is_none() {
+                assert!(
+                    !destination_name.is_valid(),
+                    "ipc_entry_lookup_failed: a valid name, not yet"
+                );
+                // invalid_dest.
+                drop(state);
+                return Err(MACH_SEND_INVALID_DEST);
+            }
+            let entry = state.lookup(reply_name).unwrap_or_else(|| {
+                panic!("ipc_kmsg_copyin_header: ipc_entry_lookup_failed, MACH_SEND_INVALID_REPLY, not yet")
+            });
+            // A valid name's type is not 0.
+            let reply_type = reply_type.expect("ipc_kmsg_copyin_header: a reply port with no type");
             assert!(
-                state.lookup(destination_name).is_none(),
-                "ipc_kmsg_copyin_header: a destination's and a reply port's entries, not yet"
+                right::copy_in_check(&state, entry, reply_type),
+                "ipc_kmsg_copyin_header: MACH_SEND_INVALID_REPLY, not yet"
             );
-            assert!(
-                !destination_name.is_valid(),
-                "ipc_entry_lookup_failed: a valid name, not yet"
-            );
-            // invalid_dest.
-            drop(state);
-            return Err(MACH_SEND_INVALID_DEST);
+            // So far a send right and a send-once right, each made from its
+            // receive right: the reply port can't die, so nothing to undo.
+            let (MessageType::MakeSend, MessageType::MakeSendOnce) = (destination_type, reply_type)
+            else {
+                panic!(
+                    "ipc_kmsg_copyin_header: types {} and {} for two names, not yet",
+                    destination_type.number(),
+                    reply_type.number()
+                );
+            };
+            (
+                right::make_send(space, &state, destination_name),
+                right::make_send_once(space, &state, reply_name),
+            )
         };
         drop(state);
         // As ipc_object_copyin_type.
