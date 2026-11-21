@@ -462,9 +462,12 @@ macro_rules! subsystem {
         );
     };
     // A send right out.
-    (@sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*] [] [$out:ident: Port]) => {
+    (
+        @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*] []
+        [$out:ident: Port $(, $($rest:tt)*)?]
+    ) => {
         $crate::ipc_kobject::mig::subsystem!(
-            @sort $name $head [$($ins)*] [$($outs)* ($out send_right)] [] []
+            @sort $name $head [$($ins)*] [$($outs)* ($out send_right)] [] [$($($rest)*)?]
         );
     };
     // A fixed inline out-argument.
@@ -707,30 +710,28 @@ macro_rules! subsystem {
     (@reply $reply:ident $result:ident) => {
         $reply.head.return_code.data = $result.map_or_else(u32::from, |()| 0);
     };
-    // With an out: a failure's code; else 0, the size, then the out.
-    (@reply $reply:ident $result:ident ($out:ident $kind:ident $($parameter:tt)*)) => {
-        match $result {
-            Err(error) => $reply.head.return_code.data = u32::from(error),
-            Ok($out) => {
-                $reply.head.return_code.data = 0;
-                $reply.head.header.size =
-                    u32::try_from(mig::subsystem!(@size $out $kind $($parameter)*)).unwrap();
-                mig::subsystem! { @pack $reply $out $kind $($parameter)* }
-            }
-        }
-    };
-    // With several outs, none a count array: a failure's code; else 0, the
-    // whole size, then each out.
+    // With outs: a failure's code; else 0, the size, then each out.
     (@reply $reply:ident $result:ident $(($out:ident $kind:ident $($parameter:tt)*))+) => {
         match $result {
             Err(error) => $reply.head.return_code.data = u32::from(error),
-            Ok(($($out),+)) => {
+            Ok(mig::subsystem!(@pattern $($out),+)) => {
                 $reply.head.return_code.data = 0;
-                $reply.head.header.size = u32::try_from(size_of::<Reply>()).unwrap();
+                $reply.head.header.size = u32::try_from(mig::subsystem!(
+                    @last_size $(($out $kind $($parameter)*))+
+                ))
+                .unwrap();
                 $(mig::subsystem! { @pack $reply $out $kind $($parameter)* })+
             }
         }
     };
+    // The routine's success as a pattern: its out, or its outs.
+    (@pattern $out:ident) => { $out };
+    (@pattern $($out:ident),+) => { ($($out),+) };
+    // The reply's size: its last out's.
+    (@last_size ($out:ident $kind:ident $($parameter:tt)*)) => {
+        mig::subsystem!(@size $out $kind $($parameter)*)
+    };
+    (@last_size $first:tt $($rest:tt)+) => { mig::subsystem!(@last_size $($rest)+) };
     // Packing an out: the word, then the data.
     (@pack $reply:ident $out:ident inline $type:ty) => {
         $reply.$out.word = <$type as mig::Inline>::WORD;
@@ -762,6 +763,7 @@ macro_rules! subsystem {
     };
     // The reply's size: whole; with a count array, the elements used, padded to 8 bytes.
     (@size $out:ident inline $type:ty) => { size_of::<Reply>() };
+    (@size $out:ident out_of_line $element:ty) => { size_of::<Reply>() };
     (@size $out:ident send_right) => { size_of::<Reply>() };
     (@size $out:ident port_array) => { size_of::<Reply>() };
     (@size $out:ident count $element:ty, $max:literal) => {

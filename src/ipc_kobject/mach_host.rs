@@ -6,10 +6,11 @@
 
 use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
+use core::sync::atomic::Ordering;
 
 use super::mig::{self, StringC};
 use crate::error::Error;
-use crate::host::{self, Host};
+use crate::host::{self, HOST, Host};
 use crate::ipc::MessageType;
 use crate::ipc::port::Port;
 use crate::processor::{DEFAULT_SET, ProcessorSet};
@@ -22,6 +23,8 @@ mig::subsystem! {
     34 host_get_time(host = ipc_host::host) -> (current_time: RpcTimeValue);
     35 host_reboot(host = ipc_host::privileged_host, options: i32);
     38 host_info(host = ipc_host::host, flavor: i32) -> (info: [i32; ..1024], CountInOut);
+    40 processor_set_info(set_name = ipc_host::set_name_of, flavor: i32)
+        -> (host: Port, info_out: [i32; ..1024], CountInOut);
     43 host_get_time64(host = ipc_host::host) -> (current_time: TimeValue64);
     46 host_get_kernel_version(host = ipc_host::host) -> (kernel_version: StringC<512>);
     47 host_get_uptime64(host = ipc_host::host) -> (uptime: TimeValue64);
@@ -110,6 +113,40 @@ fn host_reboot(host: Option<&&Host>, options: i32) -> Result<(), Error> {
 /// As `host::info`.
 fn host_info(host: Option<&&Host>, flavor: i32, info: &mut [i32]) -> Result<usize, Error> {
     host::info(host.copied(), flavor, info)
+}
+
+/// Serves `processor_set_info`: up to `info_out.len()` integers of
+/// `flavor` for `set_name`; gives a send right for the host's port, as
+/// `convert_host_to_port` makes it, and how many.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no set or a flavor Mach lacks; as
+/// `ProcessorSet::sched_info`.
+///
+/// # Panics
+///
+/// If the host has no port. For `PROCESSOR_SET_BASIC_INFO`: not yet.
+fn processor_set_info(
+    set_name: Option<&Reference<ProcessorSet>>,
+    flavor: i32,
+    info_out: &mut [i32],
+) -> Result<(Reference<Port>, usize), Error> {
+    let Some(set) = set_name else {
+        return Err(Error::InvalidArgument);
+    };
+    // PROCESSOR_SET_BASIC_INFO, PROCESSOR_SET_SCHED_INFO.
+    let count = match flavor {
+        1 => panic!("processor_set_info: PROCESSOR_SET_BASIC_INFO, not yet"),
+        2 => set.sched_info(info_out)?,
+        _ => return Err(Error::InvalidArgument),
+    };
+    let port = NonNull::new(HOST.port.load(Ordering::Acquire))
+        .expect("convert_host_to_port: no host port");
+    // SAFETY: the host's slot keeps its port's reference for good, which
+    // the handle borrows and never drops.
+    let port = ManuallyDrop::new(unsafe { Reference::from_raw(port) });
+    Ok((Port::make_send(&port), count))
 }
 
 /// Serves `host_get_time64`: the time of day for `host`.

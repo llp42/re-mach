@@ -669,13 +669,9 @@ pub enum KernelObject {
     /// The host's privileged port.
     HostPrivileged(&'static Host),
     /// A processor set's port.
-    ProcessorSet(
-        #[expect(dead_code, reason = "convert_port_to_pset reads it")] NonNull<ProcessorSet>,
-    ),
+    ProcessorSet(NonNull<ProcessorSet>),
     /// A processor set's name port.
-    ProcessorSetName(
-        #[expect(dead_code, reason = "convert_port_to_pset_name reads it")] NonNull<ProcessorSet>,
-    ),
+    ProcessorSetName(NonNull<ProcessorSet>),
     /// A processor's port.
     Processor(
         #[expect(dead_code, reason = "convert_port_to_processor reads it")] &'static Processor,

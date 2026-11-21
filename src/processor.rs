@@ -574,6 +574,26 @@ impl ProcessorSet {
         Ok(set)
     }
 
+    /// Writes its scheduling information into `info`, as
+    /// `processor_set_info`'s `PROCESSOR_SET_SCHED_INFO` does; `info`'s
+    /// length is the count asked for. Gives the count written.
+    ///
+    /// # Errors
+    ///
+    /// `Failure` for a count short of the record.
+    pub(super) fn sched_info(&self, info: &mut [i32]) -> Result<usize, Error> {
+        // Mach's processor_set_sched_info: policies, then max_priority.
+        let Some(sched) = info.first_chunk_mut::<2>() else {
+            return Err(Error::Failure);
+        };
+        // Fixed when it is made, so read without its token.
+        *sched = [
+            i32::try_from(self.policies.bits()).unwrap(),
+            i32::try_from(u32::from(self.max_priority)).unwrap(),
+        ];
+        Ok(sched.len())
+    }
+
     /// Takes `thread`, new and in no set, into its `members`; the thread
     /// keeps the reference the caller took for it.
     pub(super) fn add_thread(&self, members: &mut Members, thread: &'static Thread) {
