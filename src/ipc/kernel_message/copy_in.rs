@@ -47,9 +47,10 @@ impl KernelMessage {
     /// `ipc_kmsg_copyin_header` does once its common cases give up: each
     /// name becomes the exposed address of its port, which the message's
     /// right holds, and each type the carried right's. So far a destination
-    /// name with no entry, which fails, or a send right made from the
+    /// name with no entry, which fails, a send right made from the
     /// destination's receive right and a send-once right from the reply
-    /// port's, under one name or two.
+    /// port's, under one name or two, or the destination's send-once right
+    /// moved, with no reply port, whose slot stays null.
     ///
     /// # Errors
     ///
@@ -58,9 +59,14 @@ impl KernelMessage {
     /// # Panics
     ///
     /// If the header is invalid, the space is dead, a valid name has no
-    /// entry, the reply's right can't be copied in, or for other names or
-    /// types: not yet. As `right::copy_in_check`, `right::make_send` and
-    /// `right::make_send_once`.
+    /// entry, the reply's right can't be copied in, the reply name is dead,
+    /// or for other names or types: not yet. As `right::copy_in_check`,
+    /// `right::make_send`, `right::make_send_once`, `right::move_send_once`
+    /// and `SpaceState::deallocate`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "ipc_kmsg_copyin_header's general path, in GNU Mach's order"
+    )]
     pub(in crate::ipc) fn copy_in_header(&mut self, space: &Space) -> Result<(), u32> {
         let header = self.header_mut();
         let bits = header.bits;
@@ -89,7 +95,7 @@ impl KernelMessage {
             reply_type.map_or(reply_name == PortName::NULL, any_send),
             "ipc_kmsg_copyin_header: MACH_SEND_INVALID_HEADER, not yet"
         );
-        let state = space.state.write();
+        let mut state = space.state.write();
         assert!(
             state.active,
             "ipc_kmsg_copyin_header: a dead space, not yet"
@@ -116,10 +122,32 @@ impl KernelMessage {
             };
             (
                 right::make_send(space, &state, destination_name),
-                right::make_send_once(space, &state, reply_name),
+                Some(right::make_send_once(space, &state, reply_name)),
             )
         } else if !reply_name.is_valid() {
-            panic!("ipc_kmsg_copyin_header: no reply port, not yet");
+            // No reply port: only the destination is copied in.
+            assert!(
+                state.lookup(destination_name).is_some(),
+                "ipc_kmsg_copyin_header: ipc_entry_lookup_failed, not yet"
+            );
+            // So far a moved send-once right.
+            let MessageType::PortSendOnce = destination_type else {
+                panic!(
+                    "ipc_kmsg_copyin_header: type {} with no reply port, not yet",
+                    destination_type.number()
+                );
+            };
+            let destination = right::move_send_once(&mut state, destination_name);
+            // The entry is freed once it holds no rights.
+            if state.lookup(destination_name).is_none() {
+                state.deallocate(destination_name);
+            }
+            // invalid_name_to_port: a null name, a null port.
+            assert!(
+                reply_name == PortName::NULL,
+                "ipc_kmsg_copyin_header: invalid_name_to_port of MACH_PORT_DEAD, not yet"
+            );
+            (destination, None)
         } else {
             if state.lookup(destination_name).is_none() {
                 assert!(
@@ -151,23 +179,32 @@ impl KernelMessage {
             };
             (
                 right::make_send(space, &state, destination_name),
-                right::make_send_once(space, &state, reply_name),
+                Some(right::make_send_once(space, &state, reply_name)),
             )
         };
         drop(state);
         // As ipc_object_copyin_type.
-        let carried =
-            MessageBits::new(Some(MessageType::PortSend), Some(MessageType::PortSendOnce));
+        let carried_type = |message_type: MessageType| match message_type {
+            MessageType::PortSendOnce | MessageType::MakeSendOnce => MessageType::PortSendOnce,
+            _ => MessageType::PortSend,
+        };
+        let carried = MessageBits::new(
+            Some(carried_type(destination_type)),
+            reply_type.map(carried_type),
+        );
         header.bits = if bits.is_complex() {
             carried.with_complex()
         } else {
             carried
         };
-        // The header's slots take the message's references.
+        // The header's slots take the message's references; no reply port's
+        // stays null.
         header.remote_port = Reference::into_raw(destination)
             .as_ptr()
             .expose_provenance();
-        header.local_port = Reference::into_raw(reply).as_ptr().expose_provenance();
+        header.local_port = reply.map_or(0, |reply| {
+            Reference::into_raw(reply).as_ptr().expose_provenance()
+        });
         Ok(())
     }
 

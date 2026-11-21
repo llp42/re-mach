@@ -278,6 +278,66 @@ pub(super) fn make_send_once(space: &Space, state: &SpaceState, name: PortName) 
     port
 }
 
+/// Moves the send-once right of `name`'s entry out of the write-locked,
+/// alive space of state `state`, as `ipc_right_copyin` does for
+/// `MACH_MSG_TYPE_MOVE_SEND_ONCE`: gives the right with the entry's
+/// reference; the entry is left with no rights, for the caller to free.
+///
+/// # Panics
+///
+/// If the space is dead, `name` has no entry, or the entry has no user
+/// references or no port. If the entry is a dead name, holds no send-once
+/// right, its port died, or it has a dead-name request: not yet. If a
+/// send-once right's entry holds other rights, other user references or a
+/// message-accepted request, or its port has no send-once right.
+pub(super) fn move_send_once(state: &mut SpaceState, name: PortName) -> Reference<Port> {
+    assert!(state.active, "ipc_right_copyin: a dead space");
+    let entry = state.lookup(name).expect("ipc_right_copyin: no entry");
+    let rights = entry.bits.rights;
+    assert!(
+        !rights.contains(Rights::DEAD_NAME),
+        "ipc_right_copyin: move_dead, not yet"
+    );
+    // Dead send rights pass here, for `check`.
+    assert!(
+        rights.intersects(Rights::SEND | Rights::SEND_ONCE),
+        "ipc_right_copyin: KERN_INVALID_RIGHT, not yet"
+    );
+    assert!(
+        entry.bits.user_references > 0,
+        "ipc_right_copyin: no user references"
+    );
+    let Some(port_state) = check(state, entry) else {
+        panic!("ipc_right_check: the port died, its entry to a dead name, move_dead, not yet");
+    };
+    assert!(
+        rights.contains(Rights::SEND_ONCE),
+        "ipc_right_copyin: a send right, KERN_INVALID_RIGHT, not yet"
+    );
+    assert!(
+        rights.bits() == Rights::SEND_ONCE.bits()
+            && entry.bits.user_references == 1
+            && !entry.bits.message_accepted,
+        "ipc_right_copyin: a send-once right's rights, user references or message-accepted request"
+    );
+    assert!(
+        port_state.send_once_rights > 0,
+        "ipc_right_copyin: a port with no send-once right"
+    );
+    // ipc_right_dncancel_macro.
+    assert!(entry.request == 0, "ipc_right_dncancel, not yet");
+    drop(port_state);
+    let entry = state
+        .map
+        .get_mut(name.key())
+        .expect("ipc_right_copyin: no entry");
+    let Some(Object::Port(port)) = entry.object.take() else {
+        panic!("ipc_right_copyin: a send-once right with no port");
+    };
+    entry.bits.rights.remove(Rights::SEND_ONCE);
+    port
+}
+
 /// Whether a copy-in of `message_type` from `entry`, in the locked, alive
 /// space of state `state`, would succeed, as `ipc_right_copyin_check`
 /// tells; so far for `MACH_MSG_TYPE_MAKE_SEND_ONCE`: the entry holds a

@@ -228,8 +228,9 @@ pub(super) fn copy_out(
 ///
 /// # Panics
 ///
-/// If the port is dead or has no send right, or for a type that is not a
-/// right. For a send-once right: not yet.
+/// If the port is dead or has no right of the type, or for a type that is
+/// not a send or send-once right. If another space receives on a send-once
+/// right's port: not yet.
 pub(super) fn copy_out_dest(
     space: &Space,
     mut port_state: SpinlockGuard<'_, PortState>,
@@ -250,7 +251,18 @@ pub(super) fn copy_out_dest(
             }
         }
         MessageType::PortSendOnce => {
-            panic!("ipc_object_copyout_dest: MACH_MSG_TYPE_PORT_SEND_ONCE, not yet")
+            assert!(
+                port_state.send_once_rights > 0,
+                "ipc_object_copyout_dest: no send-once right"
+            );
+            // Another space receives on it: ipc_notify_send_once.
+            assert!(
+                port_state.receiver == Receiver::Space(NonNull::from(space)),
+                "ipc_object_copyout_dest: ipc_notify_send_once, not yet"
+            );
+            // Quietly consumed.
+            port_state.send_once_rights -= 1;
+            port_state.receiver_name
         }
         _ => panic!("ipc_object_copyout_dest: strange rights"),
     };
