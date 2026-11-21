@@ -352,8 +352,9 @@ impl Processor {
 /// A set of processors, and the threads that run on them.
 #[expect(dead_code, reason = "processor_set_info and thread_create read them")]
 pub struct ProcessorSet {
-    /// Whether it is in use; a destroyed set is not.
-    active: bool,
+    /// Whether it is in use; a destroyed set is not. Changed only under
+    /// `members`' token.
+    active: AtomicBool,
     /// Whether it has no processor; threads created in it start suspended.
     /// Changed only under `members`' token.
     empty: AtomicBool,
@@ -434,7 +435,7 @@ impl ProcessorSet {
     /// task.
     const fn new() -> Self {
         Self {
-            active: false,
+            active: AtomicBool::new(false),
             empty: AtomicBool::new(true),
             processor_count: AtomicU32::new(0),
             adjust_index: AtomicU32::new(0),
@@ -458,9 +459,9 @@ impl ProcessorSet {
         }
     }
 
-    /// Whether it is in use; fixed before it is published.
-    pub(super) const fn is_active(&self) -> bool {
-        self.active
+    /// Whether it is in use; changed only under `members`' token.
+    pub(super) fn is_active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
     }
 
     /// Whether it has no processor; changed only under `members`' token.
@@ -589,12 +590,76 @@ impl ProcessorSet {
             references: Count::new(3),
             ..Self::new()
         })?;
-        set.active = true;
+        *set.active.get_mut() = true;
+        let set = CacheBox::into_raw(set);
+        // The box's provenance, which `free` takes back from a handle made
+        // from a shared borrow.
+        set.expose_provenance();
         // SAFETY: a set lives until it is destroyed, which comes later.
-        let set = unsafe { CacheBox::into_raw(set).as_ref() };
+        let set = unsafe { set.as_ref() };
         ipc_host::init_set(set);
         set.join_all();
         Ok(set)
+    }
+
+    /// Ends it, as `processor_set_destroy` does: out of use, its ports
+    /// standing for nothing, then destroyed, so that their rights name dead
+    /// ports, and its own reference dropped; the caller holds another.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` for the default set; `Failure` if it is out of use
+    /// already.
+    ///
+    /// # Panics
+    ///
+    /// If it has tasks, threads or processors, which go to the default set:
+    /// not yet. As `Port::deallocate_kernel`.
+    pub fn destroy(&self) -> Result<(), Error> {
+        if ptr::eq(self, &raw const DEFAULT_SET) {
+            return Err(Error::InvalidArgument);
+        }
+        let members = self.members.lock();
+        if !self.active.swap(false, Ordering::Relaxed) {
+            drop(members);
+            return Err(Error::Failure);
+        }
+        // As ipc_pset_disable: each port stands for nothing, and the
+        // reference it kept drops, never the last.
+        for slot in [&self.port, &self.name_port] {
+            // SAFETY: the slot keeps its port's reference until below.
+            unsafe { slot.load(Ordering::Acquire).as_ref() }
+                .expect("ipc_pset_disable: no port")
+                .replace_kernel_object(None);
+            // SAFETY: the reference the port kept, from `ipc_host::init_set`.
+            drop(unsafe { Reference::from_raw(NonNull::from(self)) });
+        }
+        assert!(
+            members.task_count == 0,
+            "processor_set_destroy: task_assign, not yet"
+        );
+        assert!(
+            members.thread_count == 0,
+            "processor_set_destroy: thread_assign, not yet"
+        );
+        assert!(
+            self.processor_count() == 0,
+            "processor_set_destroy: processor_assign, not yet"
+        );
+        drop(members);
+        // As ipc_pset_terminate: each port destroyed, then its slot's
+        // reference dropped.
+        for slot in [&self.port, &self.name_port] {
+            let port = NonNull::new(slot.swap(ptr::null_mut(), Ordering::AcqRel))
+                .expect("ipc_pset_terminate: no port");
+            // SAFETY: the slot's reference, which this handle takes.
+            let port = unsafe { Reference::from_raw(port) };
+            port.deallocate_kernel();
+        }
+        // SAFETY: its own reference, from `create`; never the last, as the
+        // caller holds one.
+        drop(unsafe { Reference::from_raw(NonNull::from(self)) });
+        Ok(())
     }
 
     /// Writes its scheduling information into `info`, as
@@ -765,19 +830,43 @@ impl ProcessorSet {
     }
 }
 
-// SAFETY: its count is its own, and `free` frees nothing yet.
+// SAFETY: its count is its own, and every set but the default one, whose own
+// reference never drops, is a box of `SET_CACHE`, which `free` takes back.
 unsafe impl Counted for ProcessorSet {
     fn references(&self) -> &Count {
         &self.references
     }
 
-    /// Frees `set`, as `pset_deallocate` does at zero.
+    /// Frees `set`, as `pset_deallocate` does at zero: off the list of all
+    /// sets, under its token, which the list's walkers borrow sets under,
+    /// then back to its cache.
     ///
     /// # Panics
     ///
-    /// Always: not yet.
-    unsafe fn free(_set: NonNull<Self>) {
-        panic!("pset_deallocate: the last reference, not yet");
+    /// For the default set, or a set with tasks, threads or processors.
+    unsafe fn free(set: NonNull<Self>) {
+        // The box's own provenance, which `create` exposed.
+        let set = NonNull::<Self>::with_exposed_provenance(set.addr());
+        let mut all = ALL_SETS.lock();
+        // SAFETY: nothing else uses it, and it stays allocated until its box
+        // drops below.
+        let this = unsafe { set.as_ref() };
+        let members = this.members.lock();
+        assert!(
+            !ptr::eq(this, &raw const DEFAULT_SET)
+                && members.task_count == 0
+                && members.thread_count == 0
+                && this.processor_count() == 0,
+            "pset_deallocate: destroy default or active pset"
+        );
+        drop(members);
+        // SAFETY: the set is on this list, which it joined in `join_all`.
+        unsafe { all.list.cursor_mut_from_ptr(this) }.remove();
+        all.count -= 1;
+        drop(all);
+        // SAFETY: a `SET_CACHE` box `create` gave up, with that box's
+        // provenance; nothing uses it after.
+        drop(unsafe { CacheBox::from_raw(&SET_CACHE, set) });
     }
 }
 
@@ -785,7 +874,7 @@ unsafe impl Counted for ProcessorSet {
 /// reference never drops.
 pub static DEFAULT_SET: ProcessorSet = {
     let mut set = ProcessorSet::new();
-    set.active = true;
+    set.active = AtomicBool::new(true);
     set
 };
 

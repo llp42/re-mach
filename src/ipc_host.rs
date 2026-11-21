@@ -90,6 +90,21 @@ pub fn privileged_host(port: &Port) -> Option<&'static Host> {
     }
 }
 
+/// The set `port` stands for, if it is a set's port, not its name port,
+/// with a reference to it taken under the port's lock, as
+/// `convert_port_to_pset` gives it.
+pub fn set_of(port: &Port) -> Option<Reference<ProcessorSet>> {
+    port.with_kernel_object(|object| match object {
+        Some(KernelObject::ProcessorSet(set)) => {
+            // SAFETY: a set's ports keep a reference to it while they stand
+            // for it, which this handle borrows and never drops.
+            let set = ManuallyDrop::new(unsafe { Reference::from_raw(*set) });
+            Some(Reference::clone(&set))
+        }
+        _ => None,
+    })
+}
+
 /// The set `port` stands for, if it is a set's port or name port, with a
 /// reference to it taken under the port's lock, as
 /// `convert_port_to_pset_name` gives it.

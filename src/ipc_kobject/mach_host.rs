@@ -21,6 +21,7 @@ mig::subsystem! {
     base 2600;
     6 processor_set_default(host = ipc_host::host) -> (default_set: Port);
     8 processor_set_create(host = ipc_host::privileged_host) -> (new_set: Port, new_name: Port);
+    9 processor_set_destroy(set = ipc_host::set_of);
     34 host_get_time(host = ipc_host::host) -> (current_time: RpcTimeValue);
     35 host_reboot(host = ipc_host::privileged_host, options: i32);
     38 host_info(host = ipc_host::host, flavor: i32) -> (info: [i32; ..1024], CountInOut);
@@ -105,6 +106,22 @@ fn processor_set_create(host: Option<&&Host>) -> Result<(Reference<Port>, Refere
         ProcessorSet::port(new_set),
         ProcessorSet::name_port(new_name),
     ))
+}
+
+/// Serves `processor_set_destroy`: ends `set`.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no set; as `ProcessorSet::destroy`.
+///
+/// # Panics
+///
+/// As `ProcessorSet::destroy`.
+fn processor_set_destroy(set: Option<&Reference<ProcessorSet>>) -> Result<(), Error> {
+    let Some(set) = set else {
+        return Err(Error::InvalidArgument);
+    };
+    set.destroy()
 }
 
 /// Serves `host_get_time`: the time of day for `host`.
