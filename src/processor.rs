@@ -531,6 +531,29 @@ impl ProcessorSet {
         self.members.lock()
     }
 
+    /// A send right for `set`'s port, made as `convert_pset_to_port` makes
+    /// it; `set`'s reference drops after.
+    ///
+    /// # Panics
+    ///
+    /// If it is out of use: not yet.
+    pub fn port(set: Reference<Self>) -> Reference<Port> {
+        let members = set.members.lock();
+        assert!(
+            set.is_active(),
+            "convert_pset_to_port: a set out of use, not yet"
+        );
+        let port =
+            NonNull::new(set.port.load(Ordering::Acquire)).expect("convert_pset_to_port: no port");
+        // SAFETY: the slot keeps its port's reference while the set is in
+        // use, which this handle borrows and never drops.
+        let port = ManuallyDrop::new(unsafe { Reference::from_raw(port) });
+        let send = Port::make_send(&port);
+        drop(members);
+        drop(set);
+        send
+    }
+
     /// A send right for `set`'s name port, made as
     /// `convert_pset_name_to_port` makes it; `set`'s reference drops after.
     ///

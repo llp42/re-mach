@@ -20,6 +20,7 @@ use crate::{clock, ipc_host, machine};
 mig::subsystem! {
     base 2600;
     6 processor_set_default(host = ipc_host::host) -> (default_set: Port);
+    8 processor_set_create(host = ipc_host::privileged_host) -> (new_set: Port, new_name: Port);
     34 host_get_time(host = ipc_host::host) -> (current_time: RpcTimeValue);
     35 host_reboot(host = ipc_host::privileged_host, options: i32);
     38 host_info(host = ipc_host::host, flavor: i32) -> (info: [i32; ..1024], CountInOut);
@@ -80,6 +81,30 @@ fn processor_set_default(host: Option<&&Host>) -> Result<Reference<Port>, Error>
     // borrows it and never drops it.
     let set = ManuallyDrop::new(unsafe { Reference::from_raw(NonNull::from(&DEFAULT_SET)) });
     Ok(ProcessorSet::name_port(Reference::clone(&set)))
+}
+
+/// Serves `processor_set_create`: a new set; send rights for its port and
+/// its name port, as `convert_pset_to_port` and `convert_pset_name_to_port`
+/// make them.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no privileged host; as `ProcessorSet::create`.
+///
+/// # Panics
+///
+/// As `ProcessorSet::port` and `ProcessorSet::name_port`.
+fn processor_set_create(host: Option<&&Host>) -> Result<(Reference<Port>, Reference<Port>), Error> {
+    if host.is_none() {
+        return Err(Error::InvalidArgument);
+    }
+    let set = NonNull::from(ProcessorSet::create()?);
+    // SAFETY: the references `create` took for the caller's set and name.
+    let (new_set, new_name) = unsafe { (Reference::from_raw(set), Reference::from_raw(set)) };
+    Ok((
+        ProcessorSet::port(new_set),
+        ProcessorSet::name_port(new_name),
+    ))
 }
 
 /// Serves `host_get_time`: the time of day for `host`.
