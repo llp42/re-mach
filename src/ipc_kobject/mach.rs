@@ -220,11 +220,11 @@ fn thread_set_state(
 /// # Errors
 ///
 /// `InvalidArgument` for no thread or a flavor Mach lacks; as
-/// `Thread::basic_info`.
+/// `Thread::basic_info` and `Thread::sched_info`.
 ///
 /// # Panics
 ///
-/// For `THREAD_SCHED_INFO`: not yet.
+/// As `Thread::sched_info`.
 fn thread_info(
     thread: Option<&Reference<Thread>>,
     flavor: i32,
@@ -236,7 +236,7 @@ fn thread_info(
     // THREAD_BASIC_INFO, THREAD_SCHED_INFO.
     match flavor {
         1 => thread.basic_info(info),
-        2 => panic!("thread_info: THREAD_SCHED_INFO, not yet"),
+        2 => thread.sched_info(info),
         _ => Err(Error::InvalidArgument),
     }
 }

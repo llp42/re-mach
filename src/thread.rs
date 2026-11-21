@@ -25,7 +25,9 @@ use crate::machine::Mode;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, Processor, ProcessorSet};
 use crate::reference::{Count, Counted, Reference};
-use crate::sched::{self, Event, Policy, Preemption, Priority, SCHEDULER_SCALE, WaitResult};
+use crate::sched::{
+    self, Event, Policies, Policy, Preemption, Priority, SCHEDULER_SCALE, WaitResult,
+};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{CriticalSection, OnceLock, Spinlock};
 use crate::task::Task;
@@ -1489,6 +1491,53 @@ impl Thread {
         let words = unsafe { slice::from_raw_parts(ptr::from_ref(&basic).cast::<i32>(), written) };
         info[..written].copy_from_slice(words);
         Ok(info.len().min(count))
+    }
+
+    /// Writes its scheduling information into `info`, as `thread_info`'s
+    /// `THREAD_SCHED_INFO` does; `info`'s length is the count asked for.
+    /// Gives the count written.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` for a count short of the record without its last
+    /// processor.
+    ///
+    /// # Panics
+    ///
+    /// For a count of the record without its last processor, a
+    /// fixed-priority thread or one that has run: not yet.
+    pub(super) fn sched_info(&self, info: &mut [i32]) -> Result<usize, Error> {
+        // Mach's thread_sched_info: policy, data, base, maximum and current
+        // priorities, whether depressed, the priority depressed from, last
+        // processor; a count one short is allowed.
+        if info.len() < 7 {
+            return Err(Error::InvalidArgument);
+        }
+        let Some(sched) = info.first_chunk_mut::<8>() else {
+            panic!("thread_info: THREAD_SCHED_INFO_COUNT - 1, not yet");
+        };
+        assert!(
+            matches!(self.policy, Policy::Timeshare),
+            "thread_info: POLICY_FIXEDPRI, not yet"
+        );
+        assert!(
+            self.last_processor().is_none(),
+            "thread_info: last_processor's slot_num, not yet"
+        );
+        let depressed_from = self.depressed_from.load(Ordering::Relaxed);
+        *sched = [
+            i32::try_from(Policies::TIMESHARE.bits()).unwrap(),
+            // No data for a timeshared thread.
+            0,
+            i32::try_from(self.priority.load(Ordering::Relaxed)).unwrap(),
+            i32::try_from(self.max_priority.load(Ordering::Relaxed)).unwrap(),
+            i32::try_from(self.sched_pri.load(Ordering::Relaxed)).unwrap(),
+            i32::from(depressed_from >= 0),
+            depressed_from,
+            // Never run, so on no processor yet.
+            0,
+        ];
+        Ok(sched.len())
     }
 
     /// Its user and system times, as `thread_read_times` reads them.
