@@ -10,8 +10,8 @@ use core::sync::atomic::Ordering;
 use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::error::Error;
 use crate::host::HOST;
-use crate::ipc::mach_msg;
 use crate::ipc::port::{Port, PortName};
+use crate::ipc::{mach_msg, mach_port};
 use crate::reference::Reference;
 use crate::thread::MachineThread as _;
 use crate::{print, smp};
@@ -85,7 +85,7 @@ pub static MACH_TRAPS: [MachTrap; COUNT] = {
     traps[69] = MachTrap::NotYet("syscall_task_terminate");
     traps[70] = MachTrap::NotYet("syscall_task_suspend");
     traps[71] = MachTrap::NotYet("syscall_task_set_special_port");
-    traps[72] = MachTrap::NotYet("syscall_mach_port_allocate");
+    traps[72] = MachTrap::Written(allocate_port, 3);
     traps[73] = MachTrap::NotYet("syscall_mach_port_deallocate");
     traps[74] = MachTrap::NotYet("syscall_mach_port_insert_right");
     traps[75] = MachTrap::NotYet("syscall_mach_port_allocate_name");
@@ -191,6 +191,35 @@ fn host_self(_: &[usize; 7]) -> u32 {
         .active_thread()
         .expect("mach_host_self: no current thread");
     Port::copy_out_send(send, &thread.task().space).into()
+}
+
+/// Puts a new right in a task's space under a free name, as
+/// `syscall_mach_port_allocate`: the task its first argument's low half
+/// names, the kind its second's numbers, the name copied out to its third,
+/// a fault ignored.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU. If the name is for a dead port or one of
+/// no task: not yet. As `Space::task_space` and `mach_port::allocate`.
+fn allocate_port(arguments: &[usize; 7]) -> u32 {
+    let thread = smp::current()
+        .active_thread()
+        .expect("syscall_mach_port_allocate: no current thread");
+    let [task, right] =
+        [arguments[0], arguments[1]].map(|argument| u32::try_from(argument & 0xffff_ffff).unwrap());
+    let space = thread
+        .task()
+        .space
+        .task_space(PortName::from(task))
+        .unwrap_or_else(|| panic!("syscall_mach_port_allocate: MACH_SEND_INTERRUPTED, not yet"));
+    match mach_port::allocate(&space, right) {
+        Ok(name) => {
+            let _ = arch::Current::copy_out(&u32::from(name).to_ne_bytes(), arguments[2]);
+            0
+        }
+        Err(error) => error.into(),
+    }
 }
 
 /// Sets the caller's own state of the flavor in its first argument's low

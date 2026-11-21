@@ -7,6 +7,7 @@ use core::mem;
 use core::ptr::NonNull;
 
 use super::entry::{self, Entry, EntryBits, Rights};
+use super::object::Object;
 use super::port::PortName;
 use crate::collections::ArrayVec;
 use crate::collections::radix_tree::RadixTree;
@@ -14,6 +15,7 @@ use crate::error::Error;
 use crate::reference::{Count, Counted, Reference};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::SleepLock;
+use crate::task;
 
 /// A space: the names a task gives ports and port sets.
 pub struct Space {
@@ -102,6 +104,30 @@ impl Space {
         // SAFETY: a space in use holds that reference, given up here, once, as
         // it is no longer in use.
         drop(unsafe { Reference::from_raw(NonNull::from(self)) });
+    }
+
+    /// The space of the task whose port its send right `name` is for,
+    /// referenced, as `port_name_to_space` finds it; `None` if the port is
+    /// dead or stands for no task.
+    ///
+    /// # Panics
+    ///
+    /// If `name` holds no send right alone: not yet. If its entry has no
+    /// port.
+    pub fn task_space(&self, name: PortName) -> Option<Reference<Self>> {
+        // fast_send_right_lookup.
+        let state = self.state.read();
+        let entry = state
+            .lookup(name)
+            .filter(|entry| entry.bits.rights.bits() == Rights::SEND.bits())
+            .unwrap_or_else(|| panic!("port_name_to_space: abort, not yet"));
+        let Some(Object::Port(port)) = &entry.object else {
+            panic!("port_name_to_space: a send right with no port");
+        };
+        // The port locked under the space's lock.
+        let space = task::space_of(port);
+        drop(state);
+        space
     }
 }
 
