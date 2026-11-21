@@ -1477,7 +1477,7 @@ impl Thread {
     }
 
     /// Its user and system times, as `thread_read_times` reads them.
-    fn read_times(&self) -> (TimeValue, TimeValue) {
+    pub(super) fn read_times(&self) -> (TimeValue, TimeValue) {
         let time = |microseconds: &AtomicU64| {
             let microseconds = microseconds.load(Ordering::Relaxed);
             TimeValue {

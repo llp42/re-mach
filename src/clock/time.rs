@@ -18,7 +18,7 @@ pub struct TimeValue {
 
 impl TimeValue {
     /// It later by `nanoseconds`, under a second.
-    pub(super) const fn add_nanoseconds(self, nanoseconds: i64) -> Self {
+    pub const fn add_nanoseconds(self, nanoseconds: i64) -> Self {
         let nanoseconds = self.nanoseconds + nanoseconds;
         if nanoseconds >= NANOSECONDS_PER_SECOND {
             Self {
