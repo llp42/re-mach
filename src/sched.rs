@@ -561,6 +561,29 @@ pub fn clear_wait(thread: &'static Thread, result: WaitResult) {
     make_runnable(thread, Preemption::Allowed);
 }
 
+/// Whether `thread`, running on `processor`, should give it up, as
+/// `csw_needed` tells: it is suspended, a thread bound to the processor
+/// waits, or past its first quantum a thread of its set waits at least as
+/// high; a fixed-priority thread also gives way to a higher one in it.
+pub fn switch_needed(thread: &Thread, processor: &Processor) -> bool {
+    if thread.state().contains(ThreadState::SUSPENDED) || processor.bound_queued() != 0 {
+        return true;
+    }
+    let Some(best) = processor
+        .set()
+        .filter(|set| set.queued() > 0)
+        .and_then(processor::ProcessorSet::best_queued)
+    else {
+        return false;
+    };
+    let current = thread.scheduled_priority();
+    let at_least_as_high = !processor.is_first_quantum() && !current.outranks(best);
+    match thread.policy() {
+        Policy::Timeshare => at_least_as_high,
+        Policy::FixedPriority => at_least_as_high || best.outranks(current),
+    }
+}
+
 /// Gives the current CPU up to the next thread to run, which may be the
 /// current one; returns once the current one runs again.
 ///

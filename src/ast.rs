@@ -27,11 +27,10 @@ bitflags::bitflags! {
 
 /// Takes the current CPU's ASTs, with interrupts on: unless it runs its
 /// idle thread, the thread halts while it should, then gives the processor
-/// up on `BLOCK`.
+/// up on `BLOCK` or if it should.
 ///
 /// # Panics
 ///
-/// If no `BLOCK` is pending, where GNU Mach tests `csw_needed`: not yet.
 /// As `thread::halt_self`.
 pub fn taken() {
     let cpu = smp::current();
@@ -49,11 +48,10 @@ pub fn taken() {
     while thread.asts().intersects(Ast::HALT | Ast::TERMINATE) {
         thread::halt_self();
     }
-    assert!(
-        reasons.contains(Ast::BLOCK),
-        "ast_taken: csw_needed, not yet"
-    );
-    sched::block();
+    // A halt may have woken a higher thread.
+    if reasons.contains(Ast::BLOCK) || sched::switch_needed(thread, smp::current().processor()) {
+        sched::block();
+    }
 }
 
 /// Checks whether `thread`, running on the current CPU, should give the
@@ -74,9 +72,11 @@ pub fn check(thread: &Thread) {
                 return;
             }
             match processor.set() {
-                // A fixed-priority thread uses all of a new quantum.
                 Some(set) if set.policies().contains(Policies::FIXED_PRIORITY) => {
-                    if matches!(thread.policy(), Policy::FixedPriority) {
+                    if sched::switch_needed(thread, processor) {
+                        cpu.add_asts(Ast::BLOCK);
+                    } else if matches!(thread.policy(), Policy::FixedPriority) {
+                        // A fixed-priority thread uses all of a new quantum.
                         processor.start_first_quantum();
                     }
                 }

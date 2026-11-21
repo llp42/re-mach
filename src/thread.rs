@@ -1581,6 +1581,45 @@ impl Thread {
         Ok(sched.len())
     }
 
+    /// Ends `thread`'s interruptible wait at a clean point, as
+    /// `thread_abort` does: halted, then set going again, it runs unless
+    /// still suspended.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` for no thread or the current one.
+    ///
+    /// # Panics
+    ///
+    /// If the current thread is being halted, `thread` holds a kernel
+    /// call's reply port or is depressed: not yet. As `halt` and `release`.
+    pub(super) fn abort(thread: Option<&'static Self>) -> Result<(), Error> {
+        let current = smp::current().active_thread();
+        let Some(thread) =
+            thread.filter(|thread| !current.is_some_and(|current| ptr::eq(current, *thread)))
+        else {
+            return Err(Error::InvalidArgument);
+        };
+        // No event counter exists for evc_notify_abort.
+        // thread_halt's cycle check, as it need not halt.
+        assert!(
+            thread.state().contains(ThreadState::HALTED)
+                || !current.is_some_and(|current| current.asts().contains(Ast::HALT)),
+            "thread_abort: KERN_ABORTED, not yet"
+        );
+        thread.halt();
+        assert!(
+            thread.ports.lock().reply.is_none(),
+            "mach_msg_abort_rpc: ith_rpc_reply, not yet"
+        );
+        thread.release();
+        assert!(
+            thread.depressed_from.load(Ordering::Relaxed) < 0,
+            "thread_abort: thread_depress_abort, not yet"
+        );
+        Ok(())
+    }
+
     /// Its user and system times, as `thread_read_times` reads them.
     pub(super) fn read_times(&self) -> (TimeValue, TimeValue) {
         let time = |microseconds: &AtomicU64| {

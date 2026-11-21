@@ -53,6 +53,7 @@ mig::subsystem! {
     61 thread_create(parent_task = task::of) -> (child_thread: Port);
     62 thread_suspend(target_thread = thread::of);
     63 thread_resume(target_thread = thread::of);
+    64 thread_abort(target_thread = thread::of);
     68 thread_set_special_port(thread = thread::of, which_port: i32, special_port: SendRight);
     89 vm_map(
         target_task = task::map_of,
@@ -469,6 +470,24 @@ fn thread_resume(thread: Option<&Reference<Thread>>) -> Result<(), Error> {
     // SAFETY: the handle keeps the thread alive through the call, and its
     // own reference after; threads are never freed yet.
     unsafe { Reference::as_ptr(thread).as_ref() }.resume()
+}
+
+/// Serves `thread_abort`: ends `thread`'s interruptible wait at a clean
+/// point.
+///
+/// # Errors
+///
+/// As `Thread::abort`.
+///
+/// # Panics
+///
+/// As `Thread::abort`.
+fn thread_abort(thread: Option<&Reference<Thread>>) -> Result<(), Error> {
+    // SAFETY: the handle keeps the thread alive through the call; a run
+    // queue holds it after only while it lives, as its free waits for it to
+    // stop.
+    let thread = thread.map(|thread| unsafe { Reference::as_ptr(thread).as_ref() });
+    Thread::abort(thread)
 }
 
 /// Serves `thread_set_special_port`: `thread`'s special port numbered
