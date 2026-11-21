@@ -22,6 +22,7 @@ use crate::vm::{self, Inheritance, Protection, VirtualAddress};
 mig::subsystem! {
     base 2000;
     7 task_create(parent_task = task::of, inherit_memory: Boolean) -> (child_task: Port);
+    8 task_terminate(target_task = task::of);
     11 task_threads(target_task = task::of) -> (thread_list: PortArray);
     12 task_info(target_task = task::of, flavor: i32)
         -> (task_info_out: [i32; ..1024], CountInOut);
@@ -92,6 +93,23 @@ fn task_create(
     };
     let child = Task::create(Some(task), memory)?;
     Ok(Task::convert_to_port(child))
+}
+
+/// Serves `task_terminate`: ends `task`.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no task.
+///
+/// # Panics
+///
+/// As `Task::terminate`.
+fn task_terminate(task: Option<&Reference<Task>>) -> Result<(), Error> {
+    let Some(task) = task else {
+        return Err(Error::InvalidArgument);
+    };
+    task.terminate();
+    Ok(())
 }
 
 /// Serves `task_threads`: send rights for `task`'s threads' ports, in an

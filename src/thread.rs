@@ -1502,6 +1502,11 @@ impl Thread {
         &self.task
     }
 
+    /// Whether it is alive.
+    pub(super) fn is_active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
+    }
+
     /// What it is doing.
     pub(super) fn state(&self) -> ThreadState {
         ThreadState::from_bits_retain(self.state.load(Ordering::Relaxed))

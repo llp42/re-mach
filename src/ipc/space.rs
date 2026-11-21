@@ -3,6 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Spaces: a task's names for ports and port sets.
 
+use core::mem;
 use core::ptr::NonNull;
 
 use super::entry::{self, Entry, EntryBits, Rights};
@@ -10,7 +11,7 @@ use super::port::PortName;
 use crate::collections::ArrayVec;
 use crate::collections::radix_tree::RadixTree;
 use crate::error::Error;
-use crate::reference::{Count, Counted};
+use crate::reference::{Count, Counted, Reference};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::SleepLock;
 
@@ -71,6 +72,36 @@ impl Space {
                 free_names: ArrayVec::new(),
             }),
         })
+    }
+
+    /// Marks it dead and empties it, as `ipc_space_destroy` does; nothing if
+    /// it is dead already. Releases its reference for being in use; the
+    /// caller keeps its own.
+    ///
+    /// # Panics
+    ///
+    /// If it holds an entry besides the zero entry: not yet.
+    pub fn destroy(&self) {
+        let mut state = self.state.write();
+        if !mem::replace(&mut state.active, false) {
+            return;
+        }
+        // Each entry but the zero entry has its rights cleaned and is freed.
+        if let Some(entry) = state.map.iter().find(|entry| entry.name != PortName::NULL) {
+            assert!(
+                !entry.in_use(),
+                "ipc_space_destroy: ipc_right_clean, not yet"
+            );
+            panic!("ipc_space_destroy: ie_free, not yet");
+        }
+        // As rdxtree_remove_all: with the zero entry alone, neither tree has a
+        // node.
+        state.map = RadixTree::new();
+        state.reverse_map = RadixTree::new();
+        drop(state);
+        // SAFETY: a space in use holds that reference, given up here, once, as
+        // it is no longer in use.
+        drop(unsafe { Reference::from_raw(NonNull::from(self)) });
     }
 }
 
