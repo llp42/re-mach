@@ -169,14 +169,15 @@ pub(super) fn copy_out<'a>(
 /// Copies a send right from the entry of `name`, in the write-locked,
 /// alive space of state `state`, as `ipc_right_copyin` does for
 /// `MACH_MSG_TYPE_COPY_SEND`: gives the port's new send right with its
-/// reference; the entry is unchanged.
+/// reference, the entry unchanged; or none if the port died, the entry
+/// turned into a dead name (`copy_dead`).
 ///
 /// # Panics
 ///
 /// If the space is dead, `name` has no entry, or its entry has no port. If
-/// the entry is a dead name or its port died, or it holds no send right:
-/// not yet.
-pub(super) fn copy_in(state: &SpaceState, name: PortName) -> Reference<Port> {
+/// the entry is a dead name, or holds no send right: not yet. As
+/// `make_dead_name`.
+pub(super) fn copy_in(state: &mut SpaceState, name: PortName) -> Option<Reference<Port>> {
     assert!(state.active, "ipc_right_copyin: a dead space");
     let entry = state.lookup(name).expect("ipc_right_copyin: no entry");
     let rights = entry.bits.rights;
@@ -193,7 +194,9 @@ pub(super) fn copy_in(state: &SpaceState, name: PortName) -> Reference<Port> {
         panic!("ipc_right_copyin: a send right with no port");
     };
     let Some(mut port_state) = check(state, entry) else {
-        panic!("ipc_right_check: the port died, its entry to a dead name, not yet");
+        make_dead_name(state, name);
+        // copy_dead.
+        return None;
     };
     assert!(
         rights.contains(Rights::SEND),
@@ -202,7 +205,7 @@ pub(super) fn copy_in(state: &SpaceState, name: PortName) -> Reference<Port> {
     port_state.send_rights += 1;
     let port = port.clone();
     drop(port_state);
-    port
+    Some(port)
 }
 
 /// Moves a send right out of `name`'s entry, in the write-locked, alive

@@ -155,12 +155,14 @@ pub(super) fn allocate_dead_name(space: &Space, name: PortName) -> Result<(), Er
 /// # Panics
 ///
 /// For a type that is not a right. For a right other than a copied, made
-/// or moved send right: not yet. As `right::lookup_write`, `right::copy_in`,
-/// `right::make_send`, `right::move_send` and `SpaceState::deallocate`.
+/// or moved send right, or a copied one whose port died: not yet. As
+/// `right::lookup_write`, `right::copy_in`, `right::make_send`,
+/// `right::move_send` and `SpaceState::deallocate`.
 pub(super) fn copy_in(space: &Space, name: PortName, message_type: MessageType) -> Reference<Port> {
     let mut state = right::lookup_write(space, name);
     let port = match message_type {
-        MessageType::CopySend => right::copy_in(&state, name),
+        MessageType::CopySend => right::copy_in(&mut state, name)
+            .unwrap_or_else(|| panic!("ipc_object_copyin: copy_dead, IO_DEAD, not yet")),
         MessageType::MakeSend => right::make_send(space, &state, name),
         MessageType::PortSend => right::move_send(&mut state, name),
         MessageType::PortSendOnce | MessageType::MakeSendOnce => {

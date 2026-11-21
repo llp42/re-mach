@@ -50,20 +50,23 @@ impl KernelMessage {
     /// right holds, and each type the carried right's. So far a destination
     /// name with no entry, which fails, a send right made from the
     /// destination's receive right and a send-once right from the reply
-    /// port's, under one name or two, or the destination's send-once right
-    /// moved, with no reply port, whose slot stays null.
+    /// port's, under one name or two, the same with the destination's send
+    /// right copied, which fails if its port died, or the destination's
+    /// send-once right moved, with no reply port, whose slot stays null.
     ///
     /// # Errors
     ///
-    /// `MACH_SEND_INVALID_DEST` if the destination name has no entry.
+    /// `MACH_SEND_INVALID_DEST` if the destination name has no entry, or the
+    /// port of the send right copied from it died: the entry is then a dead
+    /// name.
     ///
     /// # Panics
     ///
     /// If the header is invalid, the space is dead, a valid name has no
     /// entry, the reply's right can't be copied in, the reply name is dead,
     /// or for other names or types: not yet. As `right::copy_in_check`,
-    /// `right::make_send`, `right::make_send_once`, `right::move_send_once`
-    /// and `SpaceState::deallocate`.
+    /// `right::copy_in`, `right::make_send`, `right::make_send_once`,
+    /// `right::move_send_once` and `SpaceState::deallocate`.
     #[expect(
         clippy::too_many_lines,
         reason = "ipc_kmsg_copyin_header's general path, in GNU Mach's order"
@@ -86,7 +89,7 @@ impl KernelMessage {
         let destination_name = PortName::from(u32::try_from(header.remote_port).unwrap());
         let reply_name = PortName::from(u32::try_from(header.local_port).unwrap());
         // Its common case for a request gives up where the trap's fast case
-        // did, at the destination's entry.
+        // did, at the destination's entry or dead port.
         let Some(destination_type) = bits.remote().filter(|&message_type| any_send(message_type))
         else {
             panic!("ipc_kmsg_copyin_header: MACH_SEND_INVALID_HEADER, not yet");
@@ -168,18 +171,29 @@ impl KernelMessage {
                 right::copy_in_check(&state, entry, reply_type),
                 "ipc_kmsg_copyin_header: MACH_SEND_INVALID_REPLY, not yet"
             );
-            // So far a send right and a send-once right, each made from its
-            // receive right: the reply port can't die, so nothing to undo.
-            let (MessageType::MakeSend, MessageType::MakeSendOnce) = (destination_type, reply_type)
-            else {
-                panic!(
+            // So far a send right copied or made, and a send-once right made
+            // from the reply's receive right: the reply port can't die, so
+            // nothing to undo.
+            let destination = match (destination_type, reply_type) {
+                (MessageType::CopySend, MessageType::MakeSendOnce) => {
+                    let Some(destination) = right::copy_in(&mut state, destination_name) else {
+                        // invalid_dest, the entry now a dead name.
+                        drop(state);
+                        return Err(MACH_SEND_INVALID_DEST);
+                    };
+                    destination
+                }
+                (MessageType::MakeSend, MessageType::MakeSendOnce) => {
+                    right::make_send(space, &state, destination_name)
+                }
+                _ => panic!(
                     "ipc_kmsg_copyin_header: types {} and {} for two names, not yet",
                     destination_type.number(),
                     reply_type.number()
-                );
+                ),
             };
             (
-                right::make_send(space, &state, destination_name),
+                destination,
                 Some(right::make_send_once(space, &state, reply_name)),
             )
         };

@@ -184,7 +184,12 @@ pub fn trap(
         .then(|| reply_port.state.try_lock())
         .flatten()
     else {
-        panic!("mach_msg_trap: slow_copyin, not yet");
+        // abort_request_copyin; the references go after the locks.
+        drop(destination_state);
+        drop(state);
+        drop(destination_port);
+        drop(reply_port);
+        return slow_copy_in(request);
     };
     drop(state);
     destination_state.send_rights += 1;
