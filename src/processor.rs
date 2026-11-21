@@ -203,6 +203,31 @@ impl Processor {
         self.queued.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Takes `thread` off its run queues, on its CPU, as `rem_runq` does;
+    /// gives whether it waited there.
+    pub(super) fn remove(&self, thread: &Thread) -> bool {
+        let mut queues = self.run_queues();
+        let RunQueues { lists, bound } = &mut *queues;
+        // Its priority changes only off the run queues. Found by address: a
+        // dead list shares its link.
+        let mut cursor = lists[thread.scheduled_priority().index()].front_mut();
+        while let Some(queued) = cursor.get() {
+            if !ptr::eq(queued, thread) {
+                cursor.move_next();
+                continue;
+            }
+            cursor.remove();
+            if thread.bound().is_some() {
+                *bound -= 1;
+            } else {
+                self.unbound.fetch_sub(1, Ordering::Relaxed);
+            }
+            self.queued.fetch_sub(1, Ordering::Relaxed);
+            return true;
+        }
+        false
+    }
+
     /// The best priority among the threads waiting on its run queues that
     /// are not bound to it.
     fn best_unbound(&self) -> Option<Priority> {

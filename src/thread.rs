@@ -1045,13 +1045,15 @@ impl Thread {
     }
 
     /// Waits until it stops, as `thread_dowait` does: at once if it is
-    /// suspended outside a wait or in an interruptible one; else it sleeps
-    /// until the switch that stops it wakes it, and looks again.
+    /// suspended outside a wait or in an interruptible one, or if it is
+    /// runnable and suspended, stopped as it leaves the current CPU's run
+    /// queues; else it sleeps until the switch that stops it wakes it, and
+    /// looks again.
     ///
     /// # Panics
     ///
-    /// If it is the current thread. If it is runnable and suspended, or to
-    /// wait for on another CPU: not yet.
+    /// If it is the current thread. If it is runnable and suspended off the
+    /// current CPU's run queues, or to wait for on another CPU: not yet.
     fn wait_until_stopped(&self) {
         assert!(
             !smp::current()
@@ -1072,7 +1074,14 @@ impl Thread {
                     break;
                 }
                 state if state == ThreadState::RUN | ThreadState::SUSPENDED => {
-                    panic!("thread_dowait: rem_runq, not yet")
+                    // The section keeps it from running until it is off the
+                    // queue; not there, it runs on another CPU.
+                    assert!(
+                        smp::current().processor().remove(self),
+                        "thread_dowait: cause_ast_check, not yet"
+                    );
+                    self.stop();
+                    break;
                 }
                 state
                     if [
