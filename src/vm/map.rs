@@ -1602,19 +1602,41 @@ pub struct Lookup {
     pub(super) version: u32,
 }
 
-// SAFETY: its count is its own, and `free` frees nothing yet.
+// SAFETY: its count is its own, and every map but the kernel's maps, whose
+// own references never drop, is a box of `MAP_CACHE`, which `free` takes
+// back.
 unsafe impl Counted for Map {
     fn references(&self) -> &Count {
         &self.references
     }
 
-    /// Frees `map`, as `vm_map_deallocate` does at zero.
+    /// Frees `map`, as `vm_map_deallocate` does at zero: its whole range
+    /// deleted, its physical map destroyed, then it goes back to its cache.
     ///
     /// # Panics
     ///
-    /// Always: not yet.
-    unsafe fn free(_map: NonNull<Self>) {
-        panic!("vm_map_deallocate: the last reference, not yet");
+    /// As `Map::delete` and `MachinePhysMap::destroy`.
+    unsafe fn free(map: NonNull<Self>) {
+        // The box's own provenance, which `Task::create` exposed.
+        let map = NonNull::<Self>::with_exposed_provenance(map.addr());
+        // SAFETY: nothing else uses it, and it stays allocated until its
+        // box drops below.
+        let this = unsafe { map.as_ref() };
+        // vm_map_delete of its bounds, under its lock, which nothing else
+        // takes now (GNU Mach: unlocked). No entry is split: none reserved.
+        let mut reservation = EntryReservation {
+            entries: RBTree::new(EntryAdapter::NEW),
+            count: 0,
+        };
+        let mut contents = this.lock();
+        this.delete(&mut contents, this.bounds.clone(), &mut reservation);
+        drop(contents);
+        // SAFETY: the map's reference, given up here; its entries are gone,
+        // and its task's threads were switched from for the last time.
+        unsafe { PhysMap::destroy(NonNull::from(this.phys_map)) };
+        // SAFETY: a `MAP_CACHE` box `Task::create` gave up, with that box's
+        // provenance; nothing uses it after.
+        drop(unsafe { CacheBox::from_raw(&MAP_CACHE, map) });
     }
 }
 

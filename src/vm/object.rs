@@ -659,7 +659,8 @@ pub fn ready(request: &Port, copy_strategy: CopyStrategy) {
 
 /// Terminates `object`, whose last reference dropped, `state` its state
 /// locked, as `vm_object_terminate` does: dead, unknown to its ports, then,
-/// unlocked, its pager terminated with the rights it held, and freed.
+/// unlocked, its pager terminated with the rights it held, else its name
+/// port destroyed, and freed.
 ///
 /// # Safety
 ///
@@ -669,8 +670,8 @@ pub fn ready(request: &Port, copy_strategy: CopyStrategy) {
 /// # Panics
 ///
 /// If it is dead, or one of its ports stands for something else. If it has
-/// a shadow, paging under way or pages, or no pager or a user's: not yet.
-/// As `pager::terminate`.
+/// a shadow, paging under way or pages, or a user's pager: not yet. As
+/// `pager::terminate` and `Port::deallocate_kernel`.
 unsafe fn terminate(object: NonNull<Object>, mut state: TokenGuard<'_, ObjectState>) {
     assert!(
         state.flags.contains(Flags::ALIVE),
@@ -735,7 +736,14 @@ unsafe fn terminate(object: NonNull<Object>, mut state: TokenGuard<'_, ObjectSta
     let name = NonNull::new(pager_name.swap(ptr::null_mut(), Ordering::Acquire))
         .map(|name| unsafe { Reference::from_raw(name) });
     let Some(pager) = pager else {
-        panic!("vm_object_terminate: ipc_port_dealloc_kernel(pager_name), not yet");
+        // Its name port's right, which ipc_port_dealloc_kernel consumes.
+        if let Some(name) = name {
+            name.deallocate_kernel();
+            drop(name);
+        }
+        // SAFETY: the caller's contract.
+        drop(unsafe { CacheBox::from_raw(&CACHE, object) });
+        return;
     };
     let Some(Kind::Device(record)) = kind else {
         panic!("memory_object_terminate: a user pager, not yet");

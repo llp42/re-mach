@@ -5,7 +5,8 @@
 
 use core::arch::asm;
 use core::ops::Range;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::ptr::NonNull;
+use core::sync::atomic::{self, AtomicU64, AtomicUsize, Ordering};
 use core::{ptr, slice};
 
 use x86_64::VirtAddr;
@@ -163,13 +164,58 @@ impl MachinePhysMap for PhysMap {
         let no_execute = *NO_EXECUTE.get().expect("pmap: not bootstrapped");
         entries[PAGE_TABLE_SLOT] = frame(pml4).as_u64() | (TABLE | no_execute).bits();
         phys_map.pml4 = pml4;
+        let phys_map = CacheBox::into_raw(phys_map);
+        // The box's provenance, which `destroy` takes back from a pointer
+        // made from a shared borrow.
+        phys_map.expose_provenance();
         // SAFETY: a physical map lives until pmap_destroy frees it, which
         // comes later.
-        Ok(unsafe { CacheBox::into_raw(phys_map).as_ref() })
+        Ok(unsafe { phys_map.as_ref() })
     }
 
     fn reference(&self) {
         self.references.fetch_add(1, Ordering::Relaxed);
+    }
+
+    unsafe fn destroy(phys_map: NonNull<Self>) {
+        // The box's own provenance, which `create` exposed.
+        let phys_map = NonNull::<Self>::with_exposed_provenance(phys_map.addr());
+        // SAFETY: the caller's reference keeps it allocated until its box
+        // drops below.
+        let this = unsafe { phys_map.as_ref() };
+        if this.references.fetch_sub(1, Ordering::Release) != 1 {
+            return;
+        }
+        // Every other holder's use comes before the free.
+        atomic::fence(Ordering::Acquire);
+        // Active on no CPU, it is in no TLB: no shootdown. The tables the
+        // entries `slots` of `table` point at.
+        let below = |table: PhysAddr, slots: Range<usize>| {
+            slots.filter_map(move |slot| {
+                let entry = table_entry(table, slot).load(Ordering::Relaxed);
+                PageTableFlags::from_bits_truncate(entry)
+                    .contains(PageTableFlags::PRESENT)
+                    .then(|| entry_address(entry))
+            })
+        };
+        let free = |table: PhysAddr| {
+            page::free(page::lookup(table).expect("pmap_destroy: a table outside the page array"));
+        };
+        // The user slots' tables, each after the tables below it, then the
+        // PML4; kernel space's are shared.
+        for directory_pointer in below(this.pml4, 0..MAX_USER_ADDRESS / SLOT_SIZE) {
+            for directory in below(directory_pointer, 0..ENTRIES) {
+                for table in below(directory, 0..ENTRIES) {
+                    free(table);
+                }
+                free(directory);
+            }
+            free(directory_pointer);
+        }
+        free(this.pml4);
+        // SAFETY: a `CACHE` box `create` gave up, with that box's
+        // provenance; nothing uses it after.
+        drop(unsafe { CacheBox::from_raw(&CACHE, phys_map) });
     }
 
     fn activate(&self) {

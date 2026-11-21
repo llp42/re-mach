@@ -685,6 +685,25 @@ impl ProcessorSet {
         members.task_count += 1;
         drop(members);
     }
+
+    /// Lets `task`, being freed, out of its tasks, as `pset_remove_task`
+    /// does; the caller then drops the task's reference on it.
+    ///
+    /// # Panics
+    ///
+    /// If `task` is in another set: not yet.
+    pub(super) fn remove_task(&self, task: &Task) {
+        let mut members = self.members.lock();
+        assert!(
+            ptr::eq(task.set.load(Ordering::Relaxed), self),
+            "pset_remove_task: a task in another set, not yet"
+        );
+        // SAFETY: the task is on this list, which it joined in `add_task`.
+        unsafe { members.tasks.cursor_mut_from_ptr(task) }.remove();
+        task.set.store(ptr::null_mut(), Ordering::Release);
+        members.task_count -= 1;
+        drop(members);
+    }
 }
 
 /// The default set, where every processor and thread starts.

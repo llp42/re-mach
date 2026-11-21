@@ -228,9 +228,13 @@ impl Task {
                 map
             }
         };
+        let map = CacheBox::into_raw(map);
+        // The box's provenance, which the map's free takes back from a handle
+        // made from a shared borrow.
+        map.expose_provenance();
         // SAFETY: the box, given up, holds the map's first reference, which
         // the task takes.
-        let map = unsafe { CacheBox::into_raw(map).as_ref() };
+        let map = unsafe { map.as_ref() };
         let task = create_with_map(map, parent).unwrap_or_else(|error| {
             panic!("task_create_kernel: {error:?}, vm_map_deallocate not yet")
         });
@@ -777,19 +781,38 @@ impl Task {
     }
 }
 
-// SAFETY: its count is its own, and `free` frees nothing yet.
+// SAFETY: its count is its own, and every task but the kernel's, whose own
+// references never drop, is a box of `CACHE`, which `free` takes back.
 unsafe impl Counted for Task {
     fn references(&self) -> &Count {
         &self.references
     }
 
-    /// Frees `task`, as `task_deallocate` does at zero.
+    /// Frees `task`, as `task_deallocate` does at zero: it leaves its set,
+    /// its map's and space's references drop, then it goes back to its
+    /// cache.
     ///
     /// # Panics
     ///
-    /// Always: not yet.
-    unsafe fn free(_task: NonNull<Self>) {
-        panic!("task_deallocate: the last reference, not yet");
+    /// As `ProcessorSet::remove_task` and the map's free.
+    unsafe fn free(task: NonNull<Self>) {
+        // The box's own provenance, which `create_with_map` exposed.
+        let task = NonNull::<Self>::with_exposed_provenance(task.addr());
+        // SAFETY: nothing else uses it, and it stays allocated until its
+        // box drops below.
+        let this = unsafe { task.as_ref() };
+        // machine_task_terminate: a task has no I/O permission bitmap yet.
+        // eml_task_deallocate: no emulation vector exists.
+        // SAFETY: a task's set lives while the task is in it.
+        let set = unsafe { &*this.set.load(Ordering::Acquire) };
+        set.remove_task(this);
+        // Never the last: a set keeps its own reference until destroyed.
+        set.deallocate();
+        // The box drops its fields in order: the map's reference, as
+        // vm_map_deallocate, then the space's, as is_release.
+        // SAFETY: a `CACHE` box `create_with_map` gave up, with that box's
+        // provenance; nothing uses it after.
+        drop(unsafe { CacheBox::from_raw(&CACHE, task) });
     }
 }
 
@@ -942,6 +965,9 @@ fn create_with_map(map: &'static Map, parent: Option<&Task>) -> Result<&'static 
     // The task takes the space's first reference.
     CacheBox::into_raw(space);
     let task = CacheBox::into_raw(task);
+    // The box's provenance, which `free` takes back from a handle made from
+    // a shared borrow.
+    task.expose_provenance();
     // SAFETY: a task lives until task_deallocate frees it, which comes
     // later.
     let task = unsafe { task.as_ref() };

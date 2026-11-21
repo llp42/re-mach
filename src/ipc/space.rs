@@ -105,19 +105,19 @@ impl Space {
     }
 }
 
-// SAFETY: its count is its own, and it is never freed yet.
+// SAFETY: its count is its own, and every space but the special ones, whose
+// own reference never drops, is a box of `CACHE`, which `free` takes back.
 unsafe impl Counted for Space {
     fn references(&self) -> &Count {
         &self.references
     }
 
-    /// Frees `space`, as `ipc_space_release` does at zero.
-    ///
-    /// # Panics
-    ///
-    /// Always: not yet.
-    unsafe fn free(_space: NonNull<Self>) {
-        panic!("ipc_space_release: is_free, not yet");
+    /// Frees `space`, as `ipc_space_release` does at zero: `is_free` gives
+    /// it back to its cache.
+    unsafe fn free(space: NonNull<Self>) {
+        // SAFETY: a `CACHE` box whose first reference its task took from
+        // the box's own borrow; nothing uses it after.
+        drop(unsafe { CacheBox::from_raw(&CACHE, space) });
     }
 }
 

@@ -3,6 +3,7 @@
 //! What the VM asks of the machine's page tables.
 
 use core::ops::Range;
+use core::ptr::NonNull;
 
 use super::Protection;
 use crate::arch::PhysAddr;
@@ -35,6 +36,19 @@ pub trait MachinePhysMap {
 
     /// Takes a reference on it.
     fn reference(&self);
+
+    /// Drops a reference on `phys_map`, a user task's, as `pmap_destroy`
+    /// does: at the last, frees its user tables, then it.
+    ///
+    /// # Safety
+    ///
+    /// The caller gives up its reference, and at the last nothing maps
+    /// through it, it is active on no CPU, and nothing uses it after.
+    ///
+    /// # Panics
+    ///
+    /// If a table is outside the page array.
+    unsafe fn destroy(phys_map: NonNull<Self>);
 
     /// Makes it the current CPU's, as the CPU switches to a thread of its
     /// task from one of another, inside a critical section.
