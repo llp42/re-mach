@@ -216,16 +216,17 @@ impl KernelMessage {
     /// come into kalloc memory, 64 bits each, whose address replaces theirs,
     /// and the user's array is deallocated if asked; out-of-line memory is
     /// copied in, its source kept, and the copy's exposed address replaces
-    /// its address. With neither, the message becomes simple.
+    /// its address, 0 for empty memory. With neither, the message becomes
+    /// simple.
     ///
     /// # Panics
     ///
     /// If a type is invalid or the body too small, an out-of-line array holds
-    /// no ports or its names can't be copied in, out-of-line memory is empty
-    /// or to be deallocated, or goes to a port that takes it as page lists, a
-    /// right is not a copied, made or moved send right, or a name is dead: not
-    /// yet. As `kalloc::allocate`, `vm::user::deallocate`, `object::copy_in`
-    /// and `Map::copy_in`.
+    /// no ports or its names can't be copied in, out-of-line memory not empty
+    /// is to be deallocated or goes to a port that takes it as page lists, a
+    /// right is not a copied, made or moved send right, or a name is dead:
+    /// not yet. As `kalloc::allocate`, `vm::user::deallocate`,
+    /// `object::copy_in` and `Map::copy_in`.
     #[expect(
         clippy::too_many_lines,
         reason = "ipc_kmsg_copyin_body's steps, in GNU Mach's order"
@@ -321,11 +322,10 @@ impl KernelMessage {
                     }
                     array = Some(ports);
                     buffer.as_ptr().expose_provenance()
+                } else if length == 0 {
+                    // No memory, no copy: its deallocate bit is ignored.
+                    0
                 } else {
-                    assert!(
-                        length != 0,
-                        "ipc_kmsg_copyin_body: empty out-of-line memory, not yet"
-                    );
                     assert!(
                         !page_lists,
                         "ipc_kmsg_copyin_body: vm_map_copyin_page_list, not yet"
