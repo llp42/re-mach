@@ -54,9 +54,8 @@ pub trait MachinePhysMap {
     /// address in another. If `physical` is outside the page array: not
     /// yet. In the kernel's, if no table maps `address` or it maps a page
     /// already; for `protection` allowing running: not yet. In another, if
-    /// no page is free for a table, `address` maps another page already, or
-    /// if `address` maps `physical` already and it is active on another CPU:
-    /// not yet.
+    /// no page is free for a table, or if `address` maps a page already and
+    /// it is active on another CPU: not yet.
     fn enter(&self, address: usize, physical: PhysAddr, protection: Protection, wiring: Wiring);
 
     /// Makes the mapping of `address` wired as `wiring` says.

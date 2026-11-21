@@ -270,11 +270,17 @@ impl MachinePhysMap for PhysMap {
         if matches!(wiring, Wiring::Wired) {
             flags |= WIRED;
         }
-        if old != 0 && entry_address(old) == physical {
-            // The protection and wiring change in place, D kept; atomic, as
-            // the CPU sets it.
+        if old != 0 {
+            // In place, the resident count kept: the same page keeps D; the
+            // old page's accessed and dirty bits go, kept nowhere yet, as in
+            // `remove`. Atomic, as the CPU sets them.
+            let kept = if entry_address(old) == physical {
+                PageTableFlags::DIRTY
+            } else {
+                PageTableFlags::empty()
+            };
             entry.update(Ordering::SeqCst, Ordering::Relaxed, |value| {
-                frame(physical).as_u64() | flags.bits() | (value & PageTableFlags::DIRTY.bits())
+                frame(physical).as_u64() | flags.bits() | (value & kept.bits())
             });
             // After the entry changes, as in `protect`.
             let current = smp::current().id();
@@ -286,10 +292,6 @@ impl MachinePhysMap for PhysMap {
                 tlb::flush(VirtAddr::new(u64::try_from(address).unwrap()));
             }
         } else {
-            assert!(
-                old == 0,
-                "pmap_enter: pmap_remove_range on the page mapped there, not yet"
-            );
             self.resident.fetch_add(1, Ordering::Relaxed);
             // A page that was not present is in no TLB, so nothing to
             // invalidate.
