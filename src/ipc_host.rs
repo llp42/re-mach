@@ -3,6 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The ports of the host, processor sets and processors.
 
+use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 
@@ -62,8 +63,12 @@ pub fn init_set(set: &'static ProcessorSet) {
             .then_some(KernelObject::ProcessorSetName(object)),
     ));
     if set.is_active() {
-        set.reference();
-        set.reference();
+        // SAFETY: the caller's reference keeps it alive, which this handle
+        // borrows and never drops.
+        let set = ManuallyDrop::new(unsafe { Reference::from_raw(object) });
+        // Its ports', which their kernel objects keep.
+        Reference::into_raw(Reference::clone(&set));
+        Reference::into_raw(Reference::clone(&set));
     }
 }
 

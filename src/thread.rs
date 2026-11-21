@@ -626,10 +626,12 @@ impl Thread {
             "thread_create: a stack already"
         );
         let members = task.members.lock();
-        // SAFETY: under the task's token its reference keeps its set alive, and
-        // the one taken here does after.
-        let mut set = unsafe { &*task.set.load(Ordering::Acquire) };
-        set.reference();
+        // SAFETY: under the task's token its reference keeps its set alive,
+        // which this handle borrows and never drops; the one taken here does
+        // after.
+        let mut set = Reference::clone(&mem::ManuallyDrop::new(unsafe {
+            Reference::from_raw(NonNull::new(task.set.load(Ordering::Acquire)).unwrap())
+        }));
         drop(members);
         // The set's token, then the task's, again if the task changed sets; a
         // set out of use gives way to the default set.
@@ -644,14 +646,16 @@ impl Thread {
             } else {
                 &DEFAULT_SET
             };
-            if ptr::eq(current, set) {
+            if ptr::eq(current, Reference::as_ptr(&set).as_ptr()) {
                 break (set_members, members);
             }
-            current.reference();
+            // SAFETY: as above, under both tokens.
+            let current = Reference::clone(&mem::ManuallyDrop::new(unsafe {
+                Reference::from_raw(NonNull::from(current))
+            }));
             drop(members);
             drop(set_members);
             // Never the last: a set keeps its own reference until destroyed.
-            set.deallocate();
             set = current;
         };
         // Its share at the set's load average, taken as at least 1.
@@ -669,7 +673,7 @@ impl Thread {
         if !members.active {
             drop(members);
             drop(set_members);
-            set.deallocate();
+            drop(set);
             return Err(Error::Failure);
         }
         // The thread keeps its machine state for life.
@@ -695,6 +699,8 @@ impl Thread {
         task.add_thread(&mut members, thread);
         drop(members);
         drop(set_members);
+        // The thread keeps the set's reference.
+        Reference::into_raw(set);
         Ok(thread)
     }
 
@@ -1584,7 +1590,7 @@ impl Thread {
     }
 
     /// Sets the set it runs on, or none, under that set's token.
-    pub(super) fn set_processor_set(&self, set: Option<&'static ProcessorSet>) {
+    pub(super) fn set_processor_set(&self, set: Option<&ProcessorSet>) {
         self.set.store(
             set.map_or(ptr::null_mut(), |set| ptr::from_ref(set).cast_mut()),
             Ordering::Release,
@@ -1672,7 +1678,8 @@ unsafe impl Counted for Thread {
         drop(members);
         drop(set_members);
         // Never the last: a set keeps its own reference until destroyed.
-        set.deallocate();
+        // SAFETY: the thread's reference, taken in `create`, given up here.
+        drop(unsafe { Reference::from_raw(NonNull::from(set)) });
         assert!(
             !smp::current()
                 .active_thread()

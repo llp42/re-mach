@@ -807,7 +807,9 @@ unsafe impl Counted for Task {
         let set = unsafe { &*this.set.load(Ordering::Acquire) };
         set.remove_task(this);
         // Never the last: a set keeps its own reference until destroyed.
-        set.deallocate();
+        // SAFETY: the task's reference, taken in `create_with_map`, given up
+        // here.
+        drop(unsafe { Reference::from_raw(NonNull::from(set)) });
         // The box drops its fields in order: the map's reference, as
         // vm_map_deallocate, then the space's, as is_release.
         // SAFETY: a `CACHE` box `create_with_map` gave up, with that box's
@@ -932,8 +934,11 @@ fn create_with_map(map: &'static Map, parent: Option<&Task>) -> Result<&'static 
     // takes a reference.
     let set = parent.map_or_else(
         || {
-            DEFAULT_SET.reference();
-            &DEFAULT_SET
+            // SAFETY: the default set's own reference never drops; this
+            // handle borrows it and never drops it.
+            Reference::clone(&ManuallyDrop::new(unsafe {
+                Reference::from_raw(NonNull::from(&DEFAULT_SET))
+            }))
         },
         |parent| {
             let parent_members = parent.members.lock();
@@ -941,7 +946,11 @@ fn create_with_map(map: &'static Map, parent: Option<&Task>) -> Result<&'static 
             // alive, and the one taken here does after.
             let set = unsafe { &*parent.set.load(Ordering::Acquire) };
             let set = if set.is_active() { set } else { &DEFAULT_SET };
-            set.reference();
+            // SAFETY: as above, a reference this handle borrows and never
+            // drops.
+            let set = Reference::clone(&ManuallyDrop::new(unsafe {
+                Reference::from_raw(NonNull::from(set))
+            }));
             let members = task.members.get_mut();
             members.priority = parent_members.priority;
             members.max_priority = parent_members.max_priority;
@@ -979,5 +988,7 @@ fn create_with_map(map: &'static Map, parent: Option<&Task>) -> Result<&'static 
     ports.self_send = Some(send);
     drop(ports);
     set.add_task(task);
+    // The task keeps the set's reference.
+    Reference::into_raw(set);
     Ok(task)
 }

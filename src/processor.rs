@@ -3,8 +3,9 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Processors and processor sets.
 
+use core::mem::ManuallyDrop;
 use core::ops::DerefMut;
-use core::ptr;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, Ordering,
 };
@@ -15,7 +16,7 @@ use crate::collections::ArrayVec;
 use crate::config::MAX_CPUS;
 use crate::error::Error;
 use crate::ipc::port::Port;
-use crate::reference::Reference;
+use crate::reference::{Count, Counted, Reference};
 use crate::sched::{
     MAX_STUCK_THREADS, MIN_QUANTUM, Policies, Priority, RUN_QUEUES, RunQueue, SCHEDULER_SCALE,
     SYSTEM_PRIORITY,
@@ -362,7 +363,7 @@ pub struct ProcessorSet {
     /// Which of its processors the next quantum adjustment falls to.
     adjust_index: AtomicU32,
     /// How many references it has.
-    references: AtomicU32,
+    references: Count,
     /// The highest priority its threads may take.
     max_priority: Priority,
     /// The policies its threads may use.
@@ -437,7 +438,7 @@ impl ProcessorSet {
             empty: AtomicBool::new(true),
             processor_count: AtomicU32::new(0),
             adjust_index: AtomicU32::new(0),
-            references: AtomicU32::new(1),
+            references: Count::new(1),
             max_priority: SYSTEM_PRIORITY,
             policies: Policies::TIMESHARE,
             quantum: AtomicU32::new(MIN_QUANTUM),
@@ -470,16 +471,6 @@ impl ProcessorSet {
     /// How many processors it has; changed only under `members`' token.
     pub(super) fn processor_count(&self) -> u32 {
         self.processor_count.load(Ordering::Relaxed)
-    }
-
-    /// Takes a reference on it.
-    pub(super) fn reference(&self) {
-        self.references.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Drops a reference on it, which is not its last.
-    pub(super) fn deallocate(&self) {
-        self.references.fetch_sub(1, Ordering::Relaxed);
     }
 
     /// The highest priority its threads may take.
@@ -540,6 +531,29 @@ impl ProcessorSet {
         self.members.lock()
     }
 
+    /// A send right for `set`'s name port, made as
+    /// `convert_pset_name_to_port` makes it; `set`'s reference drops after.
+    ///
+    /// # Panics
+    ///
+    /// If it is out of use: not yet.
+    pub fn name_port(set: Reference<Self>) -> Reference<Port> {
+        let members = set.members.lock();
+        assert!(
+            set.is_active(),
+            "convert_pset_name_to_port: a set out of use, not yet"
+        );
+        let port = NonNull::new(set.name_port.load(Ordering::Acquire))
+            .expect("convert_pset_name_to_port: no name port");
+        // SAFETY: the slot keeps its port's reference while the set is in
+        // use, which this handle borrows and never drops.
+        let port = ManuallyDrop::new(unsafe { Reference::from_raw(port) });
+        let send = Port::make_send(&port);
+        drop(members);
+        drop(set);
+        send
+    }
+
     /// A new set, in use, in the list of all sets, with its ports and
     /// references for them, and for the caller's set and name.
     ///
@@ -547,9 +561,11 @@ impl ProcessorSet {
     ///
     /// `ResourceShortage` if no set can be allocated.
     pub fn create() -> Result<&'static Self, Error> {
-        let mut set = SET_CACHE.allocate(Self::new())?;
-        // The caller's set and name.
-        set.references.fetch_add(2, Ordering::Relaxed);
+        // Its own reference, and the caller's set's and name's.
+        let mut set = SET_CACHE.allocate(Self {
+            references: Count::new(3),
+            ..Self::new()
+        })?;
         set.active = true;
         // SAFETY: a set lives until it is destroyed, which comes later.
         let set = unsafe { CacheBox::into_raw(set).as_ref() };
@@ -560,7 +576,7 @@ impl ProcessorSet {
 
     /// Takes `thread`, new and in no set, into its `members`; the thread
     /// keeps the reference the caller took for it.
-    pub(super) fn add_thread(&'static self, members: &mut Members, thread: &'static Thread) {
+    pub(super) fn add_thread(&self, members: &mut Members, thread: &'static Thread) {
         // SAFETY: threads are never freed while a set holds them.
         members
             .threads
@@ -672,9 +688,9 @@ impl ProcessorSet {
         drop(all);
     }
 
-    /// Takes `task`, new and in no set, for which the caller took a
-    /// reference.
-    pub(super) fn add_task(&'static self, task: &'static Task) {
+    /// Takes `task`, new and in no set; the task keeps the reference the
+    /// caller took for it.
+    pub(super) fn add_task(&self, task: &'static Task) {
         let mut members = self.members.lock();
         // SAFETY: tasks are never freed while a set holds them.
         members
@@ -706,7 +722,24 @@ impl ProcessorSet {
     }
 }
 
-/// The default set, where every processor and thread starts.
+// SAFETY: its count is its own, and `free` frees nothing yet.
+unsafe impl Counted for ProcessorSet {
+    fn references(&self) -> &Count {
+        &self.references
+    }
+
+    /// Frees `set`, as `pset_deallocate` does at zero.
+    ///
+    /// # Panics
+    ///
+    /// Always: not yet.
+    unsafe fn free(_set: NonNull<Self>) {
+        panic!("pset_deallocate: the last reference, not yet");
+    }
+}
+
+/// The default set, where every processor and thread starts; its own
+/// reference never drops.
 pub static DEFAULT_SET: ProcessorSet = {
     let mut set = ProcessorSet::new();
     set.active = true;

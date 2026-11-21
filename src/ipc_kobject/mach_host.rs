@@ -4,14 +4,21 @@
 //! The host calls' server routines, as MIG makes them from `mach_host`'s
 //! definitions; only those written so far.
 
+use core::mem::ManuallyDrop;
+use core::ptr::NonNull;
+
 use super::mig::{self, StringC};
 use crate::error::Error;
 use crate::host::{self, Host};
 use crate::ipc::MessageType;
+use crate::ipc::port::Port;
+use crate::processor::{DEFAULT_SET, ProcessorSet};
+use crate::reference::Reference;
 use crate::{clock, ipc_host, machine};
 
 mig::subsystem! {
     base 2600;
+    6 processor_set_default(host = ipc_host::host) -> (default_set: Port);
     34 host_get_time(host = ipc_host::host) -> (current_time: RpcTimeValue);
     35 host_reboot(host = ipc_host::privileged_host, options: i32);
     38 host_info(host = ipc_host::host, flavor: i32) -> (info: [i32; ..1024], CountInOut);
@@ -50,6 +57,26 @@ struct TimeValue64 {
 // SAFETY: `repr(C)`, integers only, no padding.
 unsafe impl mig::Inline for TimeValue64 {
     const WORD: u64 = mig::type_word(MessageType::Integer64, 64, 2);
+}
+
+/// Serves `processor_set_default`: a send right for the default set's name
+/// port, as `convert_pset_name_to_port` gives it.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no host.
+///
+/// # Panics
+///
+/// As `ProcessorSet::name_port`.
+fn processor_set_default(host: Option<&&Host>) -> Result<Reference<Port>, Error> {
+    if host.is_none() {
+        return Err(Error::InvalidArgument);
+    }
+    // SAFETY: the default set's own reference never drops; this handle
+    // borrows it and never drops it.
+    let set = ManuallyDrop::new(unsafe { Reference::from_raw(NonNull::from(&DEFAULT_SET)) });
+    Ok(ProcessorSet::name_port(Reference::clone(&set)))
 }
 
 /// Serves `host_get_time`: the time of day for `host`.
