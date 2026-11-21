@@ -21,7 +21,7 @@ use crate::kalloc;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, ProcessorSet};
 use crate::reference::{Count, Counted, Reference};
-use crate::sched::{Priority, USER_PRIORITY};
+use crate::sched::{BasePriority, Priority, USER_PRIORITY};
 use crate::slab::{Cache, CacheBox};
 use crate::smp;
 use crate::sync::{CriticalSection, OnceLock, Spinlock, Token};
@@ -101,6 +101,15 @@ pub enum Memory {
     Inherited,
     /// None.
     Empty,
+}
+
+/// Whether a task's priority change reaches its threads.
+#[derive(Clone, Copy)]
+pub enum Threads {
+    /// They keep theirs.
+    Kept,
+    /// They take it too.
+    Changed,
 }
 
 /// A task's special port, by Mach's `TASK_*_PORT` number.
@@ -745,34 +754,45 @@ impl Task {
         Ok(info.len().min(count))
     }
 
-    /// Caps its priority at `max_priority`, as the boot script does with
-    /// `host`, the host's port: its priority set to the cap, and its
-    /// threads' too.
+    /// Caps its priority at `max_priority` for `host`, a host's port: its
+    /// priority as `base` says, and its threads' as `threads` says, as
+    /// `task_max_priority` does.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` unless `host` is a host's port, alive; `NoAccess`
+    /// if the cap is raised and `host` is not the privileged one.
     ///
     /// # Panics
     ///
-    /// If `host` is not a host's port, if the cap is raised, or if it has
-    /// threads: not yet.
-    pub(super) fn set_max_priority(&self, host: &Port, max_priority: Priority) {
-        assert!(
-            matches!(
-                host.kernel_object(),
-                Some(KernelObject::Host(_) | KernelObject::HostPrivileged(_))
-            ),
-            "task_max_priority: an invalid argument, not yet"
-        );
+    /// As `Thread::override_max_priority`.
+    pub(super) fn set_max_priority(
+        &self,
+        host: &Port,
+        max_priority: Priority,
+        base: BasePriority,
+        threads: Threads,
+    ) -> Result<(), Error> {
+        let privileged = match host.kernel_object() {
+            Some(KernelObject::Host(_)) => false,
+            Some(KernelObject::HostPrivileged(_)) => true,
+            _ => return Err(Error::InvalidArgument),
+        };
         let mut members = self.members.lock();
-        assert!(
-            !max_priority.outranks(members.max_priority),
-            "task_max_priority: a raised cap, not yet"
-        );
+        if max_priority.outranks(members.max_priority) && !privileged {
+            return Err(Error::NoAccess);
+        }
         members.max_priority = max_priority;
-        members.priority = max_priority;
-        assert!(
-            members.threads.is_empty(),
-            "thread_override_max_priority: not yet"
-        );
+        if members.priority.outranks(max_priority) || matches!(base, BasePriority::Set) {
+            members.priority = max_priority;
+        }
+        if matches!(threads, Threads::Changed) {
+            for thread in &members.threads {
+                thread.override_max_priority(max_priority, base);
+            }
+        }
         drop(members);
+        Ok(())
     }
 
     /// Names it `name`, up to its first NUL, cut to fit.

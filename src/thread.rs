@@ -26,7 +26,7 @@ use crate::name::Name;
 use crate::processor::{DEFAULT_SET, Processor, ProcessorSet};
 use crate::reference::{Count, Counted, Reference};
 use crate::sched::{
-    self, Event, Policies, Policy, Preemption, Priority, SCHEDULER_SCALE, WaitResult,
+    self, BasePriority, Event, Policies, Policy, Preemption, Priority, SCHEDULER_SCALE, WaitResult,
 };
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{CriticalSection, OnceLock, Spinlock};
@@ -985,6 +985,24 @@ impl Thread {
         );
     }
 
+    /// Schedules it at the priority its base priority and use give, as
+    /// `compute_priority` does for a thread on no run queue.
+    ///
+    /// # Panics
+    ///
+    /// If it is not timeshared, is depressed, or is runnable: not yet.
+    fn compute_priority(&self) {
+        assert!(
+            self.usage_sets_priority(),
+            "compute_priority: fixed priority or depressed, not yet"
+        );
+        assert!(
+            !self.state().contains(ThreadState::RUN),
+            "set_pri: rem_runq, not yet"
+        );
+        self.compute_my_priority();
+    }
+
     /// Schedules it at the priority its base priority and use give.
     fn compute_my_priority(&self) {
         let usage = self.sched_usage.load(Ordering::Relaxed);
@@ -1632,6 +1650,27 @@ impl Thread {
     /// Its timer.
     pub(super) const fn timer(&self) -> &Timeout {
         &self.timer
+    }
+
+    /// Caps its priority at `max_priority`, no higher than its set's, its
+    /// priority as `base` says, as `thread_override_max_priority` does.
+    ///
+    /// # Panics
+    ///
+    /// As `compute_priority`.
+    pub(super) fn override_max_priority(&self, max_priority: Priority, base: BasePriority) {
+        let _section = CriticalSection::enter();
+        // SAFETY: a thread's set lives while the thread is in it.
+        let set = unsafe { &*self.set.load(Ordering::Acquire) };
+        let max_priority = max_priority.weaker(set.max_priority());
+        self.max_priority
+            .store(u32::from(max_priority), Ordering::Relaxed);
+        let priority = Priority::try_from(self.priority.load(Ordering::Relaxed)).unwrap();
+        if priority.outranks(max_priority) || matches!(base, BasePriority::Set) {
+            self.priority
+                .store(u32::from(max_priority), Ordering::Relaxed);
+        }
+        self.compute_priority();
     }
 
     /// Sets its base priority, while it runs.

@@ -156,6 +156,15 @@ impl TryFrom<u32> for Priority {
     }
 }
 
+/// What a new cap does to a base priority.
+#[derive(Clone, Copy)]
+pub enum BasePriority {
+    /// Sets it to the cap.
+    Set,
+    /// Lowers it to the cap if it outranks the cap.
+    Capped,
+}
+
 /// The processors waiting for the action thread to shut them down or move
 /// them to another set, a bit for each CPU: set with Release, taken with
 /// Acquire.

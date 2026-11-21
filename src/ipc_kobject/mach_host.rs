@@ -8,13 +8,15 @@ use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 
-use super::mig::{self, StringC};
+use super::mig::{self, Boolean, StringC};
 use crate::error::Error;
 use crate::host::{self, HOST, Host};
 use crate::ipc::MessageType;
 use crate::ipc::port::Port;
 use crate::processor::{DEFAULT_SET, ProcessorSet};
 use crate::reference::Reference;
+use crate::sched::{BasePriority, Priority};
+use crate::task::{self, Task, Threads};
 use crate::{clock, ipc_host, machine};
 
 mig::subsystem! {
@@ -30,6 +32,13 @@ mig::subsystem! {
     43 host_get_time64(host = ipc_host::host) -> (current_time: TimeValue64);
     46 host_get_kernel_version(host = ipc_host::host) -> (kernel_version: StringC<512>);
     47 host_get_uptime64(host = ipc_host::host) -> (uptime: TimeValue64);
+    49 task_max_priority(
+        host: Port,
+        task = task::of,
+        max_priority: i32,
+        set_priority: Boolean,
+        change_threads: Boolean
+    );
 }
 
 /// Mach's `rpc_time_value_t`, as MIG carries it.
@@ -224,4 +233,42 @@ fn host_get_uptime64(host: Option<&&Host>) -> Result<TimeValue64, Error> {
         seconds: uptime.seconds,
         nanoseconds: uptime.nanoseconds,
     })
+}
+
+/// Serves `task_max_priority`: caps `task`'s priority at `max_priority`
+/// for `host`; its priority set to the cap for `set_priority`, its threads'
+/// too for `change_threads`.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no task or a priority past the lowest; as
+/// `Task::set_max_priority`.
+///
+/// # Panics
+///
+/// As `Task::set_max_priority`.
+fn task_max_priority(
+    host: &Port,
+    task: Option<&Task>,
+    max_priority: i32,
+    set_priority: Boolean,
+    change_threads: Boolean,
+) -> Result<(), Error> {
+    let Some(task) = task else {
+        return Err(Error::InvalidArgument);
+    };
+    let max_priority = u32::try_from(max_priority)
+        .map_err(|_| Error::InvalidArgument)
+        .and_then(Priority::try_from)?;
+    let base = if bool::from(set_priority) {
+        BasePriority::Set
+    } else {
+        BasePriority::Capped
+    };
+    let threads = if bool::from(change_threads) {
+        Threads::Changed
+    } else {
+        Threads::Kept
+    };
+    task.set_max_priority(host, max_priority, base, threads)
 }

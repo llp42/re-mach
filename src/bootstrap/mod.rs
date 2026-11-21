@@ -18,9 +18,9 @@ use crate::host::HOST;
 use crate::ipc::port::{Port, PortName};
 use crate::ipc::{MessageType, mach_port};
 use crate::reference::Reference;
-use crate::sched::{self, Event, USER_PRIORITY};
+use crate::sched::{self, BasePriority, Event, USER_PRIORITY};
 use crate::sync::Spinlock;
-use crate::task::{self, Memory, Task};
+use crate::task::{self, Memory, Task, Threads};
 use crate::thread::{MachineThread as _, Thread};
 use crate::vm::map::{Change, Map, Placement};
 use crate::vm::object::Offset;
@@ -146,7 +146,8 @@ fn create_task(path: &str) -> &'static Task {
     // SAFETY: the host's slots keep their ports' references for good.
     let host = unsafe { HOST.port.load(Ordering::Acquire).as_ref() }
         .expect("boot_script_task_create: no host port");
-    task.set_max_priority(host, USER_PRIORITY);
+    task.set_max_priority(host, USER_PRIORITY, BasePriority::Set, Threads::Changed)
+        .unwrap_or_else(|error| panic!("boot_script_task_create: task_max_priority: {error:?}"));
     task
 }
 
