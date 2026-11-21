@@ -194,9 +194,9 @@ impl KernelMessage {
                     word = (word & !(0xffff << 8)) | (32 << 8);
                     match names {
                         // SAFETY: out-of-line ports enter a message only through
-                        // MIG's `PortArray::into_parts`: kalloc memory of
-                        // `count` ports' exposed addresses, which the message
-                        // alone holds.
+                        // `copy_in_body` or MIG's `PortArray::into_parts`:
+                        // kalloc memory of `count` ports' exposed addresses,
+                        // which the message alone holds.
                         Some((array, _)) => unsafe {
                             slice::from_raw_parts_mut(array.as_ptr(), count)
                         },
@@ -251,8 +251,8 @@ impl KernelMessage {
                         );
                     }
                     // SAFETY: from `kalloc::allocate(length)`, as
-                    // `PortArray::new` asks, and not used again: the slot is
-                    // overwritten below.
+                    // `copy_in_body` takes it and `PortArray::new` asks, and
+                    // not used again: the slot is overwritten below.
                     unsafe { kalloc::free(array.cast(), length) };
                     address
                 } else {

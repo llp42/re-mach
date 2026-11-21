@@ -205,6 +205,88 @@ pub(super) fn copy_in(state: &SpaceState, name: PortName) -> Reference<Port> {
     port
 }
 
+/// Moves a send right out of `name`'s entry, in the write-locked, alive
+/// space of state `state`, as `ipc_right_copyin` does for
+/// `MACH_MSG_TYPE_MOVE_SEND`: gives the right with its reference. The
+/// entry's last user reference gives the entry's own, leaving the entry no
+/// rights, out of the reverse map, for the caller to free; another makes
+/// the port a new send right and reference.
+///
+/// # Panics
+///
+/// If the space is dead, `name` has no entry, the entry has no user
+/// references or no port, or its port no send right. If the entry is a dead
+/// name or holds no send right, its port died, or its last user reference
+/// is also a receive right's or has a dead-name or message-accepted
+/// request: not yet.
+pub(super) fn move_send(state: &mut SpaceState, name: PortName) -> Reference<Port> {
+    assert!(state.active, "ipc_right_copyin: a dead space");
+    let entry = state.lookup(name).expect("ipc_right_copyin: no entry");
+    let rights = entry.bits.rights;
+    assert!(
+        !rights.contains(Rights::DEAD_NAME),
+        "ipc_right_copyin: move_dead, not yet"
+    );
+    // Dead send-once rights pass here, for `check`.
+    assert!(
+        rights.intersects(Rights::SEND | Rights::SEND_ONCE),
+        "ipc_right_copyin: KERN_INVALID_RIGHT, not yet"
+    );
+    assert!(
+        entry.bits.user_references > 0,
+        "ipc_right_copyin: no user references"
+    );
+    let Some(mut port_state) = check(state, entry) else {
+        panic!("ipc_right_check: the port died, its entry to a dead name, move_dead, not yet");
+    };
+    assert!(
+        rights.contains(Rights::SEND),
+        "ipc_right_copyin: a send-once right, KERN_INVALID_RIGHT, not yet"
+    );
+    assert!(
+        port_state.send_rights > 0,
+        "ipc_right_copyin: a port with no send right"
+    );
+    if entry.bits.user_references == 1 {
+        assert!(
+            !rights.contains(Rights::RECEIVE),
+            "ipc_right_copyin: a send and receive right's last user reference, not yet"
+        );
+        // ipc_right_dncancel_macro.
+        assert!(entry.request == 0, "ipc_right_dncancel, not yet");
+        assert!(
+            !entry.bits.message_accepted,
+            "ipc_right_copyin: ipc_marequest_cancel, not yet"
+        );
+        drop(port_state);
+        let SpaceState {
+            map, reverse_map, ..
+        } = state;
+        let entry = map.get_mut(name.key()).expect("ipc_right_copyin: no entry");
+        let Some(Object::Port(port)) = entry.object.take() else {
+            panic!("ipc_right_copyin: a send right with no port");
+        };
+        reverse_map.remove(key(&port));
+        entry.bits.rights.remove(Rights::SEND);
+        entry.bits.user_references = 0;
+        port
+    } else {
+        port_state.send_rights += 1;
+        let Some(Object::Port(port)) = &entry.object else {
+            panic!("ipc_right_copyin: a send right with no port");
+        };
+        let port = port.clone();
+        drop(port_state);
+        state
+            .map
+            .get_mut(name.key())
+            .expect("ipc_right_copyin: no entry")
+            .bits
+            .user_references -= 1;
+        port
+    }
+}
+
 /// Makes a send right from the receive right of `name`'s entry, in the
 /// write-locked, alive `space` of state `state`, as `ipc_right_copyin` does
 /// for `MACH_MSG_TYPE_MAKE_SEND`: gives the port's new send right with its

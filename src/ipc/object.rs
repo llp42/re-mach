@@ -149,23 +149,28 @@ pub(super) fn allocate_dead_name(space: &Space, name: PortName) -> Result<(), Er
 }
 
 /// Copies in the right `message_type` names from `name` in `space`, as
-/// `ipc_object_copyin` does: gives the port's new right with its reference.
+/// `ipc_object_copyin` does: gives the port's right with its reference; an
+/// entry left with no rights is freed.
 ///
 /// # Panics
 ///
-/// For a type that is not a right. For a right other than a copied or made
-/// send right: not yet. As `right::lookup_write`, `right::copy_in` and
-/// `right::make_send`.
+/// For a type that is not a right. For a right other than a copied, made
+/// or moved send right: not yet. As `right::lookup_write`, `right::copy_in`,
+/// `right::make_send`, `right::move_send` and `SpaceState::deallocate`.
 pub(super) fn copy_in(space: &Space, name: PortName, message_type: MessageType) -> Reference<Port> {
-    let state = right::lookup_write(space, name);
+    let mut state = right::lookup_write(space, name);
     let port = match message_type {
         MessageType::CopySend => right::copy_in(&state, name),
         MessageType::MakeSend => right::make_send(space, &state, name),
-        MessageType::PortSend | MessageType::PortSendOnce | MessageType::MakeSendOnce => {
-            panic!("ipc_right_copyin: MOVE_SEND, MOVE_SEND_ONCE and MAKE_SEND_ONCE, not yet")
+        MessageType::PortSend => right::move_send(&mut state, name),
+        MessageType::PortSendOnce | MessageType::MakeSendOnce => {
+            panic!("ipc_right_copyin: MOVE_SEND_ONCE and MAKE_SEND_ONCE, not yet")
         }
         _ => panic!("ipc_right_copyin: strange rights"),
     };
+    if state.lookup(name).is_none() {
+        state.deallocate(name);
+    }
     drop(state);
     port
 }

@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Copying a message in: from the user, then the sender's rights and memory.
 
-use core::ptr;
+use core::{ptr, slice};
 
 use super::KernelMessage;
 use super::header::{Header, MessageBits};
@@ -12,10 +12,11 @@ use crate::error::Error;
 use crate::ipc::port::{KernelObject, Port, PortName};
 use crate::ipc::space::Space;
 use crate::ipc::{MessageType, object, right};
+use crate::kalloc;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
-use crate::vm::VirtualAddress;
 use crate::vm::map::{Map, Source};
+use crate::vm::{self, VirtualAddress};
 
 /// A send's status when its destination can't be copied in, as Mach
 /// numbers it.
@@ -209,19 +210,26 @@ impl KernelMessage {
     }
 
     /// Copies in its body's rights from `space` and its out-of-line memory
-    /// from `map`, the sender's, as `ipc_kmsg_copyin_body` does: each inline
-    /// port's name, its 32 bits, becomes the exposed address of its port,
-    /// which the message's right holds, a null name a null port; out-of-line
-    /// memory is copied in, its source kept, and the copy's exposed address
-    /// replaces its address. With neither, the message becomes simple.
+    /// from `map`, the sender's, as `ipc_kmsg_copyin_body` does: each port's
+    /// name, its 32 bits, becomes the exposed address of its port, which the
+    /// message's right holds, a null name a null port; out of line, the names
+    /// come into kalloc memory, 64 bits each, whose address replaces theirs,
+    /// and the user's array is deallocated if asked; out-of-line memory is
+    /// copied in, its source kept, and the copy's exposed address replaces
+    /// its address. With neither, the message becomes simple.
     ///
     /// # Panics
     ///
-    /// If a type is invalid or the body too small, ports are out of line,
-    /// out-of-line memory is empty or to be deallocated, or goes to a port
-    /// that takes it as page lists, a right is not a copied or made send
-    /// right, or a name is dead: not yet. As `object::copy_in` and
-    /// `Map::copy_in`.
+    /// If a type is invalid or the body too small, an out-of-line array holds
+    /// no ports or its names can't be copied in, out-of-line memory is empty
+    /// or to be deallocated, or goes to a port that takes it as page lists, a
+    /// right is not a copied, made or moved send right, or a name is dead: not
+    /// yet. As `kalloc::allocate`, `vm::user::deallocate`, `object::copy_in`
+    /// and `Map::copy_in`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "ipc_kmsg_copyin_body's steps, in GNU Mach's order"
+    )]
     pub(in crate::ipc) fn copy_in_body(&mut self, space: &Space, map: &Map) {
         // SAFETY: copied in, the destination is a port's exposed address, and
         // the message holds a reference to it.
@@ -267,46 +275,93 @@ impl KernelMessage {
                 "ipc_kmsg_copyin_body: MACH_SEND_MSG_TOO_SMALL, not yet"
             );
             let data = offset;
+            // Out-of-line ports' array, in kernel memory.
+            let mut array = None;
             if inline {
                 offset += length;
             } else {
-                assert!(!port, "ipc_kmsg_copyin_body: out-of-line ports, not yet");
                 let address = usize::from_le_bytes(message[data..data + 8].try_into().unwrap());
-                assert!(
-                    length != 0,
-                    "ipc_kmsg_copyin_body: empty out-of-line memory, not yet"
-                );
-                assert!(
-                    !page_lists,
-                    "ipc_kmsg_copyin_body: vm_map_copyin_page_list, not yet"
-                );
                 // msgt_deallocate, bit 31.
-                assert!(
-                    word & (1 << 31) == 0,
-                    "ipc_kmsg_copyin_body: vm_map_copyin destroying its source, not yet"
-                );
-                let copy = map.copy_in(
-                    VirtualAddress::from(address)
-                        ..VirtualAddress::from(address.wrapping_add(length)),
-                    Source::Keep,
-                );
-                let copy = CacheBox::into_raw(copy).as_ptr().expose_provenance();
-                message[data..data + 8].copy_from_slice(&copy.to_le_bytes());
+                let deallocate = word & (1 << 31) != 0;
+                let copied = if port {
+                    // Names are 32 bits, ports 64: msgt_size becomes 64.
+                    word = (word & !(0xffff << 8)) | (64 << 8);
+                    let count = usize::try_from(number).unwrap();
+                    assert!(
+                        count != 0,
+                        "ipc_kmsg_copyin_body: no out-of-line ports, not yet"
+                    );
+                    let names_length = length;
+                    let length = count * size_of::<usize>();
+                    let buffer = kalloc::allocate(length).unwrap_or_else(|error| {
+                        panic!(
+                            "ipc_kmsg_copyin_body: kalloc: {error:?}, MACH_SEND_INVALID_MEMORY, not yet"
+                        )
+                    });
+                    // SAFETY: `length` bytes, ours alone, zeroed before the
+                    // slice is made.
+                    let ports = unsafe {
+                        buffer.write_bytes(0, length);
+                        slice::from_raw_parts_mut(buffer.as_ptr(), length)
+                    };
+                    // The names in one copy, then widened in place from the
+                    // back, where each is read before its slot is written.
+                    assert!(
+                        arch::Current::copy_in(address, &mut ports[..names_length]).is_ok(),
+                        "ipc_kmsg_copyin_body: copyin_port, MACH_SEND_INVALID_MEMORY, not yet"
+                    );
+                    for index in (0..count).rev() {
+                        let name =
+                            u32::from_le_bytes(ports[index * 4..index * 4 + 4].try_into().unwrap());
+                        ports[index * 8..index * 8 + 8]
+                            .copy_from_slice(&u64::from(name).to_le_bytes());
+                    }
+                    if deallocate {
+                        vm::user::deallocate(map, VirtualAddress::from(address), names_length);
+                    }
+                    array = Some(ports);
+                    buffer.as_ptr().expose_provenance()
+                } else {
+                    assert!(
+                        length != 0,
+                        "ipc_kmsg_copyin_body: empty out-of-line memory, not yet"
+                    );
+                    assert!(
+                        !page_lists,
+                        "ipc_kmsg_copyin_body: vm_map_copyin_page_list, not yet"
+                    );
+                    assert!(
+                        !deallocate,
+                        "ipc_kmsg_copyin_body: vm_map_copyin destroying its source, not yet"
+                    );
+                    let copy = map.copy_in(
+                        VirtualAddress::from(address)
+                            ..VirtualAddress::from(address.wrapping_add(length)),
+                        Source::Keep,
+                    );
+                    CacheBox::into_raw(copy).as_ptr().expose_provenance()
+                };
+                message[data..data + 8].copy_from_slice(&copied.to_le_bytes());
                 offset += 8;
                 complex = true;
             }
             if port {
-                let Ok(message_type @ (MessageType::CopySend | MessageType::MakeSend)) =
-                    MessageType::try_from(name)
+                let Ok(
+                    message_type @ (MessageType::CopySend
+                    | MessageType::MakeSend
+                    | MessageType::PortSend),
+                ) = MessageType::try_from(name)
                 else {
                     panic!(
-                        "ipc_kmsg_copyin_body: type {name}, MOVE_ and MAKE_SEND_ONCE rights, not yet"
+                        "ipc_kmsg_copyin_body: type {name}, MOVE_RECEIVE, MOVE_SEND_ONCE and MAKE_SEND_ONCE rights, not yet"
                     );
                 };
                 // As ipc_object_copyin_type.
                 word = (word & !0xff) | u64::from(MessageType::PortSend.number());
                 message[place..place + 8].copy_from_slice(&word.to_le_bytes());
-                for slot in message[data..offset].as_chunks_mut::<8>().0 {
+                // Inline, else in the out-of-line array.
+                let ports = array.unwrap_or_else(|| &mut message[data..offset]);
+                for slot in ports.as_chunks_mut::<8>().0 {
                     // Only a name's 32 bits count.
                     let port_name =
                         PortName::from(u32::from_le_bytes(slot[..4].try_into().unwrap()));
