@@ -70,11 +70,11 @@ mig::subsystem! {
 /// # Errors
 ///
 /// `InvalidArgument` for no task or a flavor Mach lacks; as
-/// `Task::basic_info`.
+/// `Task::basic_info` and `Task::events_info`.
 ///
 /// # Panics
 ///
-/// For `TASK_EVENTS_INFO` and `TASK_THREAD_TIMES_INFO`: not yet.
+/// For `TASK_THREAD_TIMES_INFO`: not yet.
 fn task_info(
     task: Option<&Reference<Task>>,
     flavor: i32,
@@ -86,7 +86,7 @@ fn task_info(
     // TASK_BASIC_INFO, TASK_EVENTS_INFO, TASK_THREAD_TIMES_INFO.
     match flavor {
         1 => task.basic_info(info),
-        2 => panic!("task_info: TASK_EVENTS_INFO, not yet"),
+        2 => task.events_info(info),
         3 => panic!("task_info: TASK_THREAD_TIMES_INFO, not yet"),
         _ => Err(Error::InvalidArgument),
     }

@@ -154,6 +154,18 @@ struct BasicInfo {
     creation_time64: TimeValue64,
 }
 
+/// Mach's `task_events_info`: 14 words.
+#[repr(C)]
+struct EventsInfo {
+    faults: usize,
+    zero_fills: usize,
+    reactivations: usize,
+    pageins: usize,
+    cow_faults: usize,
+    messages_sent: usize,
+    messages_received: usize,
+}
+
 impl Task {
     /// A new task with no parent, over a new map of user space and its own
     /// physical map, made as `create_with_map` makes it.
@@ -422,6 +434,35 @@ impl Task {
         let words = unsafe { slice::from_raw_parts(ptr::from_ref(&basic).cast::<i32>(), written) };
         info[..written].copy_from_slice(words);
         Ok(info.len().min(count))
+    }
+
+    /// Writes its event counts into `info`, as `task_info`'s
+    /// `TASK_EVENTS_INFO` does; `info`'s length is the count asked for.
+    /// Gives the count written.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` for a count short of the record.
+    pub(super) fn events_info(&self, info: &mut [i32]) -> Result<usize, Error> {
+        let count = size_of::<EventsInfo>() / size_of::<i32>();
+        if info.len() < count {
+            return Err(Error::InvalidArgument);
+        }
+        // Counted without its token, so read without it.
+        let events = EventsInfo {
+            faults: self.faults.load(Ordering::Relaxed),
+            zero_fills: self.zero_fills.load(Ordering::Relaxed),
+            // Counted only by page eviction: not yet.
+            reactivations: 0,
+            pageins: self.pageins.load(Ordering::Relaxed),
+            cow_faults: self.cow_faults.load(Ordering::Relaxed),
+            messages_sent: self.messages_sent.load(Ordering::Relaxed),
+            messages_received: self.messages_received.load(Ordering::Relaxed),
+        };
+        // SAFETY: `count` words of integers, `repr(C)` with no padding.
+        let words = unsafe { slice::from_raw_parts(ptr::from_ref(&events).cast::<i32>(), count) };
+        info[..count].copy_from_slice(words);
+        Ok(count)
     }
 
     /// Caps its priority at `max_priority`, as the boot script does with
