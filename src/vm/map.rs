@@ -974,8 +974,8 @@ impl Map {
     /// the splits at the range's ends need more than four. If `range` is
     /// empty or wraps, starts where no entry is, holds a hole, or an entry
     /// there doesn't allow reading or is a submap; if an object is not
-    /// temporary; for `Source::Keep`, if an entry is wired or has no object:
-    /// not yet. As `Contents::clip_start`, `Contents::clip_end`,
+    /// temporary; for `Source::Keep`, if an entry is wired: not yet. As
+    /// `Contents::clip_start`, `Contents::clip_end`,
     /// `MachinePhysMap::protect` and `Map::delete`.
     pub fn copy_in(&self, range: Range<VirtualAddress>, source: Source) -> CacheBox<MapCopy> {
         assert!(
@@ -1319,8 +1319,8 @@ impl Map {
     /// # Panics
     ///
     /// For a submap, as GNU Mach. If the map or an entry can't be allocated,
-    /// or an entry is not inherited, is wired, has no object or holds an
-    /// object that is not temporary: not yet. As `MachinePhysMap::protect`.
+    /// or an entry is not inherited, is wired or holds an object that is not
+    /// temporary: not yet. As `MachinePhysMap::protect`.
     pub fn fork(&self) -> Result<CacheBox<Self>, Error> {
         let phys_map = PhysMap::create()?;
         // Allocated before the lock; the bounds never change.
@@ -1381,17 +1381,20 @@ impl Map {
     /// `new` takes another reference, both need a copy, and the map's
     /// mappings of `entry` stop allowing writing, as
     /// `vm_object_pmap_protect`. Gives whether it could; nothing changes for
-    /// an object that is not temporary.
+    /// an object that is not temporary. With no object, `new` has none
+    /// either and needs no copy.
     ///
     /// # Panics
     ///
-    /// If `entry` has no object: not yet. As `MachinePhysMap::protect`.
+    /// As `MachinePhysMap::protect`.
     fn copy_temporary(&self, entry: &Entry, new: &Entry) -> bool {
         let Backing::Object { object, .. } = &entry.backing else {
             panic!("vm_object_copy_temporary: a submap");
         };
-        let object = NonNull::new(object.load(Ordering::Relaxed))
-            .unwrap_or_else(|| panic!("vm_object_copy_temporary: VM_OBJECT_NULL, not yet"));
+        let Some(object) = NonNull::new(object.load(Ordering::Relaxed)) else {
+            new.needs_copy.store(false, Ordering::Relaxed);
+            return true;
+        };
         // SAFETY: the entry holds a reference on its object, or it is the
         // kernel object, whose own reference never drops; this handle borrows
         // it and never drops it.
