@@ -1185,12 +1185,11 @@ impl Thread {
 
     /// Stops it once more for users, as `thread_suspend` does: the first
     /// stop suspends it, and the current thread blocks on its way out of the
-    /// kernel.
+    /// kernel; another is waited for until it stops.
     ///
     /// # Panics
     ///
-    /// If it waits uninterruptibly, or is another thread the first stop
-    /// must wait for: not yet.
+    /// If it waits uninterruptibly: not yet. As `wait_until_stopped`.
     pub(super) fn suspend(&self) {
         let section = CriticalSection::enter();
         assert!(
@@ -1205,14 +1204,17 @@ impl Thread {
         if !first {
             return;
         }
-        let _section = CriticalSection::enter();
+        let section = CriticalSection::enter();
         let cpu = smp::current();
-        assert!(
-            cpu.active_thread()
-                .is_some_and(|current| ptr::eq(current, self)),
-            "thread_suspend: thread_dowait, not yet"
-        );
-        cpu.add_asts(Ast::BLOCK);
+        if cpu
+            .active_thread()
+            .is_some_and(|current| ptr::eq(current, self))
+        {
+            cpu.add_asts(Ast::BLOCK);
+        } else {
+            drop(section);
+            self.wait_until_stopped();
+        }
     }
 
     /// Lifts one stop users asked for, and the suspension it holds; a thread
