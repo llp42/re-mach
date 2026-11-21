@@ -47,6 +47,7 @@ mig::subsystem! {
     );
     27 vm_write(target_task = task::map_of, address: VirtualAddress, data: OutOfLine<u8>);
     56 task_suspend(target_task = task::of);
+    57 task_resume(target_task = task::of);
     59 task_set_special_port(task = task::of, which_port: i32, special_port: SendRight);
     61 thread_create(parent_task = task::of) -> (child_thread: Port);
     62 thread_suspend(target_thread = thread::of);
@@ -341,6 +342,22 @@ fn task_suspend(task: Option<&Reference<Task>>) -> Result<(), Error> {
     };
     task.suspend();
     Ok(())
+}
+
+/// Serves `task_resume`: lifts one stop users asked for on `task`.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no task; as `Task::resume`.
+///
+/// # Panics
+///
+/// As `Task::resume`.
+fn task_resume(task: Option<&Reference<Task>>) -> Result<(), Error> {
+    let Some(task) = task else {
+        return Err(Error::InvalidArgument);
+    };
+    task.resume()
 }
 
 /// Serves `task_set_special_port`: `task`'s special port numbered
