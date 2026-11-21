@@ -4,6 +4,7 @@
 //! MIG's server stubs, generated from a subsystem's routines.
 
 use core::marker::PhantomData;
+use core::ptr::NonNull;
 
 use crate::ipc::MessageType;
 use crate::ipc::kernel_message::Header;
@@ -129,6 +130,41 @@ impl<T: Element> OutOfLine<T> {
     /// The copy holding it.
     pub(super) fn into_copy(self) -> CacheBox<MapCopy> {
         self.copy
+    }
+}
+
+/// An out-of-line array of send rights a routine gives: kalloc memory of
+/// its ports' exposed addresses, each holding its right's reference; none
+/// for no ports.
+pub(super) struct PortArray(Option<NonNull<[usize]>>);
+
+impl PortArray {
+    /// The send rights in `ports`.
+    ///
+    /// # Safety
+    ///
+    /// `ports`, if any, came from `kalloc::allocate` of its size, and holds
+    /// the exposed addresses of references to ports given up by `into_raw`,
+    /// which it takes.
+    pub(super) const unsafe fn new(ports: Option<NonNull<[usize]>>) -> Self {
+        Self(ports)
+    }
+
+    /// Its type word, and the array's address, which the reply takes.
+    ///
+    /// # Panics
+    ///
+    /// If the count is past 32 bits.
+    pub(super) fn into_parts(self) -> (u64, usize) {
+        let count = u32::try_from(self.0.map_or(0, NonNull::len)).unwrap();
+        // Send rights of 64 bits, out of line, in the long form, as
+        // _Xtask_threads.
+        (
+            word(MessageType::PortSend, 64, 1 << 6, count),
+            self.0.map_or(0, |ports| {
+                ports.cast::<usize>().as_ptr().expose_provenance()
+            }),
+        )
     }
 }
 
@@ -391,6 +427,12 @@ macro_rules! subsystem {
             [$($($rest)*)?]
         );
     };
+    // An out-of-line array of send rights out.
+    (@sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*] [] [$out:ident: PortArray]) => {
+        $crate::ipc_kobject::mig::subsystem!(
+            @sort $name $head [$($ins)*] [$($outs)* ($out port_array)] [] []
+        );
+    };
     // A send right out.
     (@sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*] [] [$out:ident: Port]) => {
         $crate::ipc_kobject::mig::subsystem!(
@@ -469,7 +511,8 @@ macro_rules! subsystem {
                 let $request_port =
                     unsafe { &*ptr::with_exposed_provenance::<Port>($request.header.remote_port) };
                 // SAFETY: `Reply` is `repr(C)`, a `ReplyHeader`, then `Inline` or
-                // `Element` data, or copies' or ports' addresses, only.
+                // `Element` data, or copies', ports' or port arrays' addresses,
+                // only.
                 let $reply = unsafe { reply.layout_mut::<Reply>() };
                 // The intrans' values and the rights drop right after the call.
                 let result: Result<
@@ -577,6 +620,7 @@ macro_rules! subsystem {
     (@field reply count $element:ty, $max:literal) => { mig::Argument<[$element; $max]> };
     (@field reply out_of_line $element:ty) => { mig::Argument<usize> };
     (@field reply send_right) => { mig::Argument<usize> };
+    (@field reply port_array) => { mig::Argument<usize> };
     // Its check: the word, whole, or the bits its kind checks.
     (@check $request:ident $in:ident send_right $($intran:path)?) => {
         $request.$in.word == mig::type_word($crate::ipc::MessageType::PortSend, 64, 1)
@@ -618,12 +662,13 @@ macro_rules! subsystem {
         &$in[..usize::try_from($request.$in.word >> 32).unwrap()]
     };
     // What the routine gives: the data; for a count array, how many it
-    // filled; for an out-of-line array, its copy; for a send right, its
-    // port's reference.
+    // filled; for an out-of-line array, its copy; for an array of send
+    // rights, its memory; for a send right, its port's reference.
     (@value inline $type:ty) => { $type };
     (@value count $element:ty, $max:literal) => { usize };
     (@value out_of_line $element:ty) => { mig::OutOfLine<$element> };
     (@value send_right) => { $crate::reference::Reference<$crate::ipc::port::Port> };
+    (@value port_array) => { mig::PortArray };
     // The routine's success: nothing, its out, or its outs.
     (@type) => { () };
     (@type $value:ty) => { $value };
@@ -670,6 +715,12 @@ macro_rules! subsystem {
         $reply.head.header.bits = $reply.head.header.bits.with_complex();
         ($reply.$out.word, $reply.$out.data) = $out.into_parts();
     };
+    // An array of send rights makes the reply complex; its word, then its
+    // memory.
+    (@pack $reply:ident $out:ident port_array) => {
+        $reply.head.header.bits = $reply.head.header.bits.with_complex();
+        ($reply.$out.word, $reply.$out.data) = $out.into_parts();
+    };
     // A send right makes the reply complex; its word, then its port, whose
     // reference the reply takes.
     (@pack $reply:ident $out:ident send_right) => {
@@ -682,6 +733,7 @@ macro_rules! subsystem {
     // The reply's size: whole; with a count array, the elements used, padded to 8 bytes.
     (@size $out:ident inline $type:ty) => { size_of::<Reply>() };
     (@size $out:ident send_right) => { size_of::<Reply>() };
+    (@size $out:ident port_array) => { size_of::<Reply>() };
     (@size $out:ident count $element:ty, $max:literal) => {
         core::mem::offset_of!(Reply, $out.data) + (size_of::<$element>() * $out).next_multiple_of(8)
     };

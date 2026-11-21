@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Tasks: an address space, a name space for ports, and threads.
 
-use core::mem::{self, ManuallyDrop};
+use core::mem::{self, ManuallyDrop, MaybeUninit};
 use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
@@ -17,6 +17,7 @@ use crate::clock::time::{AtomicTimeValue, TimeValue};
 use crate::error::Error;
 use crate::ipc::port::{KernelObject, Port, SendRight};
 use crate::ipc::space::Space;
+use crate::kalloc;
 use crate::name::Name;
 use crate::processor::{DEFAULT_SET, ProcessorSet};
 use crate::reference::{Count, Counted, Reference};
@@ -281,6 +282,78 @@ impl Task {
         drop(ports);
         // As ipc_port_release_send.
         drop(old);
+    }
+
+    /// Gives send rights for its threads' ports, in the order it took them,
+    /// as `task_threads` does: a kalloc array of the ports' exposed
+    /// addresses, each holding its right's reference, sized with its token
+    /// released; none for no threads.
+    ///
+    /// # Errors
+    ///
+    /// As `kalloc::allocate`.
+    ///
+    /// # Panics
+    ///
+    /// If it is not alive, a thread is being freed, or threads left while
+    /// the array was allocated: not yet. As `Thread::convert_to_port`.
+    pub(super) fn thread_ports(&self) -> Result<Option<NonNull<[usize]>>, Error> {
+        let mut array: Option<NonNull<[usize]>> = None;
+        // Allocated with the token released, until it holds every thread.
+        let members = loop {
+            let members = self.members.lock();
+            assert!(members.active, "task_threads: an inactive task, not yet");
+            let count = usize::try_from(members.thread_count).unwrap();
+            if count <= array.map_or(0, NonNull::len) {
+                break members;
+            }
+            drop(members);
+            if let Some(array) = array {
+                // SAFETY: from `kalloc::allocate` of its size, below; not used
+                // again.
+                unsafe { kalloc::free(array.cast(), array.len() * size_of::<usize>()) };
+            }
+            let memory = kalloc::allocate(count * size_of::<usize>())?;
+            array = Some(NonNull::slice_from_raw_parts(memory.cast(), count));
+        };
+        let Some(array) = array else {
+            drop(members);
+            return Ok(None);
+        };
+        assert!(
+            usize::try_from(members.thread_count) == Ok(array.len()),
+            "task_threads: fewer threads than the array holds, not yet"
+        );
+        // SAFETY: the array's slots, ours alone.
+        let slots = unsafe {
+            slice::from_raw_parts_mut(array.cast::<MaybeUninit<usize>>().as_ptr(), array.len())
+        };
+        // A reference to each thread, for its port.
+        for (slot, thread) in slots.iter_mut().zip(&members.threads) {
+            // SAFETY: a thread leaves its task before it is freed.
+            let thread = unsafe { Reference::upgrade(NonNull::from(thread)) }
+                .expect("task_threads: a thread being freed, not yet");
+            slot.write(Reference::into_raw(thread).as_ptr().expose_provenance());
+        }
+        drop(members);
+        // Each thread's reference becomes its port's, as
+        // convert_thread_to_port.
+        for slot in slots {
+            // SAFETY: written above with a thread's reference given up by
+            // `into_raw`, which the handle takes, as the slot is overwritten
+            // below.
+            let thread = unsafe {
+                Reference::from_raw(
+                    NonNull::new(ptr::with_exposed_provenance_mut::<Thread>(
+                        slot.assume_init_read(),
+                    ))
+                    .unwrap(),
+                )
+            };
+            let port = Thread::convert_to_port(thread);
+            slot.write(Reference::into_raw(port).as_ptr().expose_provenance());
+        }
+        Ok(Some(array))
     }
 
     /// Stops it once more for users: the first stop suspends it, holding its

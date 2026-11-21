@@ -19,8 +19,8 @@ use crate::kalloc;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
 use crate::sync::CpuLocal;
-use crate::vm::VirtualAddress;
-use crate::vm::map::{COPY_CACHE, Map, MapCopy, Source};
+use crate::vm::map::{COPY_CACHE, Map, MapCopy, Placement, Source};
+use crate::vm::{self, VirtualAddress};
 
 /// A message's header, in Mach's layout. Its ports are names as the user
 /// sent them, then, once copied in, ports' exposed addresses.
@@ -617,16 +617,21 @@ impl KernelMessage {
     }
 
     /// Copies its body out to its receiver, as `ipc_kmsg_copyout_body`
-    /// does: each inline send right moves into `space`, and its name there
-    /// replaces its port; out-of-line memory moves into `map`, and its
-    /// address replaces its copy.
+    /// does: each send right moves into `space`, and its name there replaces
+    /// its port inline, or goes out of line to memory allocated in `map`,
+    /// whose address replaces the ports' array; out-of-line memory moves
+    /// into `map`, and its address replaces its copy.
     ///
     /// # Panics
     ///
-    /// If an item carries rights other than inline send rights, a port is
-    /// null or dead, a right can't be copied out, out-of-line data is empty,
-    /// or its memory can't be copied out: not yet. As `object::copy_out` and
-    /// `Map::copy_out`.
+    /// If an item carries rights other than send rights, a port is null or
+    /// dead, a right can't be copied out, out-of-line data is empty, or its
+    /// memory can't be allocated or copied out: not yet. As
+    /// `object::copy_out` and `Map::copy_out`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "ipc_kmsg_copyout_body's steps, in GNU Mach's order"
+    )]
     pub(super) fn copy_out_body(&mut self, space: &Space, map: &Map) {
         let end = usize::try_from(self.header().size).unwrap();
         let message = self.message_mut();
@@ -642,14 +647,47 @@ impl KernelMessage {
             let length = usize::try_from((number * u64::from(size)).div_ceil(8)).unwrap();
             // msgt_inline, bit 29.
             let inline = word & (1 << 29) != 0;
+            let count = usize::try_from(number).unwrap();
+            // Out-of-line ports' array, and the memory their names go to.
+            let mut names = None;
             // MACH_MSG_TYPE_PORT_ANY: from MOVE_RECEIVE to MAKE_SEND_ONCE.
             if (16..=21).contains(&name) {
-                assert!(inline, "ipc_kmsg_copyout_body: out-of-line ports, not yet");
                 assert!(
                     name == MessageType::PortSend.number(),
                     "ipc_kmsg_copyout_object: type {name}, not yet"
                 );
-                for slot in message[offset..offset + length].as_chunks_mut::<8>().0 {
+                let slots = if inline {
+                    message[offset..offset + length].as_chunks_mut::<8>().0
+                } else {
+                    let data =
+                        usize::from_le_bytes(message[offset..offset + 8].try_into().unwrap());
+                    if length != 0 {
+                        // First the names' memory in `map`, 32 bits each.
+                        let address =
+                            vm::user::allocate(map, Placement::Anywhere, count * size_of::<u32>())
+                                .unwrap_or_else(|error| {
+                                    panic!(
+                                        "ipc_kmsg_copyout_body: vm_allocate: {error:?}, vm_copyout_failure, not yet"
+                                    )
+                                });
+                        let array = NonNull::new(ptr::with_exposed_provenance_mut::<[u8; 8]>(data))
+                            .unwrap();
+                        names = Some((array, address));
+                    }
+                    // Out-of-line ports go out as names: msgt_size 32.
+                    word = (word & !(0xffff << 8)) | (32 << 8);
+                    match names {
+                        // SAFETY: out-of-line ports enter a message only through
+                        // MIG's `PortArray::into_parts`: kalloc memory of
+                        // `count` ports' exposed addresses, which the message
+                        // alone holds.
+                        Some((array, _)) => unsafe {
+                            slice::from_raw_parts_mut(array.as_ptr(), count)
+                        },
+                        None => &mut [],
+                    }
+                };
+                for slot in slots {
                     let address = usize::from_le_bytes(*slot);
                     assert!(
                         !matches!(address, 0 | usize::MAX),
@@ -681,19 +719,39 @@ impl KernelMessage {
                     "ipc_kmsg_copyout_body: empty out-of-line data, not yet"
                 );
                 let data = usize::from_le_bytes(message[offset..offset + 8].try_into().unwrap());
-                let copy = NonNull::new(ptr::with_exposed_provenance_mut::<MapCopy>(data))
-                    .expect("ipc_kmsg_copyout_body: VM_MAP_COPY_NULL, not yet");
-                // SAFETY: out-of-line data enters a message only through
-                // `copy_in_body` or MIG's `OutOfLine::into_parts`: the exposed
-                // address of a `COPY_CACHE` box from `CacheBox::into_raw`,
-                // which the message alone holds; the slot is overwritten
-                // below, so it is taken back once.
-                let copy = unsafe { CacheBox::from_raw(&COPY_CACHE, copy) };
-                let address = match map.copy_out(copy) {
-                    Ok(address) => address,
-                    Err((_, error)) => panic!(
-                        "ipc_kmsg_copyout_body: vm_map_copyout: {error:?}, vm_copyout_failure, not yet"
-                    ),
+                let address = if let Some((array, address)) = names {
+                    // SAFETY: the ports' array, as above, their names in it now.
+                    let slots = unsafe { slice::from_raw_parts(array.as_ptr(), count) };
+                    // Each name's 32 bits, as copyout_port.
+                    for (slot, destination) in slots
+                        .iter()
+                        .zip((usize::from(address)..).step_by(size_of::<u32>()))
+                    {
+                        assert!(
+                            arch::Current::copy_out(&slot[..size_of::<u32>()], destination).is_ok(),
+                            "ipc_kmsg_copyout_body: copyout_port, vm_copyout_failure, not yet"
+                        );
+                    }
+                    // SAFETY: from `kalloc::allocate(length)`, as
+                    // `PortArray::new` asks, and not used again: the slot is
+                    // overwritten below.
+                    unsafe { kalloc::free(array.cast(), length) };
+                    address
+                } else {
+                    let copy = NonNull::new(ptr::with_exposed_provenance_mut::<MapCopy>(data))
+                        .expect("ipc_kmsg_copyout_body: VM_MAP_COPY_NULL, not yet");
+                    // SAFETY: out-of-line data enters a message only through
+                    // `copy_in_body` or MIG's `OutOfLine::into_parts`: the
+                    // exposed address of a `COPY_CACHE` box from
+                    // `CacheBox::into_raw`, which the message alone holds; the
+                    // slot is overwritten below, so it is taken back once.
+                    let copy = unsafe { CacheBox::from_raw(&COPY_CACHE, copy) };
+                    match map.copy_out(copy) {
+                        Ok(address) => address,
+                        Err((_, error)) => panic!(
+                            "ipc_kmsg_copyout_body: vm_map_copyout: {error:?}, vm_copyout_failure, not yet"
+                        ),
+                    }
                 };
                 word |= 1 << 31;
                 message[offset..offset + 8].copy_from_slice(&usize::from(address).to_le_bytes());

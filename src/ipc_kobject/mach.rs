@@ -6,7 +6,7 @@
 
 use core::ptr::{self, NonNull};
 
-use super::mig::{self, Boolean, OutOfLine};
+use super::mig::{self, Boolean, OutOfLine, PortArray};
 use crate::arch;
 use crate::error::Error;
 use crate::ipc::port::{Port, SendRight};
@@ -21,6 +21,7 @@ use crate::vm::{self, Inheritance, Protection, VirtualAddress};
 
 mig::subsystem! {
     base 2000;
+    11 task_threads(target_task = task::of) -> (thread_list: PortArray);
     12 task_info(target_task = task::of, flavor: i32)
         -> (task_info_out: [i32; ..1024], CountInOut);
     16 thread_terminate(target_thread = thread::of);
@@ -62,6 +63,26 @@ mig::subsystem! {
         max_protection: u32,
         inheritance: u32
     ) -> (address: VirtualAddress);
+}
+
+/// Serves `task_threads`: send rights for `task`'s threads' ports, in an
+/// out-of-line array.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no task; as `Task::thread_ports`.
+///
+/// # Panics
+///
+/// As `Task::thread_ports`.
+fn task_threads(task: Option<&Reference<Task>>) -> Result<PortArray, Error> {
+    let Some(task) = task else {
+        return Err(Error::InvalidArgument);
+    };
+    let ports = task.thread_ports()?;
+    // SAFETY: a kalloc array of its size holding ports' exposed addresses,
+    // each with its reference, as `Task::thread_ports` gives it.
+    Ok(unsafe { PortArray::new(ports) })
 }
 
 /// Serves `task_info`: up to `info.len()` integers of `flavor` for `task`;
