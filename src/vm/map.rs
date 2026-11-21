@@ -19,7 +19,6 @@ use super::page;
 use super::phys_map::MachinePhysMap as _;
 use super::{Inheritance, Protection, VirtualAddress, Wire};
 use crate::arch::{PAGE_SIZE, PhysMap};
-use crate::collections::ArrayVec;
 use crate::error::Error;
 use crate::reference::{Count, Counted, Reference};
 use crate::slab::{Cache, CacheBox};
@@ -123,6 +122,14 @@ impl Map {
         contents.size_limit = size;
         contents.max_size_limit = size;
         MAP_CACHE.allocate(map)
+    }
+
+    /// Takes the size limits of `source`, read under its read lock, as
+    /// `task_create` does with `vm_map_copy_limits`.
+    pub fn copy_limits(&mut self, source: &Self) {
+        let limits = source.contents.read();
+        self.contents.get_mut().copy_limits(&limits);
+        drop(limits);
     }
 
     /// Maps `size` bytes of `object` from `offset`, or with nothing behind
@@ -970,10 +977,6 @@ impl Map {
     /// temporary; for `Source::Keep`, if an entry is wired or has no object:
     /// not yet. As `Contents::clip_start`, `Contents::clip_end`,
     /// `MachinePhysMap::protect` and `Map::delete`.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "vm_map_copyin's steps, in GNU Mach's order"
-    )]
     pub fn copy_in(&self, range: Range<VirtualAddress>, source: Source) -> CacheBox<MapCopy> {
         assert!(
             range.start != range.end,
@@ -1015,34 +1018,12 @@ impl Map {
             if end < entry.end() {
                 contents.clip_end(&entry, end, &mut reservation);
             }
-            let Backing::Object { object, offset } = &entry.backing else {
+            let Backing::Object { object, .. } = &entry.backing else {
                 panic!("vm_map_copyin: a submap, not yet");
             };
             let object = object.load(Ordering::Relaxed);
             let wired = entry.wire_count() != 0;
-            // vm_map_entry_copy: unwired, out of transition, no kernel stack,
-            // and needing a copy if the source does.
-            let mut new = reservation.take();
-            *new = Entry {
-                tree_link: RBTreeAtomicLink::new(),
-                gap_link: RBTreeAtomicLink::new(),
-                start: AtomicUsize::new(usize::from(entry.start())),
-                end: AtomicUsize::new(usize::from(entry.end())),
-                gap: AtomicUsize::new(entry.gap.load(Ordering::Relaxed)),
-                gap_sequence: AtomicU64::new(0),
-                protection: AtomicU32::new(entry.protection().bits()),
-                max_protection: AtomicU32::new(entry.max_protection().bits()),
-                inheritance: entry.inheritance,
-                backing: Backing::Object {
-                    object: AtomicPtr::new(object),
-                    offset: AtomicUsize::new(offset.load(Ordering::Relaxed)),
-                },
-                wire_count: AtomicU32::new(0),
-                wired_access: AtomicU32::new(Protection::empty().bits()),
-                in_transition: AtomicBool::new(false),
-                needs_copy: AtomicBool::new(entry.needs_copy.load(Ordering::Relaxed)),
-                kernel_stack: false,
-            };
+            let new = entry.copy(&mut reservation);
             let held = NonNull::new(object).map(|object| {
                 // SAFETY: the entry holds a reference on its object, or it is
                 // the kernel object, whose own reference never drops; this
@@ -1064,24 +1045,10 @@ impl Map {
                 }
             } else {
                 assert!(!wired, "vm_map_copyin: vm_object_copy_slowly, not yet");
-                let object = held
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("vm_object_copy_temporary: VM_OBJECT_NULL, not yet"));
-                let shared = object::copy_temporary(object).unwrap_or_else(|| {
-                    panic!("vm_map_copyin: vm_object_copy_strategically, not yet")
-                });
-                // The copy's entry holds it; both entries shadow the object
-                // before writing.
-                Reference::into_raw(shared);
-                new.needs_copy.store(true, Ordering::Relaxed);
-                if !entry.needs_copy.load(Ordering::Relaxed) {
-                    // vm_object_pmap_protect, over the entry's range.
-                    self.phys_map.protect(
-                        usize::from(entry.start())..usize::from(entry.end()),
-                        entry.protection() - Protection::WRITE,
-                    );
-                    entry.needs_copy.store(true, Ordering::Relaxed);
-                }
+                assert!(
+                    self.copy_temporary(&entry, &new),
+                    "vm_map_copyin: vm_object_copy_strategically, not yet"
+                );
             }
             let copied = new.end();
             let new = CacheBox::into_raw(new).as_ptr();
@@ -1340,6 +1307,112 @@ impl Map {
         Ok(())
     }
 
+    /// A new map of the same bounds over a new physical map, holding a copy
+    /// of each entry as its inheritance says, as `vm_map_fork` makes it: a
+    /// copied entry shares its object with the map until either writes, and
+    /// the map's mappings there stop allowing writing.
+    ///
+    /// # Errors
+    ///
+    /// `ResourceShortage` if the physical map can't be allocated.
+    ///
+    /// # Panics
+    ///
+    /// For a submap, as GNU Mach. If the map or an entry can't be allocated,
+    /// or an entry is not inherited, is wired, has no object or holds an
+    /// object that is not temporary: not yet. As `MachinePhysMap::protect`.
+    pub fn fork(&self) -> Result<CacheBox<Self>, Error> {
+        let phys_map = PhysMap::create()?;
+        // Allocated before the lock; the bounds never change.
+        let mut new = Self::create(phys_map, self.bounds.clone())
+            .unwrap_or_else(|error| panic!("vm_map_fork: {error:?}, pmap_destroy not yet"));
+        // An entry for each, and a few spare, taken before the write lock;
+        // again if the map grew in between.
+        let mut reservation = EntryReservation::new();
+        let guard = loop {
+            let count = self.contents.read().entries.iter().count();
+            reservation.reserve(count + 4);
+            let guard = self.lock();
+            if guard.entries.iter().count() <= reservation.count {
+                break guard;
+            }
+            drop(guard);
+        };
+        let contents = &*guard;
+        let new_contents = new.contents.get_mut();
+        let mut size_none = 0;
+        let mut previous = None;
+        for entry in &contents.entries {
+            assert!(
+                matches!(entry.backing, Backing::Object { .. }),
+                "vm_map_fork: encountered a submap"
+            );
+            match entry.inheritance {
+                Inheritance::Copy => {}
+                Inheritance::None => panic!("vm_map_fork: VM_INHERIT_NONE, not yet"),
+            }
+            assert!(
+                entry.wire_count() == 0,
+                "vm_map_fork: a wired entry, vm_map_copyin, not yet"
+            );
+            let new_entry = entry.copy(&mut reservation);
+            assert!(
+                self.copy_temporary(entry, &new_entry),
+                "vm_map_fork: vm_map_copyin, not yet"
+            );
+            // Linked last: the free space after it reaches the map's end.
+            new_entry
+                .gap
+                .store(self.bounds.end - new_entry.end(), Ordering::Relaxed);
+            if entry.max_protection().is_empty() {
+                size_none += entry.end() - entry.start();
+            }
+            previous = Some(new_contents.link(self.bounds.start, previous, new_entry));
+        }
+        // `link` added each entry's size.
+        new_contents.size_none = size_none;
+        new_contents.copy_limits(contents);
+        drop(guard);
+        Ok(new)
+    }
+
+    /// Has `new`, a copy of `entry`, share `entry`'s object until either
+    /// writes, as `vm_object_copy_temporary` shares a temporary object:
+    /// `new` takes another reference, both need a copy, and the map's
+    /// mappings of `entry` stop allowing writing, as
+    /// `vm_object_pmap_protect`. Gives whether it could; nothing changes for
+    /// an object that is not temporary.
+    ///
+    /// # Panics
+    ///
+    /// If `entry` has no object: not yet. As `MachinePhysMap::protect`.
+    fn copy_temporary(&self, entry: &Entry, new: &Entry) -> bool {
+        let Backing::Object { object, .. } = &entry.backing else {
+            panic!("vm_object_copy_temporary: a submap");
+        };
+        let object = NonNull::new(object.load(Ordering::Relaxed))
+            .unwrap_or_else(|| panic!("vm_object_copy_temporary: VM_OBJECT_NULL, not yet"));
+        // SAFETY: the entry holds a reference on its object, or it is the
+        // kernel object, whose own reference never drops; this handle borrows
+        // it and never drops it.
+        let object = ManuallyDrop::new(unsafe { Reference::from_raw(object) });
+        let Some(shared) = object::copy_temporary(&object) else {
+            return false;
+        };
+        // `new` holds it; both entries shadow the object before writing.
+        Reference::into_raw(shared);
+        new.needs_copy.store(true, Ordering::Relaxed);
+        if !entry.needs_copy.load(Ordering::Relaxed) {
+            // vm_object_pmap_protect, over the entry's range.
+            self.phys_map.protect(
+                usize::from(entry.start())..usize::from(entry.end()),
+                entry.protection() - Protection::WRITE,
+            );
+            entry.needs_copy.store(true, Ordering::Relaxed);
+        }
+        true
+    }
+
     /// Finds what `address` maps for a fault asking for `access`: the object
     /// behind it, locked, shadowed first if `access` writes and its entry
     /// needs a copy, or made first if its entry has none, with a reference
@@ -1561,6 +1634,12 @@ impl Contents {
             return Err(Error::NoSpace);
         }
         Ok(())
+    }
+
+    /// Takes the size limits of `source`, as `vm_map_copy_limits` does.
+    const fn copy_limits(&mut self, source: &Self) {
+        self.size_limit = source.size_limit;
+        self.max_size_limit = source.max_size_limit;
     }
 
     /// The entry that holds `address`.
@@ -1882,17 +1961,36 @@ impl Contents {
 /// Entries allocated before a map's lock, for one operation to take under
 /// it, so none is allocated there; those left go back to their cache when
 /// it drops.
-struct EntryReservation(ArrayVec<CacheBox<Entry>, 4>);
+struct EntryReservation {
+    /// Its entries, through their tree links, which an entry in no map does
+    /// not use.
+    entries: RBTree<EntryAdapter>,
+    /// How many it holds.
+    count: usize,
+}
 
 impl EntryReservation {
-    /// A full one.
+    /// One holding four entries.
+    ///
+    /// # Panics
+    ///
+    /// As `reserve`.
+    fn new() -> Self {
+        let mut reservation = Self {
+            entries: RBTree::new(EntryAdapter::NEW),
+            count: 0,
+        };
+        reservation.reserve(4);
+        reservation
+    }
+
+    /// Allocates entries until it holds `count`.
     ///
     /// # Panics
     ///
     /// If an entry can't be allocated.
-    fn new() -> Self {
-        let mut entries = ArrayVec::new();
-        while !entries.is_full() {
+    fn reserve(&mut self, count: usize) {
+        while self.count < count {
             let entry = ENTRY_CACHE
                 .allocate(Entry {
                     tree_link: RBTreeAtomicLink::new(),
@@ -1915,20 +2013,40 @@ impl EntryReservation {
                     kernel_stack: false,
                 })
                 .unwrap_or_else(|error| panic!("vm_map_entry_create: {error:?}"));
-            entries.push(entry);
+            let entry = CacheBox::into_raw(entry).as_ptr();
+            // SAFETY: the tree takes the entry, once, until `take` gives it
+            // back.
+            self.entries.insert(unsafe { UnsafeRef::from_raw(entry) });
+            self.count += 1;
         }
-        Self(entries)
     }
 
     /// One of its entries, to be filled in.
     ///
     /// # Panics
     ///
-    /// If none is left: more than 4 entries in one operation, not yet.
+    /// If none is left: more entries than reserved, not yet.
     fn take(&mut self) -> CacheBox<Entry> {
-        self.0
-            .pop()
-            .expect("vm_map: more than 4 entries in one operation, not yet")
+        let entry = self
+            .entries
+            .front_mut()
+            .remove()
+            .expect("vm_map: more entries than reserved, not yet");
+        self.count -= 1;
+        let entry = NonNull::new(UnsafeRef::into_raw(entry)).unwrap();
+        // SAFETY: its entries come from `CacheBox::into_raw` of
+        // `ENTRY_CACHE`'s boxes (`reserve`), and its tree held the only
+        // pointer to each.
+        unsafe { CacheBox::from_raw(&ENTRY_CACHE, entry) }
+    }
+}
+
+impl Drop for EntryReservation {
+    /// Gives the entries left back to their cache.
+    fn drop(&mut self) {
+        while self.count != 0 {
+            drop(self.take());
+        }
     }
 }
 
@@ -2050,6 +2168,41 @@ impl Entry {
             wired: self.wire_count() != 0,
             version,
         }
+    }
+
+    /// A copy of it from `reservation`, as `vm_map_entry_copy` makes one:
+    /// unwired, out of transition, no kernel stack, and needing a copy if it
+    /// does; its object takes no reference for it.
+    ///
+    /// # Panics
+    ///
+    /// For a submap: not yet. As `EntryReservation::take`.
+    fn copy(&self, reservation: &mut EntryReservation) -> CacheBox<Self> {
+        let Backing::Object { object, offset } = &self.backing else {
+            panic!("vm_map_entry_copy: a submap, not yet");
+        };
+        let mut new = reservation.take();
+        *new = Self {
+            tree_link: RBTreeAtomicLink::new(),
+            gap_link: RBTreeAtomicLink::new(),
+            start: AtomicUsize::new(usize::from(self.start())),
+            end: AtomicUsize::new(usize::from(self.end())),
+            gap: AtomicUsize::new(self.gap.load(Ordering::Relaxed)),
+            gap_sequence: AtomicU64::new(0),
+            protection: AtomicU32::new(self.protection().bits()),
+            max_protection: AtomicU32::new(self.max_protection().bits()),
+            inheritance: self.inheritance,
+            backing: Backing::Object {
+                object: AtomicPtr::new(object.load(Ordering::Relaxed)),
+                offset: AtomicUsize::new(offset.load(Ordering::Relaxed)),
+            },
+            wire_count: AtomicU32::new(0),
+            wired_access: AtomicU32::new(Protection::empty().bits()),
+            in_transition: AtomicBool::new(false),
+            needs_copy: AtomicBool::new(self.needs_copy.load(Ordering::Relaxed)),
+            kernel_stack: false,
+        };
+        new
     }
 }
 

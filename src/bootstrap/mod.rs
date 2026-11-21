@@ -20,7 +20,7 @@ use crate::ipc::{MessageType, mach_port};
 use crate::reference::Reference;
 use crate::sched::{self, Event, USER_PRIORITY};
 use crate::sync::Spinlock;
-use crate::task::{self, Task};
+use crate::task::{self, Memory, Task};
 use crate::thread::{MachineThread as _, Thread};
 use crate::vm::map::{Change, Map, Placement};
 use crate::vm::object::Offset;
@@ -137,9 +137,11 @@ pub fn create() {
 ///
 /// If the task can't be created: the script's cleanup, not yet.
 fn create_task(path: &str) -> &'static Task {
-    let task = Task::create(None).unwrap_or_else(|error| {
+    let task = Task::create(None, Memory::Empty).unwrap_or_else(|error| {
         panic!("boot_script_task_create failed with {error:?}, cleanup not yet")
     });
+    // SAFETY: the script keeps its reference for good.
+    let task = unsafe { Reference::into_raw(task).as_ref() };
     task.members.lock().name.set(format_args!("{path}"));
     // SAFETY: the host's slots keep their ports' references for good.
     let host = unsafe { HOST.port.load(Ordering::Acquire).as_ref() }

@@ -79,7 +79,7 @@ intrusive_adapter!(
     pub SetTaskAdapter = UnsafeRef<Task>: Task { set_link => LinkedListAtomicLink }
 );
 
-/// A task's ports, under its lock; so far its own and its exception port.
+/// A task's ports, under its lock.
 pub struct TaskPorts {
     /// Its port, which controls it.
     pub(super) self_port: Option<Reference<Port>>,
@@ -87,6 +87,20 @@ pub struct TaskPorts {
     self_send: Option<Reference<Port>>,
     /// The send right its threads' exceptions go to, if any.
     pub(super) exception: Option<SendRight>,
+    /// The send right for its bootstrap port, if any.
+    bootstrap: Option<SendRight>,
+    /// The send rights registered for it, Mach's `TASK_PORT_REGISTER_MAX`.
+    registered: [Option<SendRight>; 4],
+}
+
+/// What memory a new task starts with.
+#[derive(Clone, Copy)]
+pub enum Memory {
+    /// A copy of its parent's, as each of the parent's entries' inheritance
+    /// says.
+    Inherited,
+    /// None.
+    Empty,
 }
 
 /// A task's special port, by Mach's `TASK_*_PORT` number.
@@ -179,8 +193,10 @@ struct ThreadTimesInfo {
 }
 
 impl Task {
-    /// A new task with no parent, over a new map of user space and its own
-    /// physical map, made as `create_with_map` makes it.
+    /// A new task, as `task_create_kernel` makes it: over a copy of
+    /// `parent`'s map for `Memory::Inherited`, else over a new map of user
+    /// space and its own physical map, made as `create_with_map` makes it.
+    /// Gives the caller's reference.
     ///
     /// # Errors
     ///
@@ -188,22 +204,38 @@ impl Task {
     ///
     /// # Panics
     ///
-    /// With a parent: not yet. If the map, the space, the port or the task
-    /// can't be allocated: freeing what was taken, not yet.
-    pub fn create(parent: Option<&Self>) -> Result<&'static Self, Error> {
-        assert!(parent.is_none(), "task_create_kernel: a parent, not yet");
-        let phys_map = arch::PhysMap::create()?;
-        let map = Map::create(
-            phys_map,
-            VirtualAddress::from(MIN_USER_ADDRESS)..VirtualAddress::from(MAX_USER_ADDRESS),
-        )
-        .unwrap_or_else(|error| panic!("task_create_kernel: {error:?}, pmap_destroy not yet"));
+    /// For `Memory::Inherited` with no parent. If the map, the space, the
+    /// port or the task can't be allocated: freeing what was taken, not yet.
+    /// If a port it inherits is dead: not yet. As `Map::fork`.
+    pub fn create(parent: Option<&Self>, memory: Memory) -> Result<Reference<Self>, Error> {
+        let map = match memory {
+            Memory::Inherited => parent
+                .expect("task_create_kernel: inherit_memory with no parent")
+                .map
+                .fork()?,
+            Memory::Empty => {
+                let phys_map = arch::PhysMap::create()?;
+                let mut map = Map::create(
+                    phys_map,
+                    VirtualAddress::from(MIN_USER_ADDRESS)..VirtualAddress::from(MAX_USER_ADDRESS),
+                )
+                .unwrap_or_else(|error| {
+                    panic!("task_create_kernel: {error:?}, pmap_destroy not yet")
+                });
+                if let Some(parent) = parent {
+                    map.copy_limits(&parent.map);
+                }
+                map
+            }
+        };
         // SAFETY: the box, given up, holds the map's first reference, which
         // the task takes.
         let map = unsafe { CacheBox::into_raw(map).as_ref() };
-        Ok(create_with_map(map).unwrap_or_else(|error| {
+        let task = create_with_map(map, parent).unwrap_or_else(|error| {
             panic!("task_create_kernel: {error:?}, vm_map_deallocate not yet")
-        }))
+        });
+        // SAFETY: the caller's reference, which the handle takes.
+        Ok(unsafe { Reference::from_raw(NonNull::from(task)) })
     }
 
     /// Takes `thread`, new, into its `members`, with a reference for it.
@@ -233,6 +265,24 @@ impl Task {
         unsafe { members.threads.cursor_mut_from_ptr(thread) }.remove();
         // SAFETY: the thread's reference, which it gives up here.
         unsafe { Reference::from_raw(NonNull::from(self)) }
+    }
+
+    /// A send right for `task`'s port, made as `convert_task_to_port` makes
+    /// it; `task`'s reference drops after.
+    ///
+    /// # Panics
+    ///
+    /// If it has no port: not yet.
+    pub(super) fn convert_to_port(task: Reference<Self>) -> Reference<Port> {
+        let ports = task.ports.lock();
+        let port = ports
+            .self_port
+            .as_ref()
+            .unwrap_or_else(|| panic!("convert_task_to_port: no port, not yet"));
+        let send = Port::make_send(port);
+        drop(ports);
+        drop(task);
+        send
     }
 
     /// Gives a new send right for its port, with its reference, as
@@ -696,17 +746,32 @@ pub fn init() {
     arch::Current::task_module_init();
     // The kernel task takes the kernel map's one reference.
     let map = KERNEL_MAP.get().expect("task_init: no kernel map");
-    let task = create_with_map(map).unwrap_or_else(|error| panic!("task_init: {error:?}"));
+    let task = create_with_map(map, None).unwrap_or_else(|error| panic!("task_init: {error:?}"));
     task.members.lock().name.set(format_args!("gnumach"));
     assert!(KERNEL_TASK.set(task).is_ok(), "task_init: twice");
 }
 
-/// A new task with no parent over `map`, whose reference the caller gives,
-/// named by its address: a new space, and a port with a send right, at the
-/// default set's priorities, in the default set.
-fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
+/// A new task over `map`, whose reference the caller gives, as
+/// `task_create_kernel` makes it: a new space, and a port with a send right;
+/// with `parent`, copies of its registered, exception and bootstrap ports,
+/// its set, its priorities and its name in parentheses; else in the default
+/// set, at its priorities, named by its address.
+fn create_with_map(map: &'static Map, parent: Option<&Task>) -> Result<&'static Task, Error> {
     let mut space = Space::create()?;
     let port = Port::allocate_kernel()?;
+    // As ipc_task_init: the parent's registered, exception and bootstrap
+    // ports.
+    let copy = |slot: &Option<SendRight>| {
+        slot.as_ref()
+            .map(|port| SendRight::new(Port::copy_send(port.as_ref())))
+    };
+    let inherited = parent.map(|parent| parent.ports.lock());
+    let registered = inherited.as_ref().map_or([const { None }; 4], |ports| {
+        ports.registered.each_ref().map(copy)
+    });
+    let exception = inherited.as_ref().and_then(|ports| copy(&ports.exception));
+    let bootstrap = inherited.as_ref().and_then(|ports| copy(&ports.bootstrap));
+    drop(inherited);
     let mut task = CACHE.allocate(Task {
         // One for being alive, one for the caller.
         references: Count::new(2),
@@ -717,8 +782,9 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
         ports: Spinlock::new(TaskPorts {
             self_port: None,
             self_send: None,
-            // No parent to inherit it from.
-            exception: None,
+            exception,
+            bootstrap,
+            registered,
         }),
         may_assign: true,
         creation_time: clock::time::stamp().into(),
@@ -732,7 +798,7 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
         messages_received: AtomicUsize::new(0),
         members: Token::new(TaskMembers {
             active: true,
-            // No higher than the set allows.
+            // The default set's, no higher than it allows; a parent's below.
             priority: USER_PRIORITY.weaker(DEFAULT_SET.max_priority()),
             max_priority: DEFAULT_SET.max_priority(),
             suspend_count: 0,
@@ -744,10 +810,41 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
         set: AtomicPtr::new(ptr::null_mut()),
         set_link: LinkedListAtomicLink::new(),
     })?;
-    // "%p": its address in hex, with no prefix; without the token, as the
-    // task is not published yet.
-    let address = ptr::from_ref(&*task).addr();
-    task.members.get_mut().name.set(format_args!("{address:x}"));
+    // The parent's set, or the default set if it is out of use, and the
+    // parent's priorities, under its token; else the default set. The set
+    // takes a reference.
+    let set = parent.map_or_else(
+        || {
+            DEFAULT_SET.reference();
+            &DEFAULT_SET
+        },
+        |parent| {
+            let parent_members = parent.members.lock();
+            // SAFETY: under the parent's token its reference keeps its set
+            // alive, and the one taken here does after.
+            let set = unsafe { &*parent.set.load(Ordering::Acquire) };
+            let set = if set.is_active() { set } else { &DEFAULT_SET };
+            set.reference();
+            let members = task.members.get_mut();
+            members.priority = parent_members.priority;
+            members.max_priority = parent_members.max_priority;
+            drop(parent_members);
+            set
+        },
+    );
+    // Without its token, as the task is not published yet: "(%.*s)" of the
+    // parent's name, or "%p", its address in hex, with no prefix.
+    if let Some(parent) = parent {
+        let parent_members = parent.members.lock();
+        task.members
+            .get_mut()
+            .name
+            .set_parenthesized(&parent_members.name);
+        drop(parent_members);
+    } else {
+        let address = ptr::from_ref(&*task).addr();
+        task.members.get_mut().name.set(format_args!("{address:x}"));
+    }
     // The task takes the space's first reference.
     CacheBox::into_raw(space);
     let task = CacheBox::into_raw(task);
@@ -761,6 +858,6 @@ fn create_with_map(map: &'static Map) -> Result<&'static Task, Error> {
     ports.self_port = Some(port);
     ports.self_send = Some(send);
     drop(ports);
-    DEFAULT_SET.add_task(task);
+    set.add_task(task);
     Ok(task)
 }

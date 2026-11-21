@@ -12,7 +12,7 @@ use crate::error::Error;
 use crate::ipc::port::{Port, SendRight};
 use crate::reference::Reference;
 use crate::smp;
-use crate::task::{self, SpecialPort, Task};
+use crate::task::{self, Memory, SpecialPort, Task};
 use crate::thread::{self, MachineThread as _, Thread};
 use crate::vm::map::{Change, Map, Placement};
 use crate::vm::object::Offset;
@@ -21,6 +21,7 @@ use crate::vm::{self, Inheritance, Protection, VirtualAddress};
 
 mig::subsystem! {
     base 2000;
+    7 task_create(parent_task = task::of, inherit_memory: Boolean) -> (child_task: Port);
     11 task_threads(target_task = task::of) -> (thread_list: PortArray);
     12 task_info(target_task = task::of, flavor: i32)
         -> (task_info_out: [i32; ..1024], CountInOut);
@@ -63,6 +64,32 @@ mig::subsystem! {
         max_protection: u32,
         inheritance: u32
     ) -> (address: VirtualAddress);
+}
+
+/// Serves `task_create`: a new task with `task` as its parent, over a copy
+/// of its memory for `inherit_memory`; gives a send right for its port.
+///
+/// # Errors
+///
+/// `InvalidTask` for no task; as `Task::create`.
+///
+/// # Panics
+///
+/// As `Task::create` and `Task::convert_to_port`.
+fn task_create(
+    task: Option<&Reference<Task>>,
+    inherit_memory: Boolean,
+) -> Result<Reference<Port>, Error> {
+    let Some(task) = task else {
+        return Err(Error::InvalidTask);
+    };
+    let memory = if bool::from(inherit_memory) {
+        Memory::Inherited
+    } else {
+        Memory::Empty
+    };
+    let child = Task::create(Some(task), memory)?;
+    Ok(Task::convert_to_port(child))
 }
 
 /// Serves `task_threads`: send rights for `task`'s threads' ports, in an

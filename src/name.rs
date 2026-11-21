@@ -28,6 +28,23 @@ impl Name {
         }
     }
 
+    /// Sets it to `other` in parentheses, `other` cut byte-wise to fit, as
+    /// `"(%.*s)"` names a child task.
+    pub fn set_parenthesized(&self, other: &Self) {
+        let length = other.0[..NAME_SIZE - 3]
+            .iter()
+            .position(|byte| byte.load(Ordering::Relaxed) == 0)
+            .unwrap_or(NAME_SIZE - 3);
+        self.0[0].store(b'(', Ordering::Relaxed);
+        for (byte, other) in self.0[1..=length].iter().zip(&other.0) {
+            byte.store(other.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+        self.0[length + 1].store(b')', Ordering::Relaxed);
+        for byte in &self.0[length + 2..] {
+            byte.store(0, Ordering::Relaxed);
+        }
+    }
+
     /// Sets it to `other`.
     pub fn copy_from(&self, other: &Self) {
         for (byte, other) in self.0.iter().zip(&other.0) {

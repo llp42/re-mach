@@ -672,9 +672,9 @@ impl ProcessorSet {
         drop(all);
     }
 
-    /// Takes `task`, new and in no set, with a reference for it.
+    /// Takes `task`, new and in no set, for which the caller took a
+    /// reference.
     pub(super) fn add_task(&'static self, task: &'static Task) {
-        self.references.fetch_add(1, Ordering::Relaxed);
         let mut members = self.members.lock();
         // SAFETY: tasks are never freed while a set holds them.
         members
