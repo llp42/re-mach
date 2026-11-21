@@ -192,7 +192,9 @@ pub(super) fn copy_in(state: &SpaceState, name: PortName) -> Reference<Port> {
     let Some(Object::Port(port)) = &entry.object else {
         panic!("ipc_right_copyin: a send right with no port");
     };
-    let mut port_state = check(state, entry);
+    let Some(mut port_state) = check(state, entry) else {
+        panic!("ipc_right_check: the port died, its entry to a dead name, not yet");
+    };
     assert!(
         rights.contains(Rights::SEND),
         "ipc_right_copyin: a send-once right, KERN_INVALID_RIGHT, not yet"
@@ -242,28 +244,73 @@ pub(super) fn make_send(space: &Space, state: &SpaceState, name: PortName) -> Re
 
 /// Checks whether the port of `entry`'s send or send-once right, in the
 /// write-locked space of state `state`, died, as `ipc_right_check` does:
-/// gives it locked and alive.
+/// gives it locked and alive, or none if it died, for `make_dead_name`.
 ///
 /// # Panics
 ///
-/// If the space is dead, or the entry has no port. If the port died: not
-/// yet.
-fn check<'a>(state: &SpaceState, entry: &'a Entry) -> SpinlockGuard<'a, PortState> {
+/// If the space is dead, or the entry has no port.
+fn check<'a>(state: &SpaceState, entry: &'a Entry) -> Option<SpinlockGuard<'a, PortState>> {
     assert!(state.active, "ipc_right_check: a dead space");
     let Some(Object::Port(port)) = &entry.object else {
         panic!("ipc_right_check: a send right with no port");
     };
     let port_state = port.state.lock();
+    if port_state.active {
+        return Some(port_state);
+    }
+    drop(port_state);
+    None
+}
+
+/// Turns `name`'s send right, whose port died, into a dead name in the
+/// write-locked, alive space of state `state`, as `ipc_right_check` does
+/// once it finds the port dead: the entry keeps its user references and
+/// releases the port's reference, which the reverse map no longer holds.
+///
+/// # Panics
+///
+/// If `name` has no entry, no user references, or rights other than a send
+/// or send-once right, or the entry has no port. For a send-once right, or
+/// a message-accepted or dead-name request: not yet.
+fn make_dead_name(state: &mut SpaceState, name: PortName) {
+    let SpaceState {
+        map, reverse_map, ..
+    } = state;
+    let entry = map.get_mut(name.key()).expect("ipc_right_check: no entry");
+    let rights = entry.bits.rights.bits();
     assert!(
-        port_state.active,
-        "ipc_right_check: the port died, its entry to a dead name, not yet"
+        entry.bits.user_references > 0,
+        "ipc_right_check: no user references"
     );
-    port_state
+    assert!(
+        rights != Rights::SEND_ONCE.bits(),
+        "ipc_right_check: a send-once right, not yet"
+    );
+    assert!(
+        rights == Rights::SEND.bits(),
+        "ipc_right_check: neither a send nor a send-once right"
+    );
+    assert!(
+        !entry.bits.message_accepted,
+        "ipc_right_check: ipc_marequest_cancel, not yet"
+    );
+    let Some(Object::Port(port)) = entry.object.take() else {
+        panic!("ipc_right_check: a send right with no port");
+    };
+    reverse_map.remove(key(&port));
+    // As ipc_port_release: the entry's reference, the last frees the port.
+    drop(port);
+    entry.bits.rights = Rights::DEAD_NAME;
+    // No call makes a dead-name request yet: none adds a user reference.
+    assert!(
+        entry.request == 0,
+        "ipc_right_check: a dead-name request, not yet"
+    );
 }
 
 /// Releases a user reference of `name`'s right in the write-locked, alive
-/// space of state `state`, as `ipc_right_dealloc` does; the space is
-/// unlocked.
+/// space of state `state`, as `ipc_right_dealloc` does, a send right whose
+/// port died turned into a dead name first; the space is unlocked.
 ///
 /// # Panics
 ///
@@ -272,7 +319,8 @@ fn check<'a>(state: &SpaceState, entry: &'a Entry) -> SpinlockGuard<'a, PortStat
 /// send right has no user references, no port or a port with no send
 /// right. If a dead name has more than one user reference, a send right's
 /// last has a dead-name or message-accepted request, or for a send-once or
-/// any other right: not yet. As `check` and `SpaceState::deallocate`.
+/// any other right: not yet. As `check`, `make_dead_name` and
+/// `SpaceState::deallocate`.
 pub(super) fn deallocate(mut state: SleepLockWriteGuard<'_, SpaceState>, name: PortName) {
     assert!(state.active, "ipc_right_dealloc: a dead space");
     let entry = state
@@ -301,7 +349,12 @@ pub(super) fn deallocate(mut state: SleepLockWriteGuard<'_, SpaceState>, name: P
             entry.bits.user_references > 0,
             "ipc_right_dealloc: a send right with no user references"
         );
-        let mut port_state = check(&state, entry);
+        let Some(mut port_state) = check(&state, entry) else {
+            make_dead_name(&mut state, name);
+            // As GNU Mach's goto: the dead name's arm.
+            deallocate(state, name);
+            return;
+        };
         if entry.bits.user_references > 1 {
             assert!(
                 port_state.send_rights > 0,
