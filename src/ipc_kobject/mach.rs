@@ -46,6 +46,7 @@ mig::subsystem! {
         new_protection: u32
     );
     27 vm_write(target_task = task::map_of, address: VirtualAddress, data: OutOfLine<u8>);
+    56 task_suspend(target_task = task::of);
     59 task_set_special_port(task = task::of, which_port: i32, special_port: SendRight);
     61 thread_create(parent_task = task::of) -> (child_thread: Port);
     62 thread_suspend(target_thread = thread::of);
@@ -323,6 +324,23 @@ fn vm_write(
         return Err(Error::InvalidArgument);
     };
     vm::user::write(map, address, data.map(OutOfLine::into_copy))
+}
+
+/// Serves `task_suspend`: stops `task` once more for users.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no task.
+///
+/// # Panics
+///
+/// As `Task::suspend`.
+fn task_suspend(task: Option<&Reference<Task>>) -> Result<(), Error> {
+    let Some(task) = task else {
+        return Err(Error::InvalidArgument);
+    };
+    task.suspend();
+    Ok(())
 }
 
 /// Serves `task_set_special_port`: `task`'s special port numbered
