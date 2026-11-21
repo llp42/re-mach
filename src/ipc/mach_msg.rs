@@ -10,9 +10,8 @@ use intrusive_collections::UnsafeRef;
 
 use super::MessageType;
 use super::entry::Rights;
-use super::kernel_message::{
-    self, EXPAND_FACTOR, Header, KernelMessage, MessageBits, SAVED_MESSAGE_SIZE,
-};
+use super::kernel_message::header::{Header, MessageBits};
+use super::kernel_message::{self, EXPAND_FACTOR, KernelMessage, SAVED_MESSAGE_SIZE};
 use super::object::Object;
 use super::port::{Port, PortName, PortState, Receiver};
 use super::space::{KERNEL_SPACE, Space, SpaceState};

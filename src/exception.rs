@@ -6,7 +6,8 @@
 use core::ptr::{self, NonNull};
 
 use crate::ipc::MessageType;
-use crate::ipc::kernel_message::{Header, KernelMessage, MessageBits};
+use crate::ipc::kernel_message::KernelMessage;
+use crate::ipc::kernel_message::header::{Header, MessageBits};
 use crate::ipc::mach_msg;
 use crate::ipc::port::Port;
 use crate::reference::Reference;

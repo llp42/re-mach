@@ -7,7 +7,7 @@ use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 use crate::ipc::MessageType;
-use crate::ipc::kernel_message::Header;
+use crate::ipc::kernel_message::header::Header;
 use crate::ipc::port::{PortName, PortType};
 use crate::slab::CacheBox;
 use crate::vm::VirtualAddress;
@@ -498,7 +498,8 @@ macro_rules! subsystem {
 
             // The subsystem's names, for the declaration's types and intrans.
             use super::super::*;
-            use $crate::ipc::kernel_message::{Header, KernelMessage};
+            use $crate::ipc::kernel_message::KernelMessage;
+            use $crate::ipc::kernel_message::header::Header;
             use $crate::ipc::port::Port;
             use $crate::ipc_kobject::mig;
 
