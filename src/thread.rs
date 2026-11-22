@@ -376,7 +376,7 @@ intrusive_adapter!(
         clippy::expl_impl_clone_on_copy,
         reason = "intrusive_adapter! writes Clone by hand"
     )]
-    pub SleepQueueAdapter = UnsafeRef<Thread>: Thread { sleep_link => LinkedListAtomicLink }
+    pub SleepQueueAdapter = &'static Thread: Thread { sleep_link => LinkedListAtomicLink }
 );
 
 intrusive_adapter!(
@@ -384,7 +384,7 @@ intrusive_adapter!(
         clippy::expl_impl_clone_on_copy,
         reason = "intrusive_adapter! writes Clone by hand"
     )]
-    pub RunQueueAdapter = UnsafeRef<Thread>: Thread { run_link => LinkedListAtomicLink }
+    pub RunQueueAdapter = &'static Thread: Thread { run_link => LinkedListAtomicLink }
 );
 
 intrusive_adapter!(
@@ -392,7 +392,7 @@ intrusive_adapter!(
         clippy::expl_impl_clone_on_copy,
         reason = "intrusive_adapter! writes Clone by hand"
     )]
-    pub TaskThreadAdapter = UnsafeRef<Thread>: Thread { task_link => LinkedListAtomicLink }
+    pub TaskThreadAdapter = &'static Thread: Thread { task_link => LinkedListAtomicLink }
 );
 
 intrusive_adapter!(
@@ -400,7 +400,7 @@ intrusive_adapter!(
         clippy::expl_impl_clone_on_copy,
         reason = "intrusive_adapter! writes Clone by hand"
     )]
-    pub SetThreadAdapter = UnsafeRef<Thread>: Thread { set_link => LinkedListAtomicLink }
+    pub SetThreadAdapter = &'static Thread: Thread { set_link => LinkedListAtomicLink }
 );
 
 intrusive_adapter!(
@@ -408,7 +408,7 @@ intrusive_adapter!(
         clippy::expl_impl_clone_on_copy,
         reason = "intrusive_adapter! writes Clone by hand"
     )]
-    pub IpcQueueAdapter = UnsafeRef<Thread>: Thread { ipc_link => LinkedListAtomicLink }
+    pub IpcQueueAdapter = &'static Thread: Thread { ipc_link => LinkedListAtomicLink }
 );
 
 /// What threads need of the machine.
@@ -2007,12 +2007,7 @@ pub fn halt_self() {
     // It stays on this CPU until it blocks: the list it joins and the
     // sleep queue woken below are this CPU's.
     let section = CriticalSection::enter();
-    // SAFETY: a thread lives while it waits on a dead list: the reaper takes
-    // it off before freeing it.
-    smp::current()
-        .dead_threads()
-        .lock()
-        .push_back(unsafe { UnsafeRef::from_raw(thread) });
+    smp::current().dead_threads().lock().push_back(thread);
     thread.insert_state(ThreadState::HALTED);
     drop(section);
     sched::wakeup(Event::of(&REAPER));
@@ -2041,8 +2036,7 @@ pub fn reaper_thread() -> ! {
             drop(section);
             // SAFETY: a dead list holds the reference of its thread's being
             // alive, given up here.
-            let thread =
-                unsafe { Reference::from_raw(NonNull::new(UnsafeRef::into_raw(thread)).unwrap()) };
+            let thread = unsafe { Reference::from_raw(NonNull::from(thread)) };
             thread.wait_until_stopped();
             drop(thread);
             section = CriticalSection::enter();

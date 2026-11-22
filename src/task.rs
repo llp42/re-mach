@@ -8,7 +8,7 @@ use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
-use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
+use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
 
 use crate::arch::{self, MAX_USER_ADDRESS, MIN_USER_ADDRESS, Machine as _, PAGE_SIZE};
 use crate::ast::Ast;
@@ -76,7 +76,7 @@ intrusive_adapter!(
         clippy::expl_impl_clone_on_copy,
         reason = "intrusive_adapter! writes Clone by hand"
     )]
-    pub SetTaskAdapter = UnsafeRef<Task>: Task { set_link => LinkedListAtomicLink }
+    pub SetTaskAdapter = &'static Task: Task { set_link => LinkedListAtomicLink }
 );
 
 /// A task's ports, under its lock.
@@ -259,10 +259,7 @@ impl Task {
         // The thread's, which it keeps.
         Reference::into_raw(Reference::clone(&task));
         members.thread_count += 1;
-        // SAFETY: a thread leaves its task before it is freed.
-        members
-            .threads
-            .push_back(unsafe { UnsafeRef::from_raw(thread) });
+        members.threads.push_back(thread);
     }
 
     /// Lets `thread`, being freed, out of its `members`; gives back the
@@ -571,8 +568,7 @@ impl Task {
         members.suspend_count -= 1;
         let mut cursor = members.threads.front();
         while let Some(thread) = cursor.clone_pointer() {
-            // SAFETY: a thread leaves its task before it is freed.
-            unsafe { &*UnsafeRef::into_raw(thread) }.release();
+            thread.release();
             cursor.move_next();
         }
         drop(members);

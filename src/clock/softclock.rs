@@ -5,8 +5,6 @@
 
 use core::sync::atomic::Ordering;
 
-use intrusive_collections::UnsafeRef;
-
 use super::timeout::TimeoutFlags;
 use crate::sched::{self, Priority};
 use crate::smp;
@@ -44,8 +42,6 @@ pub fn softclock() -> ! {
                     .flags
                     .fetch_and(!TimeoutFlags::PENDING.bits(), Ordering::Relaxed);
                 drop(slot);
-                // SAFETY: it was set as a `&'static Timeout`.
-                let timeout = unsafe { &*UnsafeRef::into_raw(timeout) };
                 (timeout.function)(timeout);
             }
         }

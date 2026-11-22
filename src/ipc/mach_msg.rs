@@ -6,8 +6,6 @@
 use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
 
-use intrusive_collections::UnsafeRef;
-
 use super::MessageType;
 use super::entry::Rights;
 use super::kernel_message::header::{Header, MessageBits};
@@ -495,7 +493,7 @@ fn queue(message: KernelMessage, options: Options) {
     // The oldest, with a reference that keeps it through the wake.
     let receiver = port_state.receivers.pop_back().map(|receiver| {
         // SAFETY: a thread lives while it waits on a port's queue.
-        unsafe { Reference::upgrade(NonNull::from(&*receiver)) }
+        unsafe { Reference::upgrade(NonNull::from(receiver)) }
             .expect("ipc_mqueue_send: a receiver being freed")
     });
     // An orphaned reply port with every send-once right in its queue has no
@@ -680,11 +678,7 @@ fn dequeue<'a>(
             Some(milliseconds) => sched::will_wait_with_timeout(milliseconds),
             None => sched::will_wait(),
         }
-        // SAFETY: a thread lives while it waits on a port's queue, and it
-        // leaves it below.
-        port_state
-            .receivers
-            .push_front(unsafe { UnsafeRef::from_raw(thread) });
+        port_state.receivers.push_front(thread);
         drop(port_state);
         sched::block();
         port_state = port.state.lock();

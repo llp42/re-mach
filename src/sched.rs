@@ -7,7 +7,7 @@ use core::num::{NonZero, TryFromIntError};
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI64, AtomicU32, AtomicUsize, Ordering};
 
-use intrusive_collections::{LinkedList, UnsafeRef};
+use intrusive_collections::LinkedList;
 
 use crate::arch::{self, Machine as _};
 use crate::ast::{self, Ast};
@@ -429,8 +429,7 @@ pub fn assert_wait(event: Option<Event>) {
         );
     }
     if let Some(event) = event {
-        // SAFETY: a thread lives while it waits on a sleep queue.
-        cpu.sleep_queues()[event.hash()].push_back(unsafe { UnsafeRef::from_raw(thread) });
+        cpu.sleep_queues()[event.hash()].push_back(thread);
         thread.set_wait_event(Some(event));
     }
     thread.insert_state(ThreadState::WAIT | ThreadState::UNINTERRUPTIBLE);
@@ -489,8 +488,7 @@ pub fn wakeup(event: Event) {
             cursor.move_next();
             continue;
         }
-        // SAFETY: it waited on the queue, and goes on a run queue.
-        let thread = unsafe { &*UnsafeRef::into_raw(cursor.remove().unwrap()) };
+        let thread = cursor.remove().unwrap();
         thread.set_wait_event(None);
         clock::timeout::reset_timeout_check(thread.timer());
         let state = thread.state();

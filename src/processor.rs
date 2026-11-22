@@ -10,7 +10,7 @@ use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, Ordering,
 };
 
-use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
+use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
 
 use crate::collections::ArrayVec;
 use crate::config::MAX_CPUS;
@@ -194,8 +194,7 @@ impl Processor {
     pub(super) fn enqueue(&self, thread: &'static Thread) {
         let mut queues = self.run_queues();
         let priority = thread.scheduled_priority().index();
-        // SAFETY: a thread lives while it waits on a run queue.
-        queues.lists[priority].push_back(unsafe { UnsafeRef::from_raw(thread) });
+        queues.lists[priority].push_back(thread);
         if thread.bound().is_some() {
             queues.bound += 1;
         } else {
@@ -277,8 +276,6 @@ impl Processor {
             assert!(!bound_only, "choose_thread: no bound thread");
             return None;
         };
-        // SAFETY: as above.
-        let thread = unsafe { &*UnsafeRef::into_raw(thread) };
         if bound_only {
             queues.bound -= 1;
         } else {
@@ -306,8 +303,7 @@ impl Processor {
                 if stuck.is_full() {
                     return true;
                 }
-                // SAFETY: a runnable thread lives on, off its run queue too.
-                let thread = unsafe { &*UnsafeRef::into_raw(cursor.remove().unwrap()) };
+                let thread = cursor.remove().unwrap();
                 if thread.bound().is_some() {
                     *bound -= 1;
                 } else {
@@ -399,7 +395,7 @@ intrusive_adapter!(
         clippy::expl_impl_clone_on_copy,
         reason = "intrusive_adapter! writes Clone by hand"
     )]
-    pub AllSetsAdapter = UnsafeRef<ProcessorSet>: ProcessorSet { all_link => LinkedListAtomicLink }
+    pub AllSetsAdapter = &'static ProcessorSet: ProcessorSet { all_link => LinkedListAtomicLink }
 );
 
 /// A set's tasks and threads, and how many of each.
@@ -685,10 +681,7 @@ impl ProcessorSet {
     /// Takes `thread`, new and in no set, into its `members`; the thread
     /// keeps the reference the caller took for it.
     pub(super) fn add_thread(&self, members: &mut Members, thread: &'static Thread) {
-        // SAFETY: threads are never freed while a set holds them.
-        members
-            .threads
-            .push_back(unsafe { UnsafeRef::from_raw(thread) });
+        members.threads.push_back(thread);
         thread.set_processor_set(Some(self));
         members.thread_count += 1;
     }
@@ -790,8 +783,7 @@ impl ProcessorSet {
     /// Adds it to the list of all sets.
     fn join_all(&'static self) {
         let mut all = ALL_SETS.lock();
-        // SAFETY: a set leaves the list before it is freed.
-        all.list.push_back(unsafe { UnsafeRef::from_raw(self) });
+        all.list.push_back(self);
         all.count += 1;
         drop(all);
     }
@@ -800,10 +792,7 @@ impl ProcessorSet {
     /// caller took for it.
     pub(super) fn add_task(&self, task: &'static Task) {
         let mut members = self.members.lock();
-        // SAFETY: tasks are never freed while a set holds them.
-        members
-            .tasks
-            .push_back(unsafe { UnsafeRef::from_raw(task) });
+        members.tasks.push_back(task);
         task.set
             .store(ptr::from_ref(self).cast_mut(), Ordering::Release);
         members.task_count += 1;

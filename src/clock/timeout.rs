@@ -6,7 +6,7 @@
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
 
-use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
+use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
 
 use crate::smp;
 use crate::sync::{CriticalSection, OnceLock, Spinlock};
@@ -64,7 +64,7 @@ intrusive_adapter!(
         clippy::expl_impl_clone_on_copy,
         reason = "intrusive_adapter! writes Clone by hand"
     )]
-    pub TimeoutAdapter = UnsafeRef<Timeout>: Timeout { link => LinkedListAtomicLink }
+    pub TimeoutAdapter = &'static Timeout: Timeout { link => LinkedListAtomicLink }
 );
 
 /// How many slots a wheel has; a timeout waits in the slot of its deadline
@@ -136,8 +136,7 @@ pub fn set_timeout(timeout: &'static Timeout, ticks: u64) {
         (TimeoutFlags::ACTIVE | TimeoutFlags::PENDING).bits(),
         Ordering::Relaxed,
     );
-    // SAFETY: a timeout lives while it waits in a wheel.
-    slot.push_back(unsafe { UnsafeRef::from_raw(ptr::from_ref(timeout)) });
+    slot.push_back(timeout);
     drop(slot);
 }
 
