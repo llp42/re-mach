@@ -252,12 +252,12 @@ fn send(
         subcode_word: SUBCODE_WORD,
         subcode,
     };
-    mach_msg::send_always(message);
+    mach_msg::send::send_always(message);
     // exception_raise_continue_slow: an interrupted wait goes on, unless the
     // thread is to halt: it returns then, the saved reference dropped, and
     // halts on its way out of the kernel.
     loop {
-        match mach_msg::receive_reply(&saved) {
+        match mach_msg::receive::receive_reply(&saved) {
             Ok((reply, _)) => {
                 // As ipc_port_release of ith_port.
                 drop(saved);
@@ -276,7 +276,7 @@ fn send(
                 Port::release_send_once(port);
                 return parse_reply(reply);
             }
-            Err(mach_msg::MACH_RCV_INTERRUPTED) => {
+            Err(mach_msg::receive::MACH_RCV_INTERRUPTED) => {
                 if thread.should_halt() {
                     return Ok(());
                 }

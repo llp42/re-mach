@@ -118,7 +118,7 @@ fn message(arguments: &[usize; 7]) -> u32 {
         timeout,
         notify,
     ] = rest.map(|argument| u32::try_from(argument & 0xffff_ffff).unwrap());
-    mach_msg::trap(
+    mach_msg::trap::trap(
         message,
         option,
         send_size,
