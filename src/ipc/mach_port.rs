@@ -17,7 +17,8 @@ use crate::arch::PAGE_SIZE;
 use crate::error::Error;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
-use crate::vm::map::{MapCopy, Placement, RangeCheck, Source};
+use crate::vm::map::change::{Placement, RangeCheck, Source};
+use crate::vm::map::copy::MapCopy;
 use crate::vm::{self, Protection};
 
 impl Entry {

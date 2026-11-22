@@ -3,7 +3,9 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The virtual memory calls of Mach's interface.
 
-use super::map::{Change, Map, MapCopy, Placement};
+use super::map::change::{Change, Placement};
+use super::map::copy::MapCopy;
+use super::map::map::Map;
 use super::object::{self, Object, Offset};
 use super::{Inheritance, Protection, VirtualAddress, Wire};
 use crate::arch::PAGE_SIZE;

@@ -24,7 +24,7 @@ use crate::sync::{OnceLock, Spinlock, Token};
 use crate::thread::thread::TaskThreadAdapter;
 use crate::vm::VirtualAddress;
 use crate::vm::kernel::KERNEL_MAP;
-use crate::vm::map::Map;
+use crate::vm::map::map::Map;
 use crate::vm::phys_map::MachinePhysMap as _;
 
 use super::members::TaskMembers;

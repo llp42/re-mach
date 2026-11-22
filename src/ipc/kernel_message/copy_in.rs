@@ -17,7 +17,8 @@ use crate::ipc::space::Space;
 use crate::kalloc;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
-use crate::vm::map::{Map, Source};
+use crate::vm::map::change::Source;
+use crate::vm::map::map::Map;
 use crate::vm::{self, VirtualAddress};
 
 /// A send's status when its destination can't be copied in, as Mach

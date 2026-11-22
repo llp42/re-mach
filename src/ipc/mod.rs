@@ -15,7 +15,7 @@ mod right;
 pub mod space;
 
 use crate::sync::OnceLock;
-use crate::vm::map::Map;
+use crate::vm::map::map::Map;
 use crate::{ipc_host, vm};
 
 /// What a message carries, data or a right, by Mach's type names; only the

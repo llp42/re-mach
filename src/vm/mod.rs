@@ -137,7 +137,7 @@ static STATISTICS: Statistics = Statistics {
 pub fn bootstrap() {
     page::setup();
     object::bootstrap();
-    map::init();
+    map::map::init();
     kernel::init();
     arch::PhysMap::init();
     crate::kalloc::init();

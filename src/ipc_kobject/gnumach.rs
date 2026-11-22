@@ -10,7 +10,7 @@ use crate::gsync::{self, Flags};
 use crate::ipc::port::port::Port;
 use crate::reference::Reference;
 use crate::task::task::Task;
-use crate::vm::map::Map;
+use crate::vm::map::map::Map;
 use crate::vm::{self, VirtualAddress};
 
 mig::subsystem! {

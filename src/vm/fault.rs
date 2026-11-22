@@ -7,7 +7,9 @@ use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 
-use super::map::{Backing, Entry, Lookup, Map};
+use super::map::entry::{Backing, Entry};
+use super::map::lookup::Lookup;
+use super::map::map::Map;
 use super::object::{Flags, Kind, Object, ObjectState};
 use super::page::{self, Page};
 use super::phys_map::{MachinePhysMap as _, Wiring};

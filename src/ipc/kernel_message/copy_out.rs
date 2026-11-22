@@ -17,7 +17,9 @@ use crate::ipc::space::Space;
 use crate::kalloc;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
-use crate::vm::map::{COPY_CACHE, Map, MapCopy, Placement};
+use crate::vm::map::change::Placement;
+use crate::vm::map::copy::{COPY_CACHE, MapCopy};
+use crate::vm::map::map::Map;
 use crate::vm::{self, VirtualAddress};
 
 impl KernelMessage {

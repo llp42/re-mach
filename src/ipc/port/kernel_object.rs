@@ -15,7 +15,7 @@ use crate::processor::set::ProcessorSet;
 use crate::reference::Reference;
 use crate::task::task::Task;
 use crate::thread::thread::Thread;
-use crate::vm::map::Map;
+use crate::vm::map::map::Map;
 use crate::vm::object::{Flags, Object};
 /// What a port the kernel receives on stands for; only the kinds used here.
 #[derive(Clone, Copy)]

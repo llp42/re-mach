@@ -11,7 +11,7 @@ use crate::ipc::kernel_message::header::Header;
 use crate::ipc::port::port_name::{PortName, PortType};
 use crate::slab::CacheBox;
 use crate::vm::VirtualAddress;
-use crate::vm::map::MapCopy;
+use crate::vm::map::copy::MapCopy;
 use crate::vm::object::Offset;
 
 /// An argument as MIG lays it out: its type word, then its data, padded to 8 bytes.
@@ -623,14 +623,14 @@ macro_rules! subsystem {
     // slot cleared, with the word's number; null gives none.
     (@take $request:ident $in:ident out_of_line $element:ty) => {
         let $in = core::ptr::NonNull::new(core::ptr::with_exposed_provenance_mut::<
-            $crate::vm::map::MapCopy,
+            $crate::vm::map::copy::MapCopy,
         >(core::mem::take(&mut $request.$in.data)))
         .map(|copy| {
             // SAFETY: copied in, out-of-line memory's data is the exposed
             // address of a `COPY_CACHE` box from `CacheBox::into_raw`, which
             // the message alone holds and the handle takes.
             let copy = unsafe {
-                $crate::slab::CacheBox::from_raw(&$crate::vm::map::COPY_CACHE, copy)
+                $crate::slab::CacheBox::from_raw(&$crate::vm::map::copy::COPY_CACHE, copy)
             };
             let count = usize::try_from($request.$in.word >> 32).unwrap();
             mig::OutOfLine::<$element>::new(copy, count)

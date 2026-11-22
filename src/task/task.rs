@@ -13,7 +13,7 @@ use crate::processor::set::ProcessorSet;
 use crate::reference::{Count, Counted, Reference};
 use crate::slab::CacheBox;
 use crate::sync::{Spinlock, Token};
-use crate::vm::map::Map;
+use crate::vm::map::map::Map;
 
 use super::create::CACHE;
 use super::members::TaskMembers;

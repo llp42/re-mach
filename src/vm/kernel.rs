@@ -5,7 +5,8 @@
 
 use core::ptr::{self, NonNull};
 
-use super::map::{Map, Placement, Usage};
+use super::map::change::{Placement, Usage};
+use super::map::map::Map;
 use super::object::{KERNEL_OBJECT, Offset};
 use super::page::{self, Page};
 use super::phys_map::MachinePhysMap as _;
