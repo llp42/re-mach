@@ -10,8 +10,8 @@ use core::sync::atomic::Ordering;
 use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::error::Error;
 use crate::host::HOST;
+use crate::ipc::mach_msg;
 use crate::ipc::port::{Port, PortName};
-use crate::ipc::{mach_msg, mach_port};
 use crate::reference::Reference;
 use crate::thread::MachineThread as _;
 use crate::{print, smp};
@@ -201,7 +201,7 @@ fn host_self(_: &[usize; 7]) -> u32 {
 /// # Panics
 ///
 /// If no thread runs on the CPU. If the name is for a dead port or one of
-/// no task: not yet. As `Space::task_space` and `mach_port::allocate`.
+/// no task: not yet. As `Space::task_space` and `Space::allocate`.
 fn allocate_port(arguments: &[usize; 7]) -> u32 {
     let thread = smp::current()
         .active_thread()
@@ -213,7 +213,7 @@ fn allocate_port(arguments: &[usize; 7]) -> u32 {
         .space
         .task_space(PortName::from(task))
         .unwrap_or_else(|| panic!("syscall_mach_port_allocate: MACH_SEND_INTERRUPTED, not yet"));
-    match mach_port::allocate(&space, right) {
+    match space.allocate(right) {
         Ok(name) => {
             let _ = arch::Current::copy_out(&u32::from(name).to_ne_bytes(), arguments[2]);
             0

@@ -15,8 +15,8 @@ use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::boot::BootModule;
 use crate::error::Error;
 use crate::host::HOST;
+use crate::ipc::MessageType;
 use crate::ipc::port::{Port, PortName};
-use crate::ipc::{MessageType, mach_port};
 use crate::reference::Reference;
 use crate::sched::{self, BasePriority, Event, USER_PRIORITY};
 use crate::sync::Spinlock;
@@ -403,7 +403,7 @@ fn insert_right(task: &Task, port: &Reference<Port>) -> PortName {
 fn insert_send_right(task: &Task, mut port: Reference<Port>) -> PortName {
     let mut name = PortName::from(1);
     loop {
-        match mach_port::insert_right(&task.space, name, port, MessageType::PortSend) {
+        match task.space.insert_right(name, port, MessageType::PortSend) {
             Ok(()) => return name,
             Err((error, right)) => {
                 assert!(

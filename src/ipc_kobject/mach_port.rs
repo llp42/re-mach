@@ -10,7 +10,7 @@ use crate::ipc::MessageType;
 use crate::ipc::port::{Port, PortName, PortType, SendRight};
 use crate::ipc::space::Space;
 use crate::reference::Reference;
-use crate::{ipc, task};
+use crate::task;
 
 mig::subsystem! {
     base 3200;
@@ -30,13 +30,13 @@ mig::subsystem! {
 ///
 /// # Panics
 ///
-/// With no space: not yet. As `ipc::mach_port::names`.
+/// With no space: not yet. As `Space::names`.
 #[expect(clippy::unnecessary_wraps, reason = "MIG's routines give a Result")]
 fn mach_port_names(
     space: Option<&Reference<Space>>,
 ) -> Result<(OutOfLine<PortName>, OutOfLine<PortType>), Error> {
     let space = space.unwrap_or_else(|| panic!("mach_port_names: KERN_INVALID_TASK, not yet"));
-    let (names, types, count) = ipc::mach_port::names(space);
+    let (names, types, count) = space.names();
     Ok((OutOfLine::new(names, count), OutOfLine::new(types, count)))
 }
 
@@ -44,11 +44,11 @@ fn mach_port_names(
 ///
 /// # Panics
 ///
-/// With no space: not yet. As `ipc::mach_port::type_of`.
+/// With no space: not yet. As `Space::port_type`.
 #[expect(clippy::unnecessary_wraps, reason = "MIG's routines give a Result")]
 fn mach_port_type(space: Option<&Reference<Space>>, name: PortName) -> Result<PortType, Error> {
     let space = space.unwrap_or_else(|| panic!("mach_port_type: KERN_INVALID_TASK, not yet"));
-    Ok(ipc::mach_port::type_of(space, name))
+    Ok(space.port_type(name))
 }
 
 /// Serves `mach_port_rename`: `old_name`'s rights in `space` move to
@@ -56,14 +56,14 @@ fn mach_port_type(space: Option<&Reference<Space>>, name: PortName) -> Result<Po
 ///
 /// # Panics
 ///
-/// With no space: not yet. As `ipc::mach_port::rename`.
+/// With no space: not yet. As `Space::rename`.
 fn mach_port_rename(
     space: Option<&Reference<Space>>,
     old_name: PortName,
     new_name: PortName,
 ) -> Result<(), Error> {
     let space = space.unwrap_or_else(|| panic!("mach_port_rename: KERN_INVALID_TASK, not yet"));
-    ipc::mach_port::rename(space, old_name, new_name)
+    space.rename(old_name, new_name)
 }
 
 /// Serves `mach_port_allocate_name`: a new right of the kind numbered
@@ -71,7 +71,7 @@ fn mach_port_rename(
 ///
 /// # Panics
 ///
-/// With no space: not yet. As `ipc::mach_port::allocate_name`.
+/// With no space: not yet. As `Space::allocate_as`.
 fn mach_port_allocate_name(
     space: Option<&Reference<Space>>,
     right: u32,
@@ -79,7 +79,7 @@ fn mach_port_allocate_name(
 ) -> Result<(), Error> {
     let space =
         space.unwrap_or_else(|| panic!("mach_port_allocate_name: KERN_INVALID_TASK, not yet"));
-    ipc::mach_port::allocate_name(space, right, name)
+    space.allocate_as(right, name)
 }
 
 /// Serves `mach_port_allocate`: a new right of the kind numbered `right` in
@@ -87,21 +87,21 @@ fn mach_port_allocate_name(
 ///
 /// # Panics
 ///
-/// With no space: not yet. As `ipc::mach_port::allocate`.
+/// With no space: not yet. As `Space::allocate`.
 fn mach_port_allocate(space: Option<&Reference<Space>>, right: u32) -> Result<PortName, Error> {
     let space = space.unwrap_or_else(|| panic!("mach_port_allocate: KERN_INVALID_TASK, not yet"));
-    ipc::mach_port::allocate(space, right)
+    space.allocate(right)
 }
 
 /// Serves `mach_port_destroy`: `name`'s rights in `space` are destroyed.
 ///
 /// # Panics
 ///
-/// With no space: not yet. As `ipc::mach_port::destroy`.
+/// With no space: not yet. As `Space::destroy_rights`.
 #[expect(clippy::unnecessary_wraps, reason = "MIG's routines give a Result")]
 fn mach_port_destroy(space: Option<&Reference<Space>>, name: PortName) -> Result<(), Error> {
     let space = space.unwrap_or_else(|| panic!("mach_port_destroy: KERN_INVALID_TASK, not yet"));
-    ipc::mach_port::destroy(space, name);
+    space.destroy_rights(name);
     Ok(())
 }
 
@@ -110,11 +110,11 @@ fn mach_port_destroy(space: Option<&Reference<Space>>, name: PortName) -> Result
 ///
 /// # Panics
 ///
-/// With no space: not yet. As `ipc::mach_port::deallocate`.
+/// With no space: not yet. As `Space::release_user_reference`.
 #[expect(clippy::unnecessary_wraps, reason = "MIG's routines give a Result")]
 fn mach_port_deallocate(space: Option<&Reference<Space>>, name: PortName) -> Result<(), Error> {
     let space = space.unwrap_or_else(|| panic!("mach_port_deallocate: KERN_INVALID_TASK, not yet"));
-    ipc::mach_port::deallocate(space, name);
+    space.release_user_reference(name);
     Ok(())
 }
 
@@ -123,7 +123,7 @@ fn mach_port_deallocate(space: Option<&Reference<Space>>, name: PortName) -> Res
 ///
 /// # Panics
 ///
-/// With no space: not yet. As `ipc::mach_port::get_refs`.
+/// With no space: not yet. As `Space::user_references`.
 #[expect(clippy::unnecessary_wraps, reason = "MIG's routines give a Result")]
 fn mach_port_get_refs(
     space: Option<&Reference<Space>>,
@@ -131,7 +131,7 @@ fn mach_port_get_refs(
     right: u32,
 ) -> Result<u32, Error> {
     let space = space.unwrap_or_else(|| panic!("mach_port_get_refs: KERN_INVALID_TASK, not yet"));
-    Ok(ipc::mach_port::get_refs(space, name, right))
+    Ok(space.user_references(name, right))
 }
 
 /// Serves `mach_port_insert_right`: `poly`'s send right goes into `space`
@@ -140,7 +140,7 @@ fn mach_port_get_refs(
 ///
 /// # Panics
 ///
-/// With no space or no right: not yet. As `ipc::mach_port::insert_right`.
+/// With no space or no right: not yet. As `Space::insert_right`.
 fn mach_port_insert_right(
     space: Option<&Reference<Space>>,
     name: PortName,
@@ -150,10 +150,10 @@ fn mach_port_insert_right(
         space.unwrap_or_else(|| panic!("mach_port_insert_right: KERN_INVALID_TASK, not yet"));
     let poly =
         poly.unwrap_or_else(|| panic!("mach_port_insert_right: KERN_INVALID_CAPABILITY, not yet"));
-    ipc::mach_port::insert_right(space, name, poly.into_reference(), MessageType::PortSend).map_err(
-        |(error, port)| {
+    space
+        .insert_right(name, poly.into_reference(), MessageType::PortSend)
+        .map_err(|(error, port)| {
             Port::release_send(port);
             error
-        },
-    )
+        })
 }
