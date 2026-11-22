@@ -4,7 +4,7 @@
 //! The pageout daemon.
 
 use super::page;
-use crate::sched::{self, Event, Priority};
+use crate::sched::{self, event::Event, priority::Priority};
 use crate::sync::Spinlock;
 use crate::thread::priority;
 
@@ -23,6 +23,6 @@ pub fn run() -> ! {
     loop {
         let requested = REQUESTED.lock();
         assert!(page::usable(), "vm_pageout_scan: eviction, not yet");
-        sched::sleep(Event::of(&REQUESTED), requested);
+        sched::wait::sleep(Event::of(&REQUESTED), requested);
     }
 }

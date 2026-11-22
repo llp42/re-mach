@@ -16,7 +16,7 @@ use crate::ipc::space::Space;
 use crate::name::Name;
 use crate::processor::DEFAULT_SET;
 use crate::reference::{Count, Reference};
-use crate::sched::USER_PRIORITY;
+use crate::sched::priority::USER_PRIORITY;
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{OnceLock, Spinlock, Token};
 use crate::thread::thread::TaskThreadAdapter;

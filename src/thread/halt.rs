@@ -9,7 +9,7 @@ use crate::ast::Ast;
 use crate::error::Error;
 use crate::ipc::port::Port;
 use crate::reference::Reference;
-use crate::sched::{self, Preemption, WaitResult};
+use crate::sched::{self, preemption::Preemption, wait::WaitResult};
 use crate::sync::CriticalSection;
 use crate::{arch, smp};
 
@@ -148,7 +148,7 @@ impl Thread {
             let section = CriticalSection::enter();
             // clear_wait's interrupt_only: an uninterruptible wait goes on.
             if !self.state().contains(ThreadState::UNINTERRUPTIBLE) {
-                sched::clear_wait(thread, WaitResult::Interrupted);
+                sched::wait::clear_wait(thread, WaitResult::Interrupted);
             }
             if self.state().contains(ThreadState::HALTED) {
                 drop(section);
@@ -174,7 +174,7 @@ impl Thread {
                 "thread_halt"
             );
             self.insert_state(ThreadState::RUN | ThreadState::UNINTERRUPTIBLE);
-            sched::make_runnable(thread, Preemption::Forbidden);
+            sched::preemption::make_runnable(thread, Preemption::Forbidden);
             drop(section);
         }
     }

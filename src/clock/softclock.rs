@@ -6,7 +6,7 @@
 use core::sync::atomic::Ordering;
 
 use super::timeout::TimeoutFlags;
-use crate::sched::{self, Priority};
+use crate::sched::{self, priority::Priority};
 use crate::smp;
 use crate::sync::CriticalSection;
 use crate::thread::priority;
@@ -49,8 +49,8 @@ pub fn softclock() -> ! {
         let section = CriticalSection::enter();
         if wheel.checked_ticks.load(Ordering::Relaxed) == wheel.ticks.load(Ordering::Relaxed) {
             wheel.running.store(false, Ordering::Relaxed);
-            sched::assert_wait(None);
-            sched::block();
+            sched::wait::assert_wait(None);
+            sched::switch::block();
         }
         drop(section);
     }

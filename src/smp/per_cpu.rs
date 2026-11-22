@@ -13,7 +13,7 @@ use crate::arch;
 use crate::ast::Ast;
 use crate::clock::timeout::Wheel;
 use crate::processor::Processor;
-use crate::sched::{SLEEP_QUEUES, SleepQueue};
+use crate::sched::queue::{SLEEP_QUEUES, SleepQueue};
 use crate::sync::{CpuLock, CriticalSection, Spinlock};
 use crate::thread::thread::{RunQueueAdapter, SleepQueueAdapter, Thread};
 

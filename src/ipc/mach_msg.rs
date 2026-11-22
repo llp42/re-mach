@@ -15,7 +15,7 @@ use super::port::{Port, PortName, PortState, Receiver};
 use super::space::{KERNEL_SPACE, SpaceState};
 use crate::arch::PAGE_SIZE;
 use crate::reference::Reference;
-use crate::sched::{self, WaitResult};
+use crate::sched::{self, wait::WaitResult};
 use crate::sync::SpinlockGuard;
 use crate::{ipc_kobject, smp};
 
@@ -516,7 +516,7 @@ fn queue(message: KernelMessage, options: Options) {
     if let Some(receiver) = receiver {
         // SAFETY: the reference keeps it alive through the wake, and a
         // runnable thread holds its own.
-        sched::clear_wait(
+        sched::wait::clear_wait(
             unsafe { Reference::as_ptr(&receiver).as_ref() },
             WaitResult::Awakened,
         );
@@ -675,12 +675,12 @@ fn dequeue<'a>(
                 drop(port_state);
                 return Err(MACH_RCV_TIMED_OUT);
             }
-            Some(milliseconds) => sched::will_wait_with_timeout(milliseconds),
-            None => sched::will_wait(),
+            Some(milliseconds) => sched::wait::will_wait_with_timeout(milliseconds),
+            None => sched::wait::will_wait(),
         }
         port_state.receivers.push_front(thread);
         drop(port_state);
-        sched::block();
+        sched::switch::block();
         port_state = port.state.lock();
         assert!(
             port_state.active,

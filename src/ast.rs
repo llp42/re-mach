@@ -7,7 +7,10 @@
 use core::ptr;
 
 use crate::processor::State;
-use crate::sched::{self, Policies, Policy};
+use crate::sched::{
+    self,
+    policy::{Policies, Policy},
+};
 use crate::smp;
 use crate::sync::CriticalSection;
 use crate::thread::reaper;
@@ -51,8 +54,10 @@ pub fn taken() {
         reaper::halt_self();
     }
     // A halt may have woken a higher thread.
-    if reasons.contains(Ast::BLOCK) || sched::switch_needed(thread, smp::current().processor()) {
-        sched::block();
+    if reasons.contains(Ast::BLOCK)
+        || sched::switch::switch_needed(thread, smp::current().processor())
+    {
+        sched::switch::block();
     }
 }
 
@@ -75,7 +80,7 @@ pub fn check(thread: &Thread) {
             }
             match processor.set() {
                 Some(set) if set.policies().contains(Policies::FIXED_PRIORITY) => {
-                    if sched::switch_needed(thread, processor) {
+                    if sched::switch::switch_needed(thread, processor) {
                         cpu.add_asts(Ast::BLOCK);
                     } else if matches!(thread.policy(), Policy::FixedPriority) {
                         // A fixed-priority thread uses all of a new quantum.

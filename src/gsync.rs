@@ -11,7 +11,7 @@ use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusi
 use crate::arch::{self, Machine as _};
 use crate::error::Error;
 use crate::reference::Reference;
-use crate::sched::{self, WaitResult};
+use crate::sched::{self, wait::WaitResult};
 use crate::smp;
 use crate::sync::{CachePadded, Token};
 use crate::task::task::Task;
@@ -181,14 +181,14 @@ pub fn wait(
     // as awakened, and any other end of the wait unlinks it below.
     cursor.insert_before(unsafe { UnsafeRef::from_raw(&raw const waiter) });
     if flags.contains(Flags::TIMED) {
-        sched::will_wait_with_timeout(milliseconds);
+        sched::wait::will_wait_with_timeout(milliseconds);
     } else {
-        sched::will_wait();
+        sched::wait::will_wait();
     }
     // A wake before the block would find the thread RUN|WAIT, which
     // `clear_wait` refuses: not yet (no waker runs here on this CPU).
     drop(waiters);
-    sched::block();
+    sched::switch::block();
     match thread.wait_result() {
         WaitResult::Awakened => Ok(()),
         WaitResult::TimedOut => {
@@ -278,7 +278,7 @@ pub fn wake(
         // Unlinked and read before the wake: a woken waiter's frame may go
         // at once.
         let thread = cursor.remove().unwrap().thread;
-        sched::clear_wait(thread, WaitResult::Awakened);
+        sched::wait::clear_wait(thread, WaitResult::Awakened);
         if !flags.contains(Flags::BROADCAST) || cursor.get().is_none_or(|waiter| waiter.key != key)
         {
             break;

@@ -7,7 +7,7 @@ use core::ptr::NonNull;
 use crate::ast::Ast;
 use crate::config::MAX_CPUS;
 use crate::reference::Reference;
-use crate::sched::{self, Event};
+use crate::sched::{self, event::Event};
 use crate::smp;
 use crate::sync::CriticalSection;
 
@@ -32,7 +32,7 @@ pub fn halt_self() {
         thread.insert_state(ThreadState::HALTED);
         thread.remove_asts(Ast::HALT);
         drop(section);
-        sched::block();
+        sched::switch::block();
         return;
     }
     thread.terminate_ipc();
@@ -43,8 +43,8 @@ pub fn halt_self() {
     smp::current().dead_threads().lock().push_back(thread);
     thread.insert_state(ThreadState::HALTED);
     drop(section);
-    sched::wakeup(Event::of(&REAPER));
-    sched::block();
+    sched::wait::wakeup(Event::of(&REAPER));
+    sched::switch::block();
     panic!("the zombie walks!");
 }
 
@@ -74,8 +74,8 @@ pub fn reaper_thread() -> ! {
             drop(thread);
             section = CriticalSection::enter();
         }
-        sched::assert_wait(Some(Event::of(&REAPER)));
-        sched::block();
+        sched::wait::assert_wait(Some(Event::of(&REAPER)));
+        sched::switch::block();
         drop(section);
     }
 }

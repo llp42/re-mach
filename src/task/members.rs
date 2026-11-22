@@ -12,7 +12,7 @@ use crate::error::Error;
 use crate::kalloc;
 use crate::name::Name;
 use crate::reference::Reference;
-use crate::sched::Priority;
+use crate::sched::priority::Priority;
 use crate::thread::thread::{TaskThreadAdapter, Thread};
 
 use super::task::Task;

@@ -4,7 +4,7 @@
 //! The interrupt thread, which delivers device interrupts to user tasks.
 
 use crate::config::HZ;
-use crate::sched::{self, Event};
+use crate::sched::{self, event::Event};
 use crate::thread::timeout;
 
 /// What the interrupt thread waits on; only its address counts.
@@ -15,8 +15,8 @@ static INTR: u8 = 0;
 /// time it runs.
 pub fn intr_thread() -> ! {
     loop {
-        sched::assert_wait(Some(Event::of(&INTR)));
+        sched::wait::assert_wait(Some(Event::of(&INTR)));
         timeout::set_own_timeout(u64::from(HZ));
-        sched::block();
+        sched::switch::block();
     }
 }

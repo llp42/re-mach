@@ -17,7 +17,7 @@ use crate::arch::{Current, Machine as _};
 use crate::config::HZ;
 use crate::machine::{self, CpuState, Mode};
 use crate::processor::State;
-use crate::sched::{self, WaitResult};
+use crate::sched::{self, wait::WaitResult};
 use crate::smp;
 
 /// A tick's length, in microseconds.
@@ -42,7 +42,7 @@ pub fn interrupt(microseconds: u32, mode: Mode) {
     };
     machine::count_tick(cpu.id(), state);
     if let Some(thread) = thread {
-        sched::quantum_update(thread, 1, state);
+        sched::tick::quantum_update(thread, 1, state);
     }
     let wheel = cpu.timeouts();
     let ticks = wheel.ticks.load(Ordering::Relaxed) + 1;
@@ -76,6 +76,6 @@ pub fn interrupt(microseconds: u32, mode: Mode) {
     }
     // One made later finds the wheel behind as it first runs.
     if wake && let Some(&thread) = wheel.thread.get() {
-        sched::clear_wait(thread, WaitResult::Awakened);
+        sched::wait::clear_wait(thread, WaitResult::Awakened);
     }
 }

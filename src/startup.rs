@@ -28,7 +28,7 @@ fn start_kernel_threads() -> ! {
             .unwrap_or_else(|error| panic!("start_kernel_threads: thread_create: {error:?}"));
         thread.set_name(format_args!("idle/{cpu}"));
         thread.bind(smp::of(cpu).processor());
-        thread.start(sched::idle_thread);
+        thread.start(sched::switch::idle_thread);
         thread
             .resume()
             .unwrap_or_else(|error| panic!("start_kernel_threads: thread_resume: {error:?}"));
@@ -49,11 +49,11 @@ fn start_kernel_threads() -> ! {
     }
     create::kernel_thread(kernel_task, reaper::reaper_thread)
         .unwrap_or_else(|error| panic!("start_kernel_threads: kernel_thread: {error:?}"));
-    create::kernel_thread(kernel_task, sched::sched_thread)
+    create::kernel_thread(kernel_task, sched::tick::sched_thread)
         .unwrap_or_else(|error| panic!("start_kernel_threads: kernel_thread: {error:?}"));
     create::kernel_thread(kernel_task, device::interrupt::intr_thread)
         .unwrap_or_else(|error| panic!("start_kernel_threads: kernel_thread: {error:?}"));
-    create::kernel_thread(kernel_task, sched::action_thread)
+    create::kernel_thread(kernel_task, sched::tick::action_thread)
         .unwrap_or_else(|error| panic!("start_kernel_threads: kernel_thread: {error:?}"));
     arch::Current::start_other_cpus();
     device::create_service();
@@ -70,7 +70,7 @@ fn start_kernel_threads() -> ! {
 /// Starts the machine-independent kernel, on the boot CPU, once the
 /// machine is set up.
 pub fn start() -> ! {
-    sched::init();
+    sched::tick::init();
     vm::bootstrap();
     radix_tree::init();
     ipc::bootstrap();
@@ -85,8 +85,8 @@ pub fn start() -> ! {
     task::create::init();
     create::init();
     processor::init();
-    sched::recompute_priorities(&sched::RECOMPUTE_PRIORITIES);
-    sched::compute_mach_factor();
+    sched::tick::recompute_priorities(&sched::tick::RECOMPUTE_PRIORITIES);
+    sched::load::compute_mach_factor();
     let kernel_task = task::create::KERNEL_TASK
         .get()
         .expect("startup: no kernel task");

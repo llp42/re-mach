@@ -9,7 +9,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::clock::time::TimeValue;
 use crate::error::Error;
-use crate::sched::{self, Policies, Policy, Priority};
+use crate::sched::{
+    self,
+    policy::{Policies, Policy},
+    priority::Priority,
+};
 use crate::{arch, smp};
 
 use super::machine::MachineThread as _;
@@ -187,7 +191,8 @@ impl Thread {
         // As update_priority for a thread not running, without storing.
         let mut cpu_usage = self.cpu_usage.load(Ordering::Relaxed);
         let mut priority = self.sched_pri.load(Ordering::Relaxed);
-        let ticks = sched::scheduler_tick().wrapping_sub(self.sched_stamp.load(Ordering::Relaxed));
+        let ticks =
+            sched::tick::scheduler_tick().wrapping_sub(self.sched_stamp.load(Ordering::Relaxed));
         if !state.contains(ThreadState::RUN) && ticks != 0 {
             let untaken = |time: &AtomicU64, charged: &AtomicU64| {
                 let delta = time

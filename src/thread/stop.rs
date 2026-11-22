@@ -7,7 +7,7 @@ use core::sync::atomic::Ordering;
 
 use crate::ast::Ast;
 use crate::error::Error;
-use crate::sched::{self, Event, Preemption};
+use crate::sched::{self, event::Event, preemption::Preemption};
 use crate::smp;
 use crate::sync::CriticalSection;
 
@@ -84,8 +84,8 @@ impl Thread {
                         "thread_dowait: another CPU's thread, not yet"
                     );
                     self.wake_active.store(true, Ordering::Relaxed);
-                    sched::assert_wait(Some(Event::of(&self.wake_active)));
-                    sched::block();
+                    sched::wait::assert_wait(Some(Event::of(&self.wake_active)));
+                    sched::switch::block();
                 }
                 // Matching no case, it counts as stopped.
                 _ => break,
@@ -103,7 +103,7 @@ impl Thread {
         self.state
             .fetch_and(!ThreadState::RUN.bits(), Ordering::Release);
         if self.wake_active.swap(false, Ordering::Relaxed) {
-            sched::wakeup(Event::of(&self.wake_active));
+            sched::wait::wakeup(Event::of(&self.wake_active));
         }
     }
 
@@ -125,7 +125,7 @@ impl Thread {
         if state & (ThreadState::WAIT | ThreadState::RUN).bits() == 0 {
             self.state
                 .fetch_or(ThreadState::RUN.bits(), Ordering::Relaxed);
-            sched::make_runnable(self, Preemption::Allowed);
+            sched::preemption::make_runnable(self, Preemption::Allowed);
         }
     }
 
@@ -184,7 +184,7 @@ impl Thread {
             if state & (ThreadState::WAIT | ThreadState::RUN).bits() == 0 {
                 self.state
                     .fetch_or(ThreadState::RUN.bits(), Ordering::Relaxed);
-                sched::make_runnable(self, Preemption::Allowed);
+                sched::preemption::make_runnable(self, Preemption::Allowed);
             }
         }
         Ok(())

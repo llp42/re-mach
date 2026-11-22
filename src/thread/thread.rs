@@ -18,7 +18,7 @@ use crate::ipc::port::Port;
 use crate::name::Name;
 use crate::processor::{Processor, ProcessorSet};
 use crate::reference::{Count, Counted, Reference};
-use crate::sched::{Event, Policy, WaitResult};
+use crate::sched::{event::Event, policy::Policy, wait::WaitResult};
 use crate::slab::CacheBox;
 use crate::sync::{CriticalSection, OnceLock, Spinlock};
 use crate::task::task::Task;

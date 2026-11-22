@@ -6,7 +6,11 @@ use core::sync::atomic::Ordering;
 
 use crate::error::Error;
 use crate::machine::Mode;
-use crate::sched::{self, BasePriority, Policy, Priority};
+use crate::sched::{
+    self,
+    policy::Policy,
+    priority::{BasePriority, Priority},
+};
 use crate::smp;
 use crate::sync::CriticalSection;
 
@@ -78,12 +82,12 @@ impl Thread {
     /// scheduler's aging, or, when timeshared, gathers the time it ran, and
     /// its priority follows once its quantum runs out or it gathered enough.
     pub fn charge_tick(&self, quantum: Quantum) {
-        if self.sched_stamp.load(Ordering::Relaxed) != sched::scheduler_tick() {
+        if self.sched_stamp.load(Ordering::Relaxed) != sched::tick::scheduler_tick() {
             self.update_priority();
         } else if self.usage_sets_priority() {
             self.take_time_delta();
             let delta = self.sched_delta.load(Ordering::Relaxed);
-            if matches!(quantum, Quantum::Expired) || delta >= sched::USAGE_THRESHOLD {
+            if matches!(quantum, Quantum::Expired) || delta >= sched::priority::USAGE_THRESHOLD {
                 let usage = self.sched_usage.load(Ordering::Relaxed);
                 self.sched_usage
                     .store(usage.wrapping_add(delta), Ordering::Relaxed);
@@ -153,7 +157,7 @@ impl Thread {
 
     /// Catches its use up with the scheduler's aging, if it missed any.
     pub(crate) fn catch_up(&self) {
-        if self.sched_stamp.load(Ordering::Relaxed) != sched::scheduler_tick() {
+        if self.sched_stamp.load(Ordering::Relaxed) != sched::tick::scheduler_tick() {
             self.update_priority();
         }
     }
@@ -162,7 +166,8 @@ impl Thread {
     /// aged more than one scheduler tick ago.
     pub(crate) fn is_stuck(&self) -> bool {
         self.state() & ThreadState::SCHEDULING == ThreadState::RUN
-            && sched::scheduler_tick().wrapping_sub(self.sched_stamp.load(Ordering::Relaxed)) > 1
+            && sched::tick::scheduler_tick().wrapping_sub(self.sched_stamp.load(Ordering::Relaxed))
+                > 1
     }
 
     /// Catches its use up with the scheduler's aging: each second missed
@@ -172,7 +177,7 @@ impl Thread {
     ///
     /// If it missed none.
     fn update_priority(&self) {
-        let tick = sched::scheduler_tick();
+        let tick = sched::tick::scheduler_tick();
         let ticks = tick.wrapping_sub(self.sched_stamp.load(Ordering::Relaxed));
         assert!(ticks != 0, "update_priority: no tick missed");
         self.sched_stamp.store(tick, Ordering::Relaxed);

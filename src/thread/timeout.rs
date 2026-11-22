@@ -5,7 +5,7 @@
 use crate::clock;
 use crate::clock::timeout::Timeout;
 use crate::sched;
-use crate::sched::WaitResult;
+use crate::sched::wait::WaitResult;
 use crate::smp;
 use crate::sync::CriticalSection;
 
@@ -19,7 +19,7 @@ pub(super) fn thread_timeout(timer: &'static Timeout) {
     let thread = unsafe { &*timer.argument().cast::<Thread>() };
     // Its home CPU is this one: the default set's threads run on CPU 0, and
     // the other CPUs' bound threads set no timer.
-    sched::clear_wait(thread, WaitResult::TimedOut);
+    sched::wait::clear_wait(thread, WaitResult::TimedOut);
 }
 
 /// Sets the current thread's timer to end its wait `ticks` ticks after the

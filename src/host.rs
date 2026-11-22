@@ -170,7 +170,7 @@ pub fn info(host: Option<&Host>, flavor: i32, info: &mut [i32]) -> Result<usize,
             let tick = i32::try_from(clock::TICK_MICROSECONDS).unwrap();
             let sched = SchedInfo {
                 min_timeout: tick / 1000,
-                min_quantum: i32::try_from(sched::MIN_QUANTUM).unwrap() * tick / 1000,
+                min_quantum: i32::try_from(sched::policy::MIN_QUANTUM).unwrap() * tick / 1000,
             };
             // SAFETY: 32-bit integers alone, with no padding.
             let count = unsafe { fill(info, sched) };
@@ -178,8 +178,10 @@ pub fn info(host: Option<&Host>, flavor: i32, info: &mut [i32]) -> Result<usize,
         }
         Ok(Flavor::Load) => {
             let load = LoadInfo {
-                avenrun: sched::load_averages().map(|average| i32::try_from(average).unwrap()),
-                mach_factor: sched::mach_factors().map(|factor| i32::try_from(factor).unwrap()),
+                avenrun: sched::load::load_averages()
+                    .map(|average| i32::try_from(average).unwrap()),
+                mach_factor: sched::load::mach_factors()
+                    .map(|factor| i32::try_from(factor).unwrap()),
             };
             // SAFETY: 32-bit integers alone, with no padding.
             let count = unsafe { fill(info, load) };

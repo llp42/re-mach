@@ -18,7 +18,11 @@ use crate::host::HOST;
 use crate::ipc::MessageType;
 use crate::ipc::port::{Port, PortName};
 use crate::reference::Reference;
-use crate::sched::{self, BasePriority, Event, USER_PRIORITY};
+use crate::sched::{
+    self,
+    event::Event,
+    priority::{BasePriority, USER_PRIORITY},
+};
 use crate::sync::Spinlock;
 use crate::task;
 use crate::task::ports::{Memory, Threads};
@@ -208,7 +212,7 @@ fn run_command(module: &'static BootModule, task: &'static Task, line: &[u8], ar
         .unwrap_or_else(|error| panic!("boot_script_exec_cmd: thread_resume: {error:?}"));
     // The thread refers to the info until done.
     while !*done {
-        sched::sleep(Event::of(&info), done);
+        sched::wait::sleep(Event::of(&info), done);
         done = info.done.lock();
     }
     drop(done);
@@ -275,7 +279,7 @@ fn load_program() -> ! {
     assert!(!*done);
     *done = true;
     drop(done);
-    sched::wakeup(event);
+    sched::wait::wakeup(event);
     arch::MachineState::return_to_user()
 }
 

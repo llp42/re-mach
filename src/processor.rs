@@ -17,10 +17,10 @@ use crate::config::MAX_CPUS;
 use crate::error::Error;
 use crate::ipc::port::Port;
 use crate::reference::{Count, Counted, Reference};
-use crate::sched::{
-    MAX_STUCK_THREADS, MIN_QUANTUM, Policies, Priority, RUN_QUEUES, RunQueue, SCHEDULER_SCALE,
-    SYSTEM_PRIORITY,
-};
+use crate::sched::policy::{MIN_QUANTUM, Policies, SCHEDULER_SCALE};
+use crate::sched::priority::{Priority, SYSTEM_PRIORITY};
+use crate::sched::queue::{RUN_QUEUES, RunQueue};
+use crate::sched::switch::MAX_STUCK_THREADS;
 use crate::slab::{Cache, CacheBox};
 use crate::smp;
 use crate::sync::{CpuLock, CriticalSection, OnceLock, Token, TokenGuard};

@@ -19,7 +19,8 @@ use crate::name::Name;
 use crate::processor::DEFAULT_SET;
 use crate::reference::{Count, Reference};
 use crate::sched;
-use crate::sched::{Policy, SCHEDULER_SCALE, WaitResult};
+use crate::sched::policy::{Policy, SCHEDULER_SCALE};
+use crate::sched::wait::WaitResult;
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{CriticalSection, OnceLock, Spinlock};
 use crate::task::task::Task;
@@ -39,7 +40,7 @@ pub(super) static CACHE: Cache<Thread> = Cache::new("thread");
 /// to it was made in.
 pub extern "sysv64" fn begin(old: Option<&'static Thread>) {
     if let Some(old) = old {
-        sched::dispatch(old);
+        sched::switch::dispatch(old);
     }
     // SAFETY: a switch is made in a critical section no guard holds, and
     // this thread runs its first instructions in it.
@@ -97,7 +98,7 @@ impl Thread {
             // Set below, by its set's load average.
             cpu_usage: AtomicU32::new(0),
             sched_usage: AtomicU32::new(sched_usage),
-            sched_stamp: AtomicU32::new(sched::scheduler_tick()),
+            sched_stamp: AtomicU32::new(sched::tick::scheduler_tick()),
             active: AtomicBool::new(true),
             set: AtomicPtr::new(ptr::null_mut()),
             may_assign: true,
@@ -248,7 +249,7 @@ pub fn kernel_thread(task: &'static Task, start: fn() -> !) -> Result<(), Error>
     drop(unsafe { Reference::from_raw(NonNull::from(thread)) });
     thread.start(start);
     // Never run, it waits on no run queue.
-    let priority = u32::from(sched::SYSTEM_PRIORITY);
+    let priority = u32::from(sched::priority::SYSTEM_PRIORITY);
     thread.max_priority.store(priority, Ordering::Relaxed);
     thread.priority.store(priority, Ordering::Relaxed);
     thread.sched_pri.store(priority, Ordering::Relaxed);
