@@ -500,7 +500,6 @@ macro_rules! subsystem {
             use super::super::*;
             use $crate::ipc::kernel_message::KernelMessage;
             use $crate::ipc::kernel_message::header::Header;
-            use $crate::ipc::port::Port;
             use $crate::ipc_kobject::mig;
 
             /// The request, as MIG lays it out.

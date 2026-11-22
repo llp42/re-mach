@@ -12,7 +12,7 @@ use crate::error::Error;
 use crate::ipc::port::{Port, SendRight};
 use crate::reference::Reference;
 use crate::smp;
-use crate::task::{self, Memory, SpecialPort, Task};
+use crate::task::{Memory, SpecialPort, Task};
 use crate::thread::{self, MachineThread as _, Thread};
 use crate::vm::map::{Change, Map, Placement};
 use crate::vm::object::Offset;
@@ -21,42 +21,42 @@ use crate::vm::{self, Inheritance, Protection, VirtualAddress};
 
 mig::subsystem! {
     base 2000;
-    7 task_create(parent_task = task::of, inherit_memory: Boolean) -> (child_task: Port);
-    8 task_terminate(target_task = task::of);
-    11 task_threads(target_task = task::of) -> (thread_list: PortArray);
-    12 task_info(target_task = task::of, flavor: i32)
+    7 task_create(parent_task = Port::to_task, inherit_memory: Boolean) -> (child_task: Port);
+    8 task_terminate(target_task = Port::to_task);
+    11 task_threads(target_task = Port::to_task) -> (thread_list: PortArray);
+    12 task_info(target_task = Port::to_task, flavor: i32)
         -> (task_info_out: [i32; ..1024], CountInOut);
-    16 thread_terminate(target_thread = thread::of);
-    17 thread_get_state(target_thread = thread::of, flavor: i32)
+    16 thread_terminate(target_thread = Port::to_thread);
+    17 thread_get_state(target_thread = Port::to_thread, flavor: i32)
         -> (old_state: [u32; ..1024], CountInOut);
-    18 thread_set_state(target_thread = thread::of, flavor: i32, new_state: [u32; ..1024]);
-    19 thread_info(target_thread = thread::of, flavor: i32)
+    18 thread_set_state(target_thread = Port::to_thread, flavor: i32, new_state: [u32; ..1024]);
+    19 thread_info(target_thread = Port::to_thread, flavor: i32)
         -> (thread_info_out: [i32; ..1024], CountInOut);
     21 vm_allocate(
-        target_task = task::map_of,
+        target_task = Port::task_map,
         address: VirtualAddress,
         size: usize,
         anywhere: Boolean
     ) -> (address: VirtualAddress);
-    23 vm_deallocate(target_task = task::map_of, address: VirtualAddress, size: usize);
+    23 vm_deallocate(target_task = Port::task_map, address: VirtualAddress, size: usize);
     24 vm_protect(
-        target_task = task::map_of,
+        target_task = Port::task_map,
         address: VirtualAddress,
         size: usize,
         set_maximum: Boolean,
         new_protection: u32
     );
-    27 vm_write(target_task = task::map_of, address: VirtualAddress, data: OutOfLine<u8>);
-    56 task_suspend(target_task = task::of);
-    57 task_resume(target_task = task::of);
-    59 task_set_special_port(task = task::of, which_port: i32, special_port: SendRight);
-    61 thread_create(parent_task = task::of) -> (child_thread: Port);
-    62 thread_suspend(target_thread = thread::of);
-    63 thread_resume(target_thread = thread::of);
-    64 thread_abort(target_thread = thread::of);
-    68 thread_set_special_port(thread = thread::of, which_port: i32, special_port: SendRight);
+    27 vm_write(target_task = Port::task_map, address: VirtualAddress, data: OutOfLine<u8>);
+    56 task_suspend(target_task = Port::to_task);
+    57 task_resume(target_task = Port::to_task);
+    59 task_set_special_port(task = Port::to_task, which_port: i32, special_port: SendRight);
+    61 thread_create(parent_task = Port::to_task) -> (child_thread: Port);
+    62 thread_suspend(target_thread = Port::to_thread);
+    63 thread_resume(target_thread = Port::to_thread);
+    64 thread_abort(target_thread = Port::to_thread);
+    68 thread_set_special_port(thread = Port::to_thread, which_port: i32, special_port: SendRight);
     89 vm_map(
-        target_task = task::map_of,
+        target_task = Port::task_map,
         address: VirtualAddress,
         size: usize,
         mask: usize,

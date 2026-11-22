@@ -7,7 +7,7 @@ use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 
-use crate::host::{HOST, Host};
+use crate::host::HOST;
 use crate::ipc::port::{KernelObject, Port};
 use crate::processor::{BOOT_PROCESSOR, DEFAULT_SET, Processor, ProcessorSet};
 use crate::reference::Reference;
@@ -70,54 +70,6 @@ pub fn init_set(set: &'static ProcessorSet) {
         Reference::into_raw(Reference::clone(&set));
         Reference::into_raw(Reference::clone(&set));
     }
-}
-
-/// The host `port` stands for while alive, if it is one of a host's ports,
-/// as `convert_port_to_host` finds it.
-pub fn host(port: &Port) -> Option<&'static Host> {
-    match port.kernel_object() {
-        Some(KernelObject::Host(host) | KernelObject::HostPrivileged(host)) => Some(host),
-        _ => None,
-    }
-}
-
-/// The host `port` stands for while alive, if it is a host's privileged
-/// port, as `convert_port_to_host_priv` finds it.
-pub fn privileged_host(port: &Port) -> Option<&'static Host> {
-    match port.kernel_object() {
-        Some(KernelObject::HostPrivileged(host)) => Some(host),
-        _ => None,
-    }
-}
-
-/// The set `port` stands for, if it is a set's port, not its name port,
-/// with a reference to it taken under the port's lock, as
-/// `convert_port_to_pset` gives it.
-pub fn set_of(port: &Port) -> Option<Reference<ProcessorSet>> {
-    port.with_kernel_object(|object| match object {
-        Some(KernelObject::ProcessorSet(set)) => {
-            // SAFETY: a set's ports keep a reference to it while they stand
-            // for it, which this handle borrows and never drops.
-            let set = ManuallyDrop::new(unsafe { Reference::from_raw(*set) });
-            Some(Reference::clone(&set))
-        }
-        _ => None,
-    })
-}
-
-/// The set `port` stands for, if it is a set's port or name port, with a
-/// reference to it taken under the port's lock, as
-/// `convert_port_to_pset_name` gives it.
-pub fn set_name_of(port: &Port) -> Option<Reference<ProcessorSet>> {
-    port.with_kernel_object(|object| match object {
-        Some(KernelObject::ProcessorSet(set) | KernelObject::ProcessorSetName(set)) => {
-            // SAFETY: a set's ports keep a reference to it while they stand
-            // for it, which this handle borrows and never drops.
-            let set = ManuallyDrop::new(unsafe { Reference::from_raw(*set) });
-            Some(Reference::clone(&set))
-        }
-        _ => None,
-    })
 }
 
 /// A new port the kernel receives on, standing for `object`; gives its

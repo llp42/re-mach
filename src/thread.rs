@@ -1888,16 +1888,6 @@ unsafe impl Counted for Thread {
     }
 }
 
-/// The thread `port` stands for, with a reference to it taken under the
-/// port's lock, as `convert_port_to_thread` gives it.
-pub fn of(port: &Port) -> Option<Reference<Thread>> {
-    port.with_kernel_object(|object| match object {
-        // SAFETY: a thread outlives its port's standing for it.
-        Some(KernelObject::Thread(thread)) => unsafe { Reference::upgrade(*thread) },
-        _ => None,
-    })
-}
-
 /// Sets the current thread's base priority to `priority`, its highest
 /// raised to it if need be, and its scheduled priority from its use.
 ///

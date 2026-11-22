@@ -9,25 +9,25 @@ use crate::error::Error;
 use crate::gsync::{self, Flags};
 use crate::ipc::port::Port;
 use crate::reference::Reference;
-use crate::task::{self, Task};
+use crate::task::Task;
 use crate::vm::map::Map;
 use crate::vm::{self, VirtualAddress};
 
 mig::subsystem! {
     base 4200;
-    2 task_set_name(task = task::of, name: [StringChar; ..64]);
+    2 task_set_name(task = Port::to_task, name: [StringChar; ..64]);
     4 gsync_wait(
-        task = task::of,
+        task = Port::to_task,
         address: VirtualAddress,
         value: u32,
         value2: u32,
         milliseconds: u32,
         flags: i32
     );
-    5 gsync_wake(task = task::of, address: VirtualAddress, value: u32, flags: i32);
-    7 vm_wire_all(host: Port, task = task::map_of, flags: u32);
-    15 vm_set_size_limit(host_port: Port, map = task::map_of, current_limit: usize, max_limit: usize);
-    16 vm_get_size_limit(map = task::map_of) -> (current_limit: usize, max_limit: usize);
+    5 gsync_wake(task = Port::to_task, address: VirtualAddress, value: u32, flags: i32);
+    7 vm_wire_all(host: Port, task = Port::task_map, flags: u32);
+    15 vm_set_size_limit(host_port: Port, map = Port::task_map, current_limit: usize, max_limit: usize);
+    16 vm_get_size_limit(map = Port::task_map) -> (current_limit: usize, max_limit: usize);
 }
 
 /// Serves `task_set_name`: names `task` `name`.

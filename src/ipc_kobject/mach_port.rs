@@ -10,19 +10,18 @@ use crate::ipc::MessageType;
 use crate::ipc::port::{Port, PortName, PortType, SendRight};
 use crate::ipc::space::Space;
 use crate::reference::Reference;
-use crate::task;
 
 mig::subsystem! {
     base 3200;
-    0 mach_port_names(task = task::space_of) -> (names: OutOfLine<PortName>, types: OutOfLine<PortType>);
-    1 mach_port_type(task = task::space_of, name: PortName) -> (port_type: PortType);
-    2 mach_port_rename(task = task::space_of, old_name: PortName, new_name: PortName);
-    3 mach_port_allocate_name(task = task::space_of, right: u32, name: PortName);
-    4 mach_port_allocate(task = task::space_of, right: u32) -> (name: PortName);
-    5 mach_port_destroy(task = task::space_of, name: PortName);
-    6 mach_port_deallocate(task = task::space_of, name: PortName);
-    7 mach_port_get_refs(task = task::space_of, name: PortName, right: u32) -> (refs: u32);
-    15 mach_port_insert_right(task = task::space_of, name: PortName, poly: SendRight);
+    0 mach_port_names(task = Port::task_space) -> (names: OutOfLine<PortName>, types: OutOfLine<PortType>);
+    1 mach_port_type(task = Port::task_space, name: PortName) -> (port_type: PortType);
+    2 mach_port_rename(task = Port::task_space, old_name: PortName, new_name: PortName);
+    3 mach_port_allocate_name(task = Port::task_space, right: u32, name: PortName);
+    4 mach_port_allocate(task = Port::task_space, right: u32) -> (name: PortName);
+    5 mach_port_destroy(task = Port::task_space, name: PortName);
+    6 mach_port_deallocate(task = Port::task_space, name: PortName);
+    7 mach_port_get_refs(task = Port::task_space, name: PortName, right: u32) -> (refs: u32);
+    15 mach_port_insert_right(task = Port::task_space, name: PortName, poly: SendRight);
 }
 
 /// Serves `mach_port_names`: the names `space` holds rights under, and

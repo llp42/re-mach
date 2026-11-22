@@ -18,7 +18,7 @@ mig::subsystem! {
     base 2800;
     0 device_open(master: Port, mode: u32, name: DeviceName) -> (device: Port);
     9 device_map(
-        device = device::lookup::by_port,
+        device = Port::to_device,
         protection: u32,
         offset: Offset,
         size: usize,

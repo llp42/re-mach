@@ -7,12 +7,12 @@
 use super::fpu;
 use crate::error::Error;
 use crate::host::Host;
-use crate::ipc_host;
+use crate::ipc::port::Port;
 use crate::ipc_kobject::mig;
 
 mig::subsystem! {
     base 3800;
-    9 i386_get_xstate_size(host = ipc_host::host) -> (size: usize);
+    9 i386_get_xstate_size(host = Port::as_host) -> (size: usize);
 }
 
 /// Serves `i386_get_xstate_size`: the bytes `i386_XFLOAT_STATE` takes, for

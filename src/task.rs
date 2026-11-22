@@ -863,36 +863,6 @@ unsafe impl Counted for Task {
     }
 }
 
-/// The task `port` stands for, with a reference to it taken under the
-/// port's lock, as `convert_port_to_task` gives it.
-pub fn of(port: &Port) -> Option<Reference<Task>> {
-    port.with_kernel_object(|object| match object {
-        // SAFETY: a task outlives its port's standing for it.
-        Some(KernelObject::Task(task)) => unsafe { Reference::upgrade(*task) },
-        _ => None,
-    })
-}
-
-/// The space of the task `port` stands for, with a reference to it taken
-/// under the port's lock, as `convert_port_to_space` gives it.
-pub fn space_of(port: &Port) -> Option<Reference<Space>> {
-    port.with_kernel_object(|object| match object {
-        // SAFETY: a task outlives its port's standing for it.
-        Some(KernelObject::Task(task)) => Some(unsafe { task.as_ref() }.space.clone()),
-        _ => None,
-    })
-}
-
-/// The map of the task `port` stands for, with a reference to it taken
-/// under the port's lock, as `convert_port_to_map` gives it.
-pub fn map_of(port: &Port) -> Option<Reference<Map>> {
-    port.with_kernel_object(|object| match object {
-        // SAFETY: a task outlives its port's standing for it.
-        Some(KernelObject::Task(task)) => Some(unsafe { task.as_ref() }.map.clone()),
-        _ => None,
-    })
-}
-
 /// The kernel's task, once `init` creates it.
 pub static KERNEL_TASK: OnceLock<&'static Task> = OnceLock::new();
 

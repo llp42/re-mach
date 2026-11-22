@@ -10,7 +10,6 @@ use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusi
 
 use super::pager::PagerAdapter;
 use super::{Device, DeviceState, Kind, State};
-use crate::ipc::port::{KernelObject, Port};
 use crate::reference::{Count, Reference};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::Spinlock;
@@ -90,21 +89,6 @@ pub(super) fn find(name: &[u8]) -> Reference<Device> {
                 .unwrap_or_else(|error| panic!("device_lookup: {error:?}")),
         );
     }
-}
-
-/// The device `port` stands for, with a reference to it taken under the
-/// port's lock, as `dev_port_lookup`; none for a dead port or one standing
-/// for no device.
-pub fn by_port(port: &Port) -> Option<Reference<Device>> {
-    port.with_kernel_object(|object| match object {
-        Some(&KernelObject::Device(device)) => {
-            // SAFETY: the port's reference keeps it alive; the handle borrows
-            // it and never drops.
-            let held = ManuallyDrop::new(unsafe { Reference::from_raw(device) });
-            Some(Reference::clone(&held))
-        }
-        _ => None,
-    })
 }
 
 /// The kind and unit `name` names, as `dev_name_lookup` does: the kind's

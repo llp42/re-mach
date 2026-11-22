@@ -16,26 +16,26 @@ use crate::ipc::port::Port;
 use crate::processor::{DEFAULT_SET, ProcessorSet};
 use crate::reference::Reference;
 use crate::sched::{BasePriority, Priority};
-use crate::task::{self, Task, Threads};
-use crate::{clock, ipc_host, machine};
+use crate::task::{Task, Threads};
+use crate::{clock, machine};
 
 mig::subsystem! {
     base 2600;
-    6 processor_set_default(host = ipc_host::host) -> (default_set: Port);
-    8 processor_set_create(host = ipc_host::privileged_host) -> (new_set: Port, new_name: Port);
-    9 processor_set_destroy(set = ipc_host::set_of);
-    22 task_priority(task = task::of, priority: i32, change_threads: Boolean);
-    34 host_get_time(host = ipc_host::host) -> (current_time: RpcTimeValue);
-    35 host_reboot(host = ipc_host::privileged_host, options: i32);
-    38 host_info(host = ipc_host::host, flavor: i32) -> (info: [i32; ..1024], CountInOut);
-    40 processor_set_info(set_name = ipc_host::set_name_of, flavor: i32)
+    6 processor_set_default(host = Port::as_host) -> (default_set: Port);
+    8 processor_set_create(host = Port::as_privileged_host) -> (new_set: Port, new_name: Port);
+    9 processor_set_destroy(set = Port::to_processor_set);
+    22 task_priority(task = Port::to_task, priority: i32, change_threads: Boolean);
+    34 host_get_time(host = Port::as_host) -> (current_time: RpcTimeValue);
+    35 host_reboot(host = Port::as_privileged_host, options: i32);
+    38 host_info(host = Port::as_host, flavor: i32) -> (info: [i32; ..1024], CountInOut);
+    40 processor_set_info(set_name = Port::to_processor_set_name, flavor: i32)
         -> (host: Port, info_out: [i32; ..1024], CountInOut);
-    43 host_get_time64(host = ipc_host::host) -> (current_time: TimeValue64);
-    46 host_get_kernel_version(host = ipc_host::host) -> (kernel_version: StringC<512>);
-    47 host_get_uptime64(host = ipc_host::host) -> (uptime: TimeValue64);
+    43 host_get_time64(host = Port::as_host) -> (current_time: TimeValue64);
+    46 host_get_kernel_version(host = Port::as_host) -> (kernel_version: StringC<512>);
+    47 host_get_uptime64(host = Port::as_host) -> (uptime: TimeValue64);
     49 task_max_priority(
         host: Port,
-        task = task::of,
+        task = Port::to_task,
         max_priority: i32,
         set_priority: Boolean,
         change_threads: Boolean

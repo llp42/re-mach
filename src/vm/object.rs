@@ -79,7 +79,7 @@ pub struct ObjectState {
     /// How many paging operations on it are under way.
     pub(super) paging_in_progress: u32,
     /// Its `Flags`.
-    pub(super) flags: Flags,
+    pub(crate) flags: Flags,
     /// What serves its pages; none until a pager is entered for it.
     pub(super) kind: Option<Kind>,
     /// A send right for its pager, the memory object; none until it has one.
@@ -114,7 +114,7 @@ struct Pages {
 
 bitflags::bitflags! {
     /// Whether an object had a pager, how it is managed and whether it lives.
-    pub(super) struct Flags: u8 {
+    pub(crate) struct Flags: u8 {
         /// A pager was ever made for it.
         const PAGER_CREATED = 1;
         /// The kernel created it, so the default memory manager manages it.
@@ -613,29 +613,6 @@ pub fn enter(pager: &Reference<Port>, size: usize) -> Option<Reference<Object>> 
     Some(object)
 }
 
-/// The object whose request port `port` is, with a reference taken, as
-/// `vm_object_lookup` gives it; none if it is no request port, or its last
-/// reference dropped and it is being terminated, which takes it off the
-/// port next.
-///
-/// # Panics
-///
-/// If the object is dead.
-fn lookup(port: &Port) -> Option<Reference<Object>> {
-    let object = port.with_kernel_object(|kernel_object| match kernel_object {
-        // SAFETY: the port stands for its object until `terminate` clears
-        // it, under the port's lock, before freeing the object.
-        Some(&KernelObject::PagingRequest(object)) => unsafe { Reference::upgrade(object) },
-        _ => None,
-    })?;
-    // Its reference keeps `terminate` off.
-    assert!(
-        object.lock().flags.contains(Flags::ALIVE),
-        "vm_object_lookup: a dead object"
-    );
-    Some(object)
-}
-
 /// Readies the object whose request port `request` is, as its pager's
 /// `memory_object_ready` asks, with `memory_object_set_attributes_common`:
 /// not to persist, copied as `copy_strategy` says.
@@ -645,7 +622,8 @@ fn lookup(port: &Port) -> Option<Reference<Object>> {
 /// If `request` is no object's request port: not yet. As `lookup` and, at
 /// the object's last reference, `terminate`.
 pub fn ready(request: &Port, copy_strategy: CopyStrategy) {
-    let object = lookup(request)
+    let object = request
+        .to_vm_object()
         .unwrap_or_else(|| panic!("memory_object_ready: KERN_INVALID_ARGUMENT, not yet"));
     let mut state = object.lock();
     // Nothing waits for it to be ready yet, so none is woken.

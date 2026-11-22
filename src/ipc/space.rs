@@ -15,7 +15,6 @@ use crate::error::Error;
 use crate::reference::{Count, Counted, Reference};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::SleepLock;
-use crate::task;
 
 /// A space: the names a task gives ports and port sets.
 pub struct Space {
@@ -125,7 +124,7 @@ impl Space {
             panic!("port_name_to_space: a send right with no port");
         };
         // The port locked under the space's lock.
-        let space = task::space_of(port);
+        let space = port.task_space();
         drop(state);
         space
     }
