@@ -8,7 +8,9 @@ use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 
-use super::mig::{self, Boolean, StringC};
+use super::mig;
+use super::mig::boolean::Boolean;
+use super::mig::string_char::StringC;
 use crate::error::Error;
 use crate::host::{self, HOST, Host};
 use crate::ipc::MessageType;
@@ -57,8 +59,8 @@ struct RpcTimeValue {
 }
 
 // SAFETY: `repr(C)`, integers only, no padding.
-unsafe impl mig::Inline for RpcTimeValue {
-    const WORD: u64 = mig::type_word(MessageType::Integer64, 64, 2);
+unsafe impl mig::argument::Inline for RpcTimeValue {
+    const WORD: u64 = mig::argument::type_word(MessageType::Integer64, 64, 2);
 }
 
 /// Mach's `time_value64_t`, as MIG carries it.
@@ -72,8 +74,8 @@ struct TimeValue64 {
 }
 
 // SAFETY: `repr(C)`, integers only, no padding.
-unsafe impl mig::Inline for TimeValue64 {
-    const WORD: u64 = mig::type_word(MessageType::Integer64, 64, 2);
+unsafe impl mig::argument::Inline for TimeValue64 {
+    const WORD: u64 = mig::argument::type_word(MessageType::Integer64, 64, 2);
 }
 
 /// Serves `processor_set_default`: a send right for the default set's name

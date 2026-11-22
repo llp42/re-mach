@@ -44,17 +44,17 @@ pub fn server(mut request: KernelMessage) -> Option<KernelMessage> {
         .unwrap_or_else(|_| panic!("ipc_kobject_server: dropping request, not yet"));
     let header = request.header();
     // SAFETY: MIG's reply header, `repr(C)`, a `Header` first, integers only.
-    let reply_header = unsafe { reply.layout_mut::<mig::ReplyHeader>() };
+    let reply_header = unsafe { reply.layout_mut::<mig::reply::ReplyHeader>() };
     // To the request's reply port, with the right it carries.
     reply_header.header = Header {
         bits: MessageBits::new(header.bits.local(), None),
-        size: u32::try_from(size_of::<mig::ReplyHeader>()).unwrap(),
+        size: u32::try_from(size_of::<mig::reply::ReplyHeader>()).unwrap(),
         remote_port: header.local_port,
         local_port: 0,
         sequence_number: 0,
         id: header.id.wrapping_add(100),
     };
-    reply_header.return_code.word = <i32 as mig::Inline>::WORD;
+    reply_header.return_code.word = <i32 as mig::argument::Inline>::WORD;
     let routine = mach::routine(header.id)
         .or_else(|| mach_port::routine(header.id))
         .or_else(|| mach_host::routine(header.id))
@@ -91,7 +91,7 @@ pub fn server(mut request: KernelMessage) -> Option<KernelMessage> {
     // So that destroying the request does not release it again.
     header.remote_port = 0;
     // SAFETY: MIG's reply header, as for its header above.
-    let return_code = unsafe { reply.layout::<mig::ReplyHeader>() }
+    let return_code = unsafe { reply.layout::<mig::reply::ReplyHeader>() }
         .return_code
         .data;
     // No routine gives MIG_NO_REPLY yet: `Error` has no such code.

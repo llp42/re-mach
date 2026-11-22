@@ -6,7 +6,10 @@
 
 use core::ptr::{self, NonNull};
 
-use super::mig::{self, Boolean, OutOfLine, PortArray};
+use super::mig;
+use super::mig::argument::OutOfLine;
+use super::mig::boolean::Boolean;
+use super::mig::port_array::PortArray;
 use crate::arch;
 use crate::error::Error;
 use crate::ipc::port::port::Port;

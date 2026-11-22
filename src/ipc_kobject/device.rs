@@ -7,7 +7,8 @@
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use super::mig::{self, DeviceName};
+use super::mig;
+use super::mig::device_name::DeviceName;
 use crate::device::{self, Device};
 use crate::error::Error;
 use crate::ipc::port::port::Port;

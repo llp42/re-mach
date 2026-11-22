@@ -4,7 +4,8 @@
 //! The port calls' server routines, as MIG makes them from `mach_port`'s
 //! definitions; only those written so far.
 
-use super::mig::{self, OutOfLine};
+use super::mig;
+use super::mig::argument::OutOfLine;
 use crate::error::Error;
 use crate::ipc::MessageType;
 use crate::ipc::port::port::Port;

@@ -1,330 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
-//! MIG's server stubs, generated from a subsystem's routines.
-
-use core::marker::PhantomData;
-use core::ptr::NonNull;
-
-use crate::ipc::MessageType;
-use crate::ipc::kernel_message::header::Header;
-use crate::ipc::port::port_name::{PortName, PortType};
-use crate::slab::CacheBox;
-use crate::vm::VirtualAddress;
-use crate::vm::map::copy::MapCopy;
-use crate::vm::object::offset::Offset;
-
-/// An argument as MIG lays it out: its type word, then its data, padded to 8 bytes.
-#[repr(C)]
-pub struct Argument<T> {
-    /// Its type word.
-    pub word: u64,
-    /// Its data.
-    pub data: T,
-}
-
-/// MIG's reply header, `mig_reply_header_t`.
-#[repr(C)]
-pub struct ReplyHeader {
-    /// The reply's header.
-    pub header: Header,
-    /// The routine's return code.
-    pub return_code: Argument<u32>,
-}
-
-/// MIG's type word, Mach's `mach_msg_type_t`, for `number` inline items of
-/// type `name`, `size` bits each.
-pub(super) const fn type_word(name: MessageType, size: u16, number: u32) -> u64 {
-    // The inline bit, bit 29.
-    word(name, size, 1 << 5, number)
-}
-
-/// MIG's type word for `number` items of type `name`, `size` bits each,
-/// with `flags` from bit 24.
-const fn word(name: MessageType, size: u16, flags: u8, number: u32) -> u64 {
-    let [size_low, size_high] = size.to_le_bytes();
-    let [number_0, number_1, number_2, number_3] = number.to_le_bytes();
-    // The name, the size, then the flags; the number above.
-    u64::from_le_bytes([
-        name.number(),
-        size_low,
-        size_high,
-        flags,
-        number_0,
-        number_1,
-        number_2,
-        number_3,
-    ])
-}
-
-/// Data MIG carries inline after its type word.
-///
-/// # Safety
-///
-/// `#[repr(C)]`, `#[repr(transparent)]` or primitive, aligned to at most 8
-/// bytes, every byte in a field (no padding), and any bytes make one.
-pub unsafe trait Inline: Copy {
-    /// MIG's type word for it.
-    const WORD: u64;
-    /// The word's bits MIG's stub checks: all of them.
-    const CHECKED: u64 = u64::MAX;
-}
-
-/// An element of MIG's arrays.
-///
-/// # Safety
-///
-/// As `Inline`.
-pub(super) unsafe trait Element: Copy {
-    /// Its type name.
-    const NAME: MessageType;
-    /// Its size, in bits.
-    const SIZE: u16;
-
-    /// MIG's type word for `number` of them inline.
-    fn word(number: u32) -> u64 {
-        type_word(Self::NAME, Self::SIZE, number)
-    }
-
-    /// MIG's type word for `number` of them out of line.
-    fn out_of_line_word(number: u32) -> u64 {
-        // The long-form bit, bit 30; not inline.
-        word(Self::NAME, Self::SIZE, 1 << 6, number)
-    }
-
-    /// How many of an inline array of `number` its routine reads: all.
-    fn readable(number: usize) -> usize {
-        number
-    }
-}
-
-/// An out-of-line array a routine gives or gets: the copy holding it, and
-/// how many elements.
-pub(super) struct OutOfLine<T> {
-    /// The copy holding it.
-    copy: CacheBox<MapCopy>,
-    /// How many elements.
-    count: usize,
-    /// Their type.
-    element: PhantomData<T>,
-}
-
-impl<T: Element> OutOfLine<T> {
-    /// `count` elements in `copy`.
-    pub(super) const fn new(copy: CacheBox<MapCopy>, count: usize) -> Self {
-        Self {
-            copy,
-            count,
-            element: PhantomData,
-        }
-    }
-
-    /// Its type word, and the copy's address, which the reply takes.
-    ///
-    /// # Panics
-    ///
-    /// If the count is past 32 bits.
-    pub(super) fn into_parts(self) -> (u64, usize) {
-        let word = T::out_of_line_word(u32::try_from(self.count).unwrap());
-        (
-            word,
-            CacheBox::into_raw(self.copy).as_ptr().expose_provenance(),
-        )
-    }
-
-    /// The copy holding it.
-    pub(super) fn into_copy(self) -> CacheBox<MapCopy> {
-        self.copy
-    }
-}
-
-/// An out-of-line array of send rights a routine gives: kalloc memory of
-/// its ports' exposed addresses, each holding its right's reference; none
-/// for no ports.
-pub(super) struct PortArray(Option<NonNull<[usize]>>);
-
-impl PortArray {
-    /// The send rights in `ports`.
-    ///
-    /// # Safety
-    ///
-    /// `ports`, if any, came from `kalloc::allocate` of its size, and holds
-    /// the exposed addresses of references to ports given up by `into_raw`,
-    /// which it takes.
-    pub(super) const unsafe fn new(ports: Option<NonNull<[usize]>>) -> Self {
-        Self(ports)
-    }
-
-    /// Its type word, and the array's address, which the reply takes.
-    ///
-    /// # Panics
-    ///
-    /// If the count is past 32 bits.
-    pub(super) fn into_parts(self) -> (u64, usize) {
-        let count = u32::try_from(self.0.map_or(0, NonNull::len)).unwrap();
-        // Send rights of 64 bits, out of line, in the long form, as
-        // _Xtask_threads.
-        (
-            word(MessageType::PortSend, 64, 1 << 6, count),
-            self.0.map_or(0, |ports| {
-                ports.cast::<usize>().as_ptr().expose_provenance()
-            }),
-        )
-    }
-}
-
-/// The bits of an out-of-line item's or an inline array's type word MIG's
-/// stub checks: all but the number, `msgt_deallocate` and `msgt_unused`, as
-/// `_Xvm_write` and `_Xthread_set_state`.
-pub(super) const ARRAY_CHECKED: u64 = !((0xffff_ffff << 32) | (1 << 31) | (0x1f << 24));
-
-/// A boolean, MIG's `boolean_t`: true unless 0.
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub(super) struct Boolean(u32);
-
-impl From<Boolean> for bool {
-    fn from(boolean: Boolean) -> Self {
-        boolean.0 != 0
-    }
-}
-
-/// A C string of `N` bytes, NUL-padded, MIG's `c_string[N]`.
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub(super) struct StringC<const N: usize>(pub(super) [u8; N]);
-
-/// A character of a C string of variable length, MIG's `c_string[*: N]`.
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub(super) struct StringChar(u8);
-
-impl From<StringChar> for u8 {
-    fn from(character: StringChar) -> Self {
-        character.0
-    }
-}
-
-/// A device's name, MIG's `dev_name_t`: a C string of 128 bytes, in one
-/// long-form item.
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub(super) struct DeviceName([u8; 128]);
-
-impl DeviceName {
-    /// Its bytes before the NUL MIG's stub puts at its last byte.
-    pub(super) fn as_bytes(&self) -> &[u8] {
-        let bytes = &self.0[..127];
-        &bytes[..bytes
-            .iter()
-            .position(|&byte| byte == 0)
-            .unwrap_or(bytes.len())]
-    }
-}
-
-// SAFETY: a primitive.
-unsafe impl Inline for i32 {
-    const WORD: u64 = type_word(MessageType::Integer32, 32, 1);
-}
-
-// SAFETY: a primitive.
-unsafe impl Inline for u32 {
-    const WORD: u64 = type_word(MessageType::Integer32, 32, 1);
-}
-
-// SAFETY: a primitive.
-unsafe impl Inline for usize {
-    const WORD: u64 = type_word(MessageType::Integer64, 64, 1);
-}
-
-// SAFETY: `repr(transparent)` over a `usize`.
-unsafe impl Inline for VirtualAddress {
-    const WORD: u64 = type_word(MessageType::Integer64, 64, 1);
-}
-
-// SAFETY: `repr(transparent)` over a `u32`.
-unsafe impl Inline for Boolean {
-    const WORD: u64 = type_word(MessageType::Boolean, 32, 1);
-}
-
-// SAFETY: `repr(transparent)` over a `usize`.
-unsafe impl Inline for Offset {
-    const WORD: u64 = type_word(MessageType::Integer64, 64, 1);
-}
-
-// SAFETY: `repr(transparent)` over a `u32`.
-unsafe impl Inline for PortName {
-    const WORD: u64 = type_word(MessageType::PortName, 32, 1);
-}
-
-// SAFETY: `repr(transparent)` over a `u32`.
-unsafe impl Inline for PortType {
-    const WORD: u64 = type_word(MessageType::Integer32, 32, 1);
-}
-
-// SAFETY: bytes only.
-unsafe impl<const N: usize> Inline for StringC<N> {
-    const WORD: u64 = {
-        // `N` in 32 bits, as `u32::try_from` would give it.
-        assert!(N <= 0xffff_ffff, "StringC: too long");
-        let [number_0, number_1, number_2, number_3, ..] = N.to_le_bytes();
-        type_word(
-            MessageType::StringC,
-            8,
-            u32::from_le_bytes([number_0, number_1, number_2, number_3]),
-        )
-    };
-}
-
-// SAFETY: bytes only.
-unsafe impl Inline for DeviceName {
-    // One item of 1024 bits, inline and long-form.
-    const WORD: u64 = word(MessageType::StringC, 1024, (1 << 5) | (1 << 6), 1);
-    // All but msgt_deallocate and msgt_unused, as _Xdevice_open.
-    const CHECKED: u64 = !((1 << 31) | (0x1f << 24));
-}
-
-// SAFETY: a primitive.
-unsafe impl Element for u8 {
-    const NAME: MessageType = MessageType::Byte;
-    const SIZE: u16 = 8;
-}
-
-// SAFETY: `repr(transparent)` over a `u8`.
-unsafe impl Element for StringChar {
-    const NAME: MessageType = MessageType::StringC;
-    const SIZE: u16 = 8;
-
-    /// To the array's padding: its routine reads a C string to its NUL, as
-    /// GNU Mach's do, whatever the number says.
-    fn readable(number: usize) -> usize {
-        number.next_multiple_of(8)
-    }
-}
-
-// SAFETY: a primitive.
-unsafe impl Element for i32 {
-    const NAME: MessageType = MessageType::Integer32;
-    const SIZE: u16 = 32;
-}
-
-// SAFETY: a primitive.
-unsafe impl Element for u32 {
-    const NAME: MessageType = MessageType::Integer32;
-    const SIZE: u16 = 32;
-}
-
-// SAFETY: `repr(transparent)` over a `u32`.
-unsafe impl Element for PortName {
-    const NAME: MessageType = MessageType::PortName;
-    const SIZE: u16 = 32;
-}
-
-// SAFETY: `repr(transparent)` over a `u32`.
-unsafe impl Element for PortType {
-    const NAME: MessageType = MessageType::Integer32;
-    const SIZE: u16 = 32;
-}
 
 /// Generates a subsystem's stubs, `stub::<routine>`, and `routine(id)`: its
 /// first id, then each routine as its definition reads, calling the function
@@ -512,7 +188,7 @@ macro_rules! subsystem {
             /// The reply, as MIG lays it out.
             #[repr(C)]
             struct Reply {
-                head: mig::ReplyHeader,
+                head: mig::reply::ReplyHeader,
                 $($out: mig::subsystem!(@field reply $out_kind $($out_parameter)*),)*
             }
 
@@ -633,7 +309,7 @@ macro_rules! subsystem {
                 $crate::slab::CacheBox::from_raw(&$crate::vm::map::copy::COPY_CACHE, copy)
             };
             let count = usize::try_from($request.$in.word >> 32).unwrap();
-            mig::OutOfLine::<$element>::new(copy, count)
+            mig::argument::OutOfLine::<$element>::new(copy, count)
         });
     };
     (@take $request:ident $in:ident kept_send_right) => {
@@ -641,36 +317,38 @@ macro_rules! subsystem {
     };
     (@take $request:ident $in:ident $kind:ident $($parameter:tt)*) => {};
     // Each kind's field: in the request, then in the reply.
-    (@field request send_right $($intran:path)?) => { mig::Argument<usize> };
-    (@field request kept_send_right) => { mig::Argument<usize> };
-    (@field request inline $type:ty) => { mig::Argument<$type> };
-    (@field request count $element:ty, $max:literal) => { mig::Argument<u32> };
-    (@field request out_of_line $element:ty) => { mig::Argument<usize> };
-    (@field request array $element:ty, $max:literal) => { mig::Argument<[$element; 0]> };
-    (@field reply inline $type:ty) => { mig::Argument<$type> };
-    (@field reply count $element:ty, $max:literal) => { mig::Argument<[$element; $max]> };
-    (@field reply out_of_line $element:ty) => { mig::Argument<usize> };
-    (@field reply send_right) => { mig::Argument<usize> };
-    (@field reply port_array) => { mig::Argument<usize> };
+    (@field request send_right $($intran:path)?) => { mig::argument::Argument<usize> };
+    (@field request kept_send_right) => { mig::argument::Argument<usize> };
+    (@field request inline $type:ty) => { mig::argument::Argument<$type> };
+    (@field request count $element:ty, $max:literal) => { mig::argument::Argument<u32> };
+    (@field request out_of_line $element:ty) => { mig::argument::Argument<usize> };
+    (@field request array $element:ty, $max:literal) => { mig::argument::Argument<[$element; 0]> };
+    (@field reply inline $type:ty) => { mig::argument::Argument<$type> };
+    (@field reply count $element:ty, $max:literal) => { mig::argument::Argument<[$element; $max]> };
+    (@field reply out_of_line $element:ty) => { mig::argument::Argument<usize> };
+    (@field reply send_right) => { mig::argument::Argument<usize> };
+    (@field reply port_array) => { mig::argument::Argument<usize> };
     // Its check: the word, whole, or the bits its kind checks.
     (@check $request:ident $in:ident send_right $($intran:path)?) => {
-        $request.$in.word == mig::type_word($crate::ipc::MessageType::PortSend, 64, 1)
+        $request.$in.word == mig::argument::type_word($crate::ipc::MessageType::PortSend, 64, 1)
     };
     (@check $request:ident $in:ident kept_send_right) => {
         mig::subsystem!(@check $request $in send_right)
     };
     (@check $request:ident $in:ident inline $type:ty) => {
-        $request.$in.word & <$type as mig::Inline>::CHECKED == <$type as mig::Inline>::WORD
+        $request.$in.word & <$type as mig::argument::Inline>::CHECKED
+            == <$type as mig::argument::Inline>::WORD
     };
     (@check $request:ident $in:ident count $element:ty, $max:literal) => {
-        $request.$in.word == <u32 as mig::Inline>::WORD
+        $request.$in.word == <u32 as mig::argument::Inline>::WORD
     };
     (@check $request:ident $in:ident out_of_line $element:ty) => {
-        $request.$in.word & mig::ARRAY_CHECKED
-            == <$element as mig::Element>::out_of_line_word(0)
+        $request.$in.word & mig::port_array::ARRAY_CHECKED
+            == <$element as mig::argument::Element>::out_of_line_word(0)
     };
     (@check $request:ident $in:ident array $element:ty, $max:literal) => {
-        $request.$in.word & mig::ARRAY_CHECKED == <$element as mig::Element>::word(0)
+        $request.$in.word & mig::port_array::ARRAY_CHECKED
+            == <$element as mig::argument::Element>::word(0)
             && $request.$in.word >> 32 <= $max
     };
     // What the routine gets: the data; for a right, its intran's value, or
@@ -690,7 +368,7 @@ macro_rules! subsystem {
     };
     (@pass $request:ident $reply:ident $in:ident out_of_line $element:ty) => { $in };
     (@pass $request:ident $reply:ident $in:ident array $element:ty, $max:literal) => {
-        &$in[..<$element as mig::Element>::readable(
+        &$in[..<$element as mig::argument::Element>::readable(
             usize::try_from($request.$in.word >> 32).unwrap(),
         )]
     };
@@ -699,9 +377,9 @@ macro_rules! subsystem {
     // rights, its memory; for a send right, its port's reference.
     (@value inline $type:ty) => { $type };
     (@value count $element:ty, $max:literal) => { usize };
-    (@value out_of_line $element:ty) => { mig::OutOfLine<$element> };
+    (@value out_of_line $element:ty) => { mig::argument::OutOfLine<$element> };
     (@value send_right) => { $crate::reference::Reference<$crate::ipc::port::port::Port> };
-    (@value port_array) => { mig::PortArray };
+    (@value port_array) => { mig::port_array::PortArray };
     // The routine's success: nothing, its out, or its outs.
     (@type) => { () };
     (@type $value:ty) => { $value };
@@ -734,12 +412,12 @@ macro_rules! subsystem {
     (@last_size $first:tt $($rest:tt)+) => { mig::subsystem!(@last_size $($rest)+) };
     // Packing an out: the word, then the data.
     (@pack $reply:ident $out:ident inline $type:ty) => {
-        $reply.$out.word = <$type as mig::Inline>::WORD;
+        $reply.$out.word = <$type as mig::argument::Inline>::WORD;
         $reply.$out.data = $out;
     };
     // A count array's word.
     (@pack $reply:ident $out:ident count $element:ty, $max:literal) => {
-        $reply.$out.word = <$element as mig::Element>::word(u32::try_from($out).unwrap());
+        $reply.$out.word = <$element as mig::argument::Element>::word(u32::try_from($out).unwrap());
     };
     // An out-of-line array makes the reply complex; its word, then the copy.
     (@pack $reply:ident $out:ident out_of_line $element:ty) => {
@@ -756,7 +434,7 @@ macro_rules! subsystem {
     // reference the reply takes.
     (@pack $reply:ident $out:ident send_right) => {
         $reply.head.header.bits = $reply.head.header.bits.with_complex();
-        $reply.$out.word = mig::type_word($crate::ipc::MessageType::PortSend, 64, 1);
+        $reply.$out.word = mig::argument::type_word($crate::ipc::MessageType::PortSend, 64, 1);
         $reply.$out.data = $crate::reference::Reference::into_raw($out)
             .as_ptr()
             .expose_provenance();

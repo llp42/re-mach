@@ -4,7 +4,8 @@
 //! GNU Mach's own calls' server routines, as MIG makes them from
 //! `gnumach`'s definitions; only those written so far.
 
-use super::mig::{self, StringChar};
+use super::mig;
+use super::mig::string_char::StringChar;
 use crate::error::Error;
 use crate::gsync::{self, Flags};
 use crate::ipc::port::port::Port;
