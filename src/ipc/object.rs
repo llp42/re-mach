@@ -7,7 +7,9 @@ use core::ptr::NonNull;
 
 use super::MessageType;
 use super::entry::Rights;
-use super::port::{Port, PortName, PortState, Receiver};
+use super::port::port::{Port, Receiver};
+use super::port::port_name::PortName;
+use super::port::state::PortState;
 use super::port_set::PortSet;
 use super::space::Space;
 use crate::error::Error;

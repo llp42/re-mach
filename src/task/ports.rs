@@ -5,7 +5,8 @@
 use core::mem;
 use core::ptr;
 
-use crate::ipc::port::{Port, SendRight};
+use crate::ipc::port::port::Port;
+use crate::ipc::port::send_right::SendRight;
 use crate::reference::Reference;
 
 use super::task::Task;

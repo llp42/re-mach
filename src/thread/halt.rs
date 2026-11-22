@@ -7,7 +7,7 @@ use core::sync::atomic::Ordering;
 
 use crate::ast::Ast;
 use crate::error::Error;
-use crate::ipc::port::Port;
+use crate::ipc::port::port::Port;
 use crate::reference::Reference;
 use crate::sched::{self, preemption::Preemption, wait::WaitResult};
 use crate::sync::CriticalSection;

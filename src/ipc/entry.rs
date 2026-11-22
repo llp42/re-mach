@@ -4,7 +4,7 @@
 //! Entries: one name in a space, and the rights it holds.
 
 use super::object::Object;
-use super::port::PortName;
+use super::port::port_name::PortName;
 use crate::collections::radix_tree::Owner;
 use crate::slab::{Cache, CacheBox};
 

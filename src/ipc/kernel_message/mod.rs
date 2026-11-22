@@ -16,7 +16,7 @@ use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusi
 use header::Header;
 
 use super::MessageType;
-use super::port::Port;
+use super::port::port::Port;
 use crate::arch::{self, Machine as _, PAGE_SIZE};
 use crate::error::Error;
 use crate::kalloc;

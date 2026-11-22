@@ -16,7 +16,8 @@ use crate::boot::BootModule;
 use crate::error::Error;
 use crate::host::HOST;
 use crate::ipc::MessageType;
-use crate::ipc::port::{Port, PortName};
+use crate::ipc::port::port::Port;
+use crate::ipc::port::port_name::PortName;
 use crate::reference::Reference;
 use crate::sched::{
     self,

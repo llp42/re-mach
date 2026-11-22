@@ -5,7 +5,7 @@
 use core::mem;
 use core::ptr::{self, NonNull};
 
-use crate::ipc::port::Port;
+use crate::ipc::port::port::Port;
 use crate::reference::Reference;
 use crate::smp;
 

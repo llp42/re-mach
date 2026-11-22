@@ -8,7 +8,8 @@ use super::object::{self, Object, Offset};
 use super::{Inheritance, Protection, VirtualAddress, Wire};
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
-use crate::ipc::port::{KernelObject, Port};
+use crate::ipc::port::kernel_object::KernelObject;
+use crate::ipc::port::port::Port;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
 

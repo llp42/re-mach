@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::config::MAX_CPUS;
 use crate::error::Error;
-use crate::ipc::port::Port;
+use crate::ipc::port::port::Port;
 use crate::{VERSION, clock, machine, sched};
 
 /// The host: the machine as a whole; so far only its ports.

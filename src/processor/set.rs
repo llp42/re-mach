@@ -10,7 +10,7 @@ use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter}
 
 use crate::config::MAX_CPUS;
 use crate::error::Error;
-use crate::ipc::port::Port;
+use crate::ipc::port::port::Port;
 use crate::ipc_host;
 use crate::reference::{Count, Counted, Reference};
 use crate::sched::policy::{MIN_QUANTUM, Policies, SCHEDULER_SCALE};

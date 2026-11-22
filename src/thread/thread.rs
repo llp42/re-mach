@@ -14,7 +14,7 @@ use crate::ast::Ast;
 use crate::clock;
 use crate::clock::time::TimeValue;
 use crate::clock::timeout::Timeout;
-use crate::ipc::port::Port;
+use crate::ipc::port::port::Port;
 use crate::name::Name;
 use crate::processor::processor::Processor;
 use crate::processor::set::ProcessorSet;

@@ -12,7 +12,8 @@ use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
 
 use super::{Device, Kind, time};
 use crate::arch::PhysAddr;
-use crate::ipc::port::{KernelObject, Port};
+use crate::ipc::port::kernel_object::KernelObject;
+use crate::ipc::port::port::Port;
 use crate::reference::Reference;
 use crate::slab::{Cache, CacheBox};
 use crate::vm::Protection;

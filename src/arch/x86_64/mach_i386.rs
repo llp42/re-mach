@@ -7,7 +7,7 @@
 use super::fpu;
 use crate::error::Error;
 use crate::host::Host;
-use crate::ipc::port::Port;
+use crate::ipc::port::port::Port;
 use crate::ipc_kobject::mig;
 
 mig::subsystem! {

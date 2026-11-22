@@ -7,7 +7,7 @@
 use super::mig::{self, StringChar};
 use crate::error::Error;
 use crate::gsync::{self, Flags};
-use crate::ipc::port::Port;
+use crate::ipc::port::port::Port;
 use crate::reference::Reference;
 use crate::task::task::Task;
 use crate::vm::map::Map;

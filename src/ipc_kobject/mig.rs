@@ -8,7 +8,7 @@ use core::ptr::NonNull;
 
 use crate::ipc::MessageType;
 use crate::ipc::kernel_message::header::Header;
-use crate::ipc::port::{PortName, PortType};
+use crate::ipc::port::port_name::{PortName, PortType};
 use crate::slab::CacheBox;
 use crate::vm::VirtualAddress;
 use crate::vm::map::MapCopy;
@@ -610,13 +610,13 @@ macro_rules! subsystem {
     // gives none.
     (@take $request:ident $in:ident send_right $($intran:path)?) => {
         let $in = core::ptr::NonNull::new(core::ptr::with_exposed_provenance_mut::<
-            $crate::ipc::port::Port,
+            $crate::ipc::port::port::Port,
         >(core::mem::take(&mut $request.$in.data)))
         .map(|port| {
             // SAFETY: copied in, a port's data is the exposed address of a
             // reference to it given up by `into_raw`, which the handle takes.
             let port = unsafe { $crate::reference::Reference::from_raw(port) };
-            $crate::ipc::port::SendRight::new(port)
+            $crate::ipc::port::send_right::SendRight::new(port)
         });
     };
     // Out-of-line memory's handle takes its copy out of the request, its
@@ -700,7 +700,7 @@ macro_rules! subsystem {
     (@value inline $type:ty) => { $type };
     (@value count $element:ty, $max:literal) => { usize };
     (@value out_of_line $element:ty) => { mig::OutOfLine<$element> };
-    (@value send_right) => { $crate::reference::Reference<$crate::ipc::port::Port> };
+    (@value send_right) => { $crate::reference::Reference<$crate::ipc::port::port::Port> };
     (@value port_array) => { mig::PortArray };
     // The routine's success: nothing, its out, or its outs.
     (@type) => { () };

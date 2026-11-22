@@ -17,7 +17,7 @@ use crate::arch::{self, Machine as _};
 use crate::ipc::MessageType;
 use crate::ipc::kernel_message::KernelMessage;
 use crate::ipc::kernel_message::header::{Header, MessageBits};
-use crate::ipc::port::Port;
+use crate::ipc::port::port::Port;
 use crate::reference::Reference;
 use crate::task;
 

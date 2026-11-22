@@ -7,7 +7,9 @@
 use super::mig::{self, OutOfLine};
 use crate::error::Error;
 use crate::ipc::MessageType;
-use crate::ipc::port::{Port, PortName, PortType, SendRight};
+use crate::ipc::port::port::Port;
+use crate::ipc::port::port_name::{PortName, PortType};
+use crate::ipc::port::send_right::SendRight;
 use crate::ipc::space::Space;
 use crate::reference::Reference;
 

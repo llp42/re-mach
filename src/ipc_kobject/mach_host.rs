@@ -12,7 +12,7 @@ use super::mig::{self, Boolean, StringC};
 use crate::error::Error;
 use crate::host::{self, HOST, Host};
 use crate::ipc::MessageType;
-use crate::ipc::port::Port;
+use crate::ipc::port::port::Port;
 use crate::processor::all_sets::DEFAULT_SET;
 use crate::processor::set::ProcessorSet;
 use crate::reference::Reference;

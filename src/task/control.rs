@@ -6,7 +6,8 @@ use core::ptr;
 
 use crate::ast::Ast;
 use crate::error::Error;
-use crate::ipc::port::{KernelObject, Port};
+use crate::ipc::port::kernel_object::KernelObject;
+use crate::ipc::port::port::Port;
 use crate::sched::priority::{BasePriority, Priority};
 use crate::smp;
 use crate::sync::CriticalSection;

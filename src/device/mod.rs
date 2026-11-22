@@ -16,7 +16,8 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink};
 
-use crate::ipc::port::{KernelObject, Port};
+use crate::ipc::port::kernel_object::KernelObject;
+use crate::ipc::port::port::Port;
 use crate::reference::{Count, Counted, Reference};
 use crate::sync::Spinlock;
 use crate::vm::Protection;

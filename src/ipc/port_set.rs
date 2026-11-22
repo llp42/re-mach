@@ -7,7 +7,7 @@ use intrusive_collections::LinkedList;
 
 use super::kernel_message;
 use super::object::Object;
-use super::port::PortName;
+use super::port::port_name::PortName;
 use super::space::Space;
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};

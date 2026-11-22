@@ -11,7 +11,7 @@ use core::ptr::NonNull;
 use core::slice;
 
 use crate::boot::BootModule;
-use crate::ipc::port::Port;
+use crate::ipc::port::port::Port;
 use crate::reference::Reference;
 use crate::task::task::Task;
 use crate::{bootstrap, kalloc};

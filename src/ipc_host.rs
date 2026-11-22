@@ -8,7 +8,8 @@ use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 
 use crate::host::HOST;
-use crate::ipc::port::{KernelObject, Port};
+use crate::ipc::port::kernel_object::KernelObject;
+use crate::ipc::port::port::Port;
 use crate::processor::all_sets::{BOOT_PROCESSOR, DEFAULT_SET};
 use crate::processor::processor::Processor;
 use crate::processor::set::ProcessorSet;

@@ -10,7 +10,7 @@ use core::sync::atomic::Ordering;
 use super::mig::{self, DeviceName};
 use crate::device::{self, Device};
 use crate::error::Error;
-use crate::ipc::port::Port;
+use crate::ipc::port::port::Port;
 use crate::reference::Reference;
 use crate::vm::object::Offset;
 

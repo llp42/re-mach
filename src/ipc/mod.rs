@@ -97,7 +97,7 @@ const MIN_KERNEL_MAP_SIZE: usize = 8 << 20;
 pub fn bootstrap() {
     space::CACHE.register();
     entry::CACHE.register();
-    port::CACHE.register();
+    port::allocate::CACHE.register();
     port_set::CACHE.register();
 }
 

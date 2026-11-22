@@ -7,7 +7,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, Ordering};
 
 use crate::collections::ArrayVec;
-use crate::ipc::port::Port;
+use crate::ipc::port::port::Port;
 use crate::reference::Reference;
 use crate::sched::priority::Priority;
 use crate::sched::queue::{RUN_QUEUES, RunQueue};

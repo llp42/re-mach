@@ -8,7 +8,7 @@ use core::ptr::NonNull;
 
 use super::entry::{self, Entry, EntryBits, Rights};
 use super::object::Object;
-use super::port::PortName;
+use super::port::port_name::PortName;
 use crate::collections::ArrayVec;
 use crate::collections::radix_tree::RadixTree;
 use crate::error::Error;

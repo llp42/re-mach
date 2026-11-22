@@ -7,7 +7,8 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
 
 use crate::error::Error;
-use crate::ipc::port::{Port, SendRight};
+use crate::ipc::port::port::Port;
+use crate::ipc::port::send_right::SendRight;
 use crate::reference::Reference;
 
 use super::thread::Thread;

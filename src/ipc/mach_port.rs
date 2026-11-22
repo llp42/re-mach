@@ -8,7 +8,9 @@ use core::{ptr, slice};
 use super::MessageType;
 use super::entry::{Entry, Rights};
 use super::object::Object;
-use super::port::{self, Port, PortName, PortType, Right};
+use super::port;
+use super::port::port::Port;
+use super::port::port_name::{PortName, PortType, Right};
 use super::port_set::PortSet;
 use super::space::{Space, SpaceState};
 use crate::arch::PAGE_SIZE;
@@ -120,7 +122,7 @@ impl Space {
         };
         let mut actual = 0;
         // Read by the died branch, not yet.
-        let _timestamp = port::timestamp();
+        let _timestamp = port::port::timestamp();
         for entry in state.map.iter().filter(|entry| entry.in_use()) {
             let port_type = entry.port_type();
             name_array[actual] = entry.name;
