@@ -16,7 +16,8 @@ use crate::ipc::port::Port;
 use crate::processor::{DEFAULT_SET, ProcessorSet};
 use crate::reference::Reference;
 use crate::sched::{BasePriority, Priority};
-use crate::task::{Task, Threads};
+use crate::task::ports::Threads;
+use crate::task::task::Task;
 use crate::{clock, machine};
 
 mig::subsystem! {

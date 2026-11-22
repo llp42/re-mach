@@ -22,7 +22,7 @@ use crate::processor::{Processor, ProcessorSet};
 use crate::reference::{Count, Counted, Reference};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{Spinlock, SpinlockGuard};
-use crate::task::Task;
+use crate::task::task::Task;
 use crate::thread::thread::{IpcQueueAdapter, Thread};
 use crate::vm::map::Map;
 use crate::vm::object::{Flags, Object};

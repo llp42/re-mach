@@ -20,7 +20,9 @@ use crate::ipc::port::{Port, PortName};
 use crate::reference::Reference;
 use crate::sched::{self, BasePriority, Event, USER_PRIORITY};
 use crate::sync::Spinlock;
-use crate::task::{self, Memory, Task, Threads};
+use crate::task;
+use crate::task::ports::{Memory, Threads};
+use crate::task::task::Task;
 use crate::thread::machine::MachineThread as _;
 use crate::thread::thread::Thread;
 use crate::vm::map::{Change, Map, Placement};
@@ -60,7 +62,7 @@ pub fn create() {
             "bootstrap_create: a single module in compat mode, not yet"
         );
     }
-    let kernel_task = task::KERNEL_TASK
+    let kernel_task = task::create::KERNEL_TASK
         .get()
         .expect("bootstrap_create: no kernel task");
     let command_line = arch::Current::kernel_command_line()

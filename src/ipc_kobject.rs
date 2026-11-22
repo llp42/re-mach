@@ -63,7 +63,7 @@ pub fn server(mut request: KernelMessage) -> Option<KernelMessage> {
         .or_else(|| arch::Current::server_routine(header.id))
         .unwrap_or_else(|| panic!("ipc_kobject_server: MIG_BAD_ID, not yet"));
     routine(&mut request, &mut reply);
-    let kernel_task = task::KERNEL_TASK
+    let kernel_task = task::create::KERNEL_TASK
         .get()
         .expect("ipc_kobject_server: no kernel task");
     kernel_task

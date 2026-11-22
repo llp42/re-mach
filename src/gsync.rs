@@ -14,7 +14,7 @@ use crate::reference::Reference;
 use crate::sched::{self, WaitResult};
 use crate::smp;
 use crate::sync::{CachePadded, Token};
-use crate::task::Task;
+use crate::task::task::Task;
 use crate::thread::thread::Thread;
 use crate::vm::{Protection, VirtualAddress};
 

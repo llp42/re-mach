@@ -9,7 +9,7 @@ use crate::error::Error;
 use crate::gsync::{self, Flags};
 use crate::ipc::port::Port;
 use crate::reference::Reference;
-use crate::task::Task;
+use crate::task::task::Task;
 use crate::vm::map::Map;
 use crate::vm::{self, VirtualAddress};
 

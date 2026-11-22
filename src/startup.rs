@@ -20,7 +20,7 @@ use crate::{device, ipc, smp, vm};
 /// bootstrap and the release of the other CPUs, then it becomes the
 /// pageout daemon.
 fn start_kernel_threads() -> ! {
-    let kernel_task = task::KERNEL_TASK
+    let kernel_task = task::create::KERNEL_TASK
         .get()
         .expect("start_kernel_threads: no kernel task");
     for cpu in (0..MAX_CPUS).filter(|&cpu| machine::has_processor(cpu)) {
@@ -82,12 +82,14 @@ pub fn start() -> ! {
     arch::Current::init();
     clock::mapped_time::map_time();
     machine::init_info();
-    task::init();
+    task::create::init();
     create::init();
     processor::init();
     sched::recompute_priorities(&sched::RECOMPUTE_PRIORITIES);
     sched::compute_mach_factor();
-    let kernel_task = task::KERNEL_TASK.get().expect("startup: no kernel task");
+    let kernel_task = task::create::KERNEL_TASK
+        .get()
+        .expect("startup: no kernel task");
     let startup = Thread::create(kernel_task)
         .unwrap_or_else(|error| panic!("startup: thread_create: {error:?}"));
     startup.set_name(format_args!("startup"));

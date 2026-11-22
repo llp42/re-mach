@@ -22,7 +22,7 @@ use crate::sched;
 use crate::sched::{Policy, SCHEDULER_SCALE, WaitResult};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{CriticalSection, OnceLock, Spinlock};
-use crate::task::Task;
+use crate::task::task::Task;
 use crate::vm;
 
 use super::machine::MachineThread as _;

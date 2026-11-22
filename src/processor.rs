@@ -24,7 +24,7 @@ use crate::sched::{
 use crate::slab::{Cache, CacheBox};
 use crate::smp;
 use crate::sync::{CpuLock, CriticalSection, OnceLock, Token, TokenGuard};
-use crate::task::{SetTaskAdapter, Task};
+use crate::task::task::{SetTaskAdapter, Task};
 use crate::thread::thread::{RunQueueAdapter, SetThreadAdapter, Thread};
 use crate::{ipc_host, machine};
 

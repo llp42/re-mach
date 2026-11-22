@@ -21,7 +21,7 @@ use crate::reference::{Count, Counted, Reference};
 use crate::sched::{Event, Policy, WaitResult};
 use crate::slab::CacheBox;
 use crate::sync::{CriticalSection, OnceLock, Spinlock};
-use crate::task::Task;
+use crate::task::task::Task;
 use crate::vm;
 use crate::vm::kernel::KernelStack;
 use crate::{arch, smp};
