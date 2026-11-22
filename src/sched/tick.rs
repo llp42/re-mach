@@ -131,5 +131,5 @@ pub fn action_thread() -> ! {
 
 /// Sets up the scheduler, on the boot CPU.
 pub fn init() {
-    processor::bootstrap();
+    processor::init::bootstrap();
 }

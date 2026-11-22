@@ -193,7 +193,7 @@ pub fn cpu_up(cpu: usize) {
     let slot = SLOTS[cpu].get().expect("cpu_up: no processor in the slot");
     slot.running.store(true, Ordering::Release);
     AVAILABLE_CPUS.fetch_add(1, Ordering::Relaxed);
-    processor::up(cpu);
+    processor::init::up(cpu);
 }
 
 /// Counts a tick processor `cpu` spent in `state`, on its CPU.

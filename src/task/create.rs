@@ -14,7 +14,7 @@ use crate::error::Error;
 use crate::ipc::port::{KernelObject, Port, SendRight};
 use crate::ipc::space::Space;
 use crate::name::Name;
-use crate::processor::DEFAULT_SET;
+use crate::processor::all_sets::DEFAULT_SET;
 use crate::reference::{Count, Reference};
 use crate::sched::priority::USER_PRIORITY;
 use crate::slab::{Cache, CacheBox};

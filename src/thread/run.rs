@@ -6,7 +6,7 @@ use core::mem;
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use crate::processor::Processor;
+use crate::processor::processor::Processor;
 use crate::smp;
 use crate::sync::CriticalSection;
 use crate::vm::phys_map::MachinePhysMap as _;

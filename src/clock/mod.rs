@@ -16,7 +16,7 @@ use time::{publish, snapshot};
 use crate::arch::{Current, Machine as _};
 use crate::config::HZ;
 use crate::machine::{self, CpuState, Mode};
-use crate::processor::State;
+use crate::processor::state::State;
 use crate::sched::{self, wait::WaitResult};
 use crate::smp;
 

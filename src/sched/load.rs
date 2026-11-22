@@ -6,7 +6,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicI64, Ordering};
 
 use crate::config::MAX_CPUS;
-use crate::processor::{self, State};
+use crate::processor::{self, state::State};
 use crate::sched::policy::{SCHEDULER_SCALE, SCHEDULER_SHIFT};
 use crate::smp;
 
@@ -44,7 +44,7 @@ pub fn mach_factors() -> [i64; 3] {
 /// current one aside; the default set's feed the system averages. A set
 /// with no processor has none.
 pub fn compute_mach_factor() {
-    let all = processor::ALL_SETS.lock();
+    let all = processor::all_sets::ALL_SETS.lock();
     for set in &all.list {
         let members = set.lock();
         let count = i64::from(set.processor_count());
@@ -59,7 +59,7 @@ pub fn compute_mach_factor() {
                         idle + i64::from(matches!(processor.state(), State::Idle)),
                     )
                 });
-            let is_default = ptr::eq(set, &raw const processor::DEFAULT_SET);
+            let is_default = ptr::eq(set, &raw const processor::all_sets::DEFAULT_SET);
             // Less the current thread, in the default set.
             let threads = queued + count - idle - i64::from(is_default);
             let (factor, load) = if threads > count {

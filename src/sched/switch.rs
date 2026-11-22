@@ -7,7 +7,7 @@ use core::ptr;
 use crate::arch::{self, Machine as _};
 use crate::ast::Ast;
 use crate::collections::ArrayVec;
-use crate::processor::{self, Processor, State};
+use crate::processor::{self, processor::Processor, state::State};
 use crate::sched::policy::{MIN_QUANTUM, Policy};
 use crate::sched::preemption::{Preemption, make_runnable};
 use crate::sched::priority::Priority;
@@ -27,7 +27,7 @@ pub fn switch_needed(thread: &Thread, processor: &Processor) -> bool {
     let Some(best) = processor
         .set()
         .filter(|set| set.queued() > 0)
-        .and_then(processor::ProcessorSet::best_queued)
+        .and_then(processor::set::ProcessorSet::best_queued)
     else {
         return false;
     };

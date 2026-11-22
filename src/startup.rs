@@ -84,7 +84,7 @@ pub fn start() -> ! {
     machine::init_info();
     task::create::init();
     create::init();
-    processor::init();
+    processor::init::init();
     sched::tick::recompute_priorities(&sched::tick::RECOMPUTE_PRIORITIES);
     sched::load::compute_mach_factor();
     let kernel_task = task::create::KERNEL_TASK

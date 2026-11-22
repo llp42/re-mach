@@ -9,7 +9,7 @@ use intrusive_collections::{LinkedListAtomicLink, intrusive_adapter};
 
 use crate::clock::time::AtomicTimeValue;
 use crate::ipc::space::Space;
-use crate::processor::ProcessorSet;
+use crate::processor::set::ProcessorSet;
 use crate::reference::{Count, Counted, Reference};
 use crate::slab::CacheBox;
 use crate::sync::{Spinlock, Token};

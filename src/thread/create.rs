@@ -16,7 +16,7 @@ use crate::clock::timeout::Timeout;
 use crate::error::Error;
 use crate::ipc::port::{KernelObject, Port};
 use crate::name::Name;
-use crate::processor::DEFAULT_SET;
+use crate::processor::all_sets::DEFAULT_SET;
 use crate::reference::{Count, Reference};
 use crate::sched;
 use crate::sched::policy::{Policy, SCHEDULER_SCALE};

@@ -1,356 +1,36 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
-//! Processors and processor sets.
 
 use core::mem::ManuallyDrop;
-use core::ops::DerefMut;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{
-    AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, Ordering,
-};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
 
-use crate::collections::ArrayVec;
 use crate::config::MAX_CPUS;
 use crate::error::Error;
 use crate::ipc::port::Port;
+use crate::ipc_host;
 use crate::reference::{Count, Counted, Reference};
 use crate::sched::policy::{MIN_QUANTUM, Policies, SCHEDULER_SCALE};
 use crate::sched::priority::{Priority, SYSTEM_PRIORITY};
-use crate::sched::queue::{RUN_QUEUES, RunQueue};
-use crate::sched::switch::MAX_STUCK_THREADS;
-use crate::slab::{Cache, CacheBox};
+use crate::slab::CacheBox;
 use crate::smp;
-use crate::sync::{CpuLock, CriticalSection, OnceLock, Token, TokenGuard};
+use crate::sync::{Token, TokenGuard};
 use crate::task::task::{SetTaskAdapter, Task};
-use crate::thread::thread::{RunQueueAdapter, SetThreadAdapter, Thread};
-use crate::{ipc_host, machine};
+use crate::thread::thread::{SetThreadAdapter, Thread};
 
-/// A processor: one per CPU, in that CPU's data.
-pub struct Processor {
-    /// What it is doing, a `State`.
-    state: AtomicU8,
-    /// How many threads wait on its run queues.
-    queued: AtomicU32,
-    /// How many of them are not bound to it; changed under their lock.
-    unbound: AtomicU32,
-    /// The ticks left of its thread's quantum.
-    quantum: AtomicI32,
-    /// Whether its thread runs its first quantum in succession.
-    first_quantum: AtomicBool,
-    /// The quantum it last gave out, before adjustment.
-    last_quantum: AtomicU32,
-    /// The processor set it is in, once it comes up.
-    set: AtomicPtr<ProcessorSet>,
-    /// Its runnable threads.
-    run_queues: CpuLock<RunQueues>,
-    /// Its idle thread, once that runs.
-    idle_thread: OnceLock<&'static Thread>,
-    /// Its port, for controlling it.
-    port: AtomicPtr<Port>,
-    /// Its name port, for information about it.
-    name_port: AtomicPtr<Port>,
-}
-
-/// What a processor is doing, as Mach numbers it; only the states used
-/// here.
-pub enum State {
-    /// Not in the system.
-    Offline,
-    /// Running a thread.
-    Running,
-    /// Running its idle thread.
-    Idle,
-}
-
-impl State {
-    /// Its number.
-    pub(super) const fn number(self) -> u8 {
-        match self {
-            Self::Offline => 0,
-            Self::Running => 1,
-            Self::Idle => 2,
-        }
-    }
-}
-
-/// A processor's runnable threads, bound to it or not.
-struct RunQueues {
-    /// By priority, each in the order they became runnable.
-    lists: [RunQueue; RUN_QUEUES],
-    /// How many of them are bound to it.
-    bound: u32,
-}
-
-impl Processor {
-    /// One not yet in the system.
-    pub const fn new() -> Self {
-        Self {
-            state: AtomicU8::new(State::Offline.number()),
-            queued: AtomicU32::new(0),
-            unbound: AtomicU32::new(0),
-            quantum: AtomicI32::new(0),
-            first_quantum: AtomicBool::new(false),
-            last_quantum: AtomicU32::new(0),
-            set: AtomicPtr::new(ptr::null_mut()),
-            // SAFETY: only `run_queues` locks it, once it checked the CPU.
-            run_queues: unsafe {
-                CpuLock::new(RunQueues {
-                    lists: [const { RunQueue::new(RunQueueAdapter::NEW) }; RUN_QUEUES],
-                    bound: 0,
-                })
-            },
-            idle_thread: OnceLock::new(),
-            port: AtomicPtr::new(ptr::null_mut()),
-            name_port: AtomicPtr::new(ptr::null_mut()),
-        }
-    }
-
-    /// What it is doing.
-    ///
-    /// # Panics
-    ///
-    /// If its state is not one used here.
-    pub(super) fn state(&self) -> State {
-        match self.state.load(Ordering::Acquire) {
-            0 => State::Offline,
-            1 => State::Running,
-            2 => State::Idle,
-            state => panic!("processor: bad state {state}"),
-        }
-    }
-
-    /// Sets what it is doing, on its CPU.
-    pub(super) fn set_state(&self, state: State) {
-        self.state.store(state.number(), Ordering::Release);
-    }
-
-    /// How many threads wait on its run queues; changed under their lock.
-    pub(super) fn queued(&self) -> u32 {
-        self.queued.load(Ordering::Relaxed)
-    }
-
-    /// Takes `ticks` off its quantum, on its CPU; returns what is left.
-    pub(super) fn charge_quantum(&self, ticks: u32) -> i32 {
-        let left = self.quantum.load(Ordering::Relaxed) - i32::try_from(ticks).unwrap();
-        self.quantum.store(left, Ordering::Relaxed);
-        left
-    }
-
-    /// Sets the ticks left of its quantum, on its CPU.
-    pub(super) fn set_quantum(&self, ticks: i32) {
-        self.quantum.store(ticks, Ordering::Relaxed);
-    }
-
-    /// Whether its thread runs its first quantum in succession.
-    pub(super) fn is_first_quantum(&self) -> bool {
-        self.first_quantum.load(Ordering::Relaxed)
-    }
-
-    /// Starts its thread's first quantum in succession, on its CPU.
-    pub(super) fn start_first_quantum(&self) {
-        self.first_quantum.store(true, Ordering::Relaxed);
-    }
-
-    /// Ends its thread's first quantum in succession, on its CPU.
-    pub(super) fn end_first_quantum(&self) {
-        self.first_quantum.store(false, Ordering::Relaxed);
-    }
-
-    /// The quantum it last gave out, before adjustment.
-    pub(super) fn last_quantum(&self) -> u32 {
-        self.last_quantum.load(Ordering::Relaxed)
-    }
-
-    /// Sets the quantum it last gave out, on its CPU.
-    pub(super) fn set_last_quantum(&self, quantum: u32) {
-        self.last_quantum.store(quantum, Ordering::Relaxed);
-    }
-
-    /// Its run queues, locked on its CPU, or on another before it starts.
-    ///
-    /// # Panics
-    ///
-    /// On another CPU once it runs: that comes with SMP.
-    fn run_queues(&self) -> impl DerefMut<Target = RunQueues> + '_ {
-        // The thread stays on the CPU checked until the lock enters its own
-        // section.
-        let _section = CriticalSection::enter();
-        assert!(
-            ptr::eq(self, smp::current().processor()) || matches!(self.state(), State::Offline),
-            "run queue: another running CPU's, not yet"
-        );
-        self.run_queues.lock()
-    }
-
-    /// How many threads bound to it wait on its run queues, on its CPU.
-    pub(super) fn bound_queued(&self) -> u32 {
-        self.run_queues().bound
-    }
-
-    /// Puts `thread` last at its scheduled priority.
-    pub(super) fn enqueue(&self, thread: &'static Thread) {
-        let mut queues = self.run_queues();
-        let priority = thread.scheduled_priority().index();
-        queues.lists[priority].push_back(thread);
-        if thread.bound().is_some() {
-            queues.bound += 1;
-        } else {
-            self.unbound.fetch_add(1, Ordering::Relaxed);
-        }
-        self.queued.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Takes `thread` off its run queues, on its CPU, as `rem_runq` does;
-    /// gives whether it waited there.
-    pub(super) fn remove(&self, thread: &Thread) -> bool {
-        let mut queues = self.run_queues();
-        let RunQueues { lists, bound } = &mut *queues;
-        // Its priority changes only off the run queues. Found by address: a
-        // dead list shares its link.
-        let mut cursor = lists[thread.scheduled_priority().index()].front_mut();
-        while let Some(queued) = cursor.get() {
-            if !ptr::eq(queued, thread) {
-                cursor.move_next();
-                continue;
-            }
-            cursor.remove();
-            if thread.bound().is_some() {
-                *bound -= 1;
-            } else {
-                self.unbound.fetch_sub(1, Ordering::Relaxed);
-            }
-            self.queued.fetch_sub(1, Ordering::Relaxed);
-            return true;
-        }
-        false
-    }
-
-    /// The best priority among the threads waiting on its run queues that
-    /// are not bound to it.
-    fn best_unbound(&self) -> Option<Priority> {
-        let queues = self.run_queues();
-        queues
-            .lists
-            .iter()
-            .flat_map(RunQueue::iter)
-            .find(|thread| thread.bound().is_none())
-            .map(Thread::scheduled_priority)
-    }
-
-    /// Its first thread bound to it, which `dequeue` takes first, left on
-    /// its run queues.
-    pub(super) fn first_bound(&self) -> Option<&'static Thread> {
-        let queues = self.run_queues();
-        let thread = queues
-            .lists
-            .iter()
-            .flat_map(RunQueue::iter)
-            .find(|thread| thread.bound().is_some())?;
-        // SAFETY: `enqueue` takes only `&'static Thread`, so each thread on a
-        // run queue is one.
-        Some(unsafe { &*ptr::from_ref(thread) })
-    }
-
-    /// Takes the best of its threads bound to it, or if none the best of
-    /// all; the first to become runnable among equals.
-    ///
-    /// # Panics
-    ///
-    /// If it counts bound threads but has none.
-    pub(super) fn dequeue(&self) -> Option<&'static Thread> {
-        let mut queues = self.run_queues();
-        let bound_only = queues.bound > 0;
-        let Some(thread) = queues.lists.iter_mut().find_map(|list| {
-            let mut cursor = list.front_mut();
-            while let Some(thread) = cursor.get() {
-                if !bound_only || thread.bound().is_some() {
-                    return cursor.remove();
-                }
-                cursor.move_next();
-            }
-            None
-        }) else {
-            assert!(!bound_only, "choose_thread: no bound thread");
-            return None;
-        };
-        if bound_only {
-            queues.bound -= 1;
-        } else {
-            self.unbound.fetch_sub(1, Ordering::Relaxed);
-        }
-        self.queued.fetch_sub(1, Ordering::Relaxed);
-        Some(thread)
-    }
-
-    /// Takes its stuck threads off its run queues into `stuck`, best first,
-    /// on its CPU; returns whether one found `stuck` full.
-    pub(super) fn take_stuck(
-        &self,
-        stuck: &mut ArrayVec<&'static Thread, MAX_STUCK_THREADS>,
-    ) -> bool {
-        let mut queues = self.run_queues();
-        let RunQueues { lists, bound } = &mut *queues;
-        for list in lists {
-            let mut cursor = list.front_mut();
-            while let Some(thread) = cursor.get() {
-                if !thread.is_stuck() {
-                    cursor.move_next();
-                    continue;
-                }
-                if stuck.is_full() {
-                    return true;
-                }
-                let thread = cursor.remove().unwrap();
-                if thread.bound().is_some() {
-                    *bound -= 1;
-                } else {
-                    self.unbound.fetch_sub(1, Ordering::Relaxed);
-                }
-                self.queued.fetch_sub(1, Ordering::Relaxed);
-                stuck.push(thread);
-            }
-        }
-        false
-    }
-
-    /// The set it is in, once it comes up.
-    pub(super) fn set(&self) -> Option<&'static ProcessorSet> {
-        // SAFETY: a set lives while it has processors.
-        unsafe { self.set.load(Ordering::Acquire).as_ref() }
-    }
-
-    /// Its idle thread, once that runs.
-    pub(super) fn idle_thread(&self) -> Option<&'static Thread> {
-        self.idle_thread.get().copied()
-    }
-
-    /// Sets its idle thread, once, on its CPU.
-    pub(super) fn set_idle_thread(&self, thread: &'static Thread) -> Result<(), &'static Thread> {
-        self.idle_thread.set(thread)
-    }
-
-    /// Sets its port, once, at boot; the slot keeps its reference.
-    pub(super) fn set_port(&self, port: Reference<Port>) {
-        self.port
-            .store(Reference::into_raw(port).as_ptr(), Ordering::Release);
-    }
-
-    /// Sets its name port, once, at boot; the slot keeps its reference.
-    pub(super) fn set_name_port(&self, port: Reference<Port>) {
-        self.name_port
-            .store(Reference::into_raw(port).as_ptr(), Ordering::Release);
-    }
-}
+use super::all_sets::{ALL_SETS, DEFAULT_SET, SET_CACHE};
+use super::members::Members;
+use super::processor::Processor;
 
 /// A set of processors, and the threads that run on them.
 #[expect(dead_code, reason = "processor_set_info and thread_create read them")]
 pub struct ProcessorSet {
     /// Whether it is in use; a destroyed set is not. Changed only under
     /// `members`' token.
-    active: AtomicBool,
+    pub(super) active: AtomicBool,
     /// Whether it has no processor; threads created in it start suspended.
     /// Changed only under `members`' token.
     empty: AtomicBool,
@@ -385,7 +65,7 @@ pub struct ProcessorSet {
     /// Its name port, for information about it.
     name_port: AtomicPtr<Port>,
     /// Its tasks and threads, and how many of each.
-    members: Token<Members>,
+    pub(super) members: Token<Members>,
     /// Its place in the list of all sets.
     all_link: LinkedListAtomicLink,
 }
@@ -398,38 +78,10 @@ intrusive_adapter!(
     pub AllSetsAdapter = &'static ProcessorSet: ProcessorSet { all_link => LinkedListAtomicLink }
 );
 
-/// A set's tasks and threads, and how many of each.
-pub struct Members {
-    /// The tasks, in the order the set took them.
-    tasks: LinkedList<SetTaskAdapter>,
-    /// How many tasks there are.
-    task_count: u32,
-    /// The threads, in the order the set took them.
-    threads: LinkedList<SetThreadAdapter>,
-    /// How many threads there are.
-    thread_count: u32,
-}
-
-/// Every processor set, and how many there are.
-pub struct AllSets {
-    pub(super) list: LinkedList<AllSetsAdapter>,
-    count: u32,
-}
-
-/// The processor sets, behind one token: they change only as sets are
-/// created and destroyed.
-pub static ALL_SETS: Token<AllSets> = Token::new(AllSets {
-    list: LinkedList::new(AllSetsAdapter::NEW),
-    count: 0,
-});
-
-/// The set the kernel creates at boot, where the other CPUs go.
-pub static SLAVE_SET: OnceLock<&'static ProcessorSet> = OnceLock::new();
-
 impl ProcessorSet {
     /// A new set, not in use yet, with one reference, no processor and no
     /// task.
-    const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             active: AtomicBool::new(false),
             empty: AtomicBool::new(true),
@@ -456,49 +108,49 @@ impl ProcessorSet {
     }
 
     /// Whether it is in use; changed only under `members`' token.
-    pub(super) fn is_active(&self) -> bool {
+    pub(crate) fn is_active(&self) -> bool {
         self.active.load(Ordering::Relaxed)
     }
 
     /// Whether it has no processor; changed only under `members`' token.
-    pub(super) fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.empty.load(Ordering::Relaxed)
     }
 
     /// How many processors it has; changed only under `members`' token.
-    pub(super) fn processor_count(&self) -> u32 {
+    pub(crate) fn processor_count(&self) -> u32 {
         self.processor_count.load(Ordering::Relaxed)
     }
 
     /// The highest priority its threads may take.
-    pub(super) const fn max_priority(&self) -> Priority {
+    pub(crate) const fn max_priority(&self) -> Priority {
         self.max_priority
     }
 
     /// The policies its threads may use.
-    pub(super) const fn policies(&self) -> Policies {
+    pub(crate) const fn policies(&self) -> Policies {
         self.policies
     }
 
     /// Its processors' quantum, in ticks, as last computed.
-    pub(super) fn quantum(&self) -> u32 {
+    pub(crate) fn quantum(&self) -> u32 {
         self.quantum.load(Ordering::Relaxed)
     }
 
     /// Its load average, scaled by `LOAD_SCALE`.
-    pub(super) fn load_average(&self) -> i64 {
+    pub(crate) fn load_average(&self) -> i64 {
         self.load_average.load(Ordering::Relaxed)
     }
 
     /// Its load, scaled by `SCHEDULER_SCALE`.
-    pub(super) fn load(&self) -> u32 {
+    pub(crate) fn load(&self) -> u32 {
         self.load.load(Ordering::Relaxed)
     }
 
     /// Moves its Mach factor and load average a fifth of the way to
     /// `factor` and `average`, and its load half way to `load`; by
     /// `compute_mach_factor` only, under `members`' token.
-    pub(super) fn update_averages(&self, factor: i64, average: i64, load: u32) {
+    pub(crate) fn update_averages(&self, factor: i64, average: i64, load: u32) {
         let mach_factor = self.mach_factor.load(Ordering::Relaxed);
         self.mach_factor
             .store((4 * mach_factor + factor) / 5, Ordering::Relaxed);
@@ -511,20 +163,20 @@ impl ProcessorSet {
 
     /// Sets its port, once, before others reach it; the slot keeps its
     /// reference.
-    pub(super) fn set_port(&self, port: Reference<Port>) {
+    pub(crate) fn set_port(&self, port: Reference<Port>) {
         self.port
             .store(Reference::into_raw(port).as_ptr(), Ordering::Release);
     }
 
     /// Sets its name port, once, before others reach it; the slot keeps its
     /// reference.
-    pub(super) fn set_name_port(&self, port: Reference<Port>) {
+    pub(crate) fn set_name_port(&self, port: Reference<Port>) {
         self.name_port
             .store(Reference::into_raw(port).as_ptr(), Ordering::Release);
     }
 
     /// Takes its token.
-    pub(super) fn lock(&self) -> TokenGuard<'_, Members> {
+    pub(crate) fn lock(&self) -> TokenGuard<'_, Members> {
         self.members.lock()
     }
 
@@ -665,7 +317,7 @@ impl ProcessorSet {
     /// # Errors
     ///
     /// `Failure` for a count short of the record.
-    pub(super) fn sched_info(&self, info: &mut [i32]) -> Result<usize, Error> {
+    pub(crate) fn sched_info(&self, info: &mut [i32]) -> Result<usize, Error> {
         // Mach's processor_set_sched_info: policies, then max_priority.
         let Some(sched) = info.first_chunk_mut::<2>() else {
             return Err(Error::Failure);
@@ -680,14 +332,14 @@ impl ProcessorSet {
 
     /// Takes `thread`, new and in no set, into its `members`; the thread
     /// keeps the reference the caller took for it.
-    pub(super) fn add_thread(&self, members: &mut Members, thread: &'static Thread) {
+    pub(crate) fn add_thread(&self, members: &mut Members, thread: &'static Thread) {
         members.threads.push_back(thread);
         thread.set_processor_set(Some(self));
         members.thread_count += 1;
     }
 
     /// Lets `thread`, being freed, out of `members`, its set's.
-    pub(super) fn remove_thread(members: &mut Members, thread: &Thread) {
+    pub(crate) fn remove_thread(members: &mut Members, thread: &Thread) {
         // SAFETY: the thread is on this list, which it joined as it was
         // created.
         unsafe { members.threads.cursor_mut_from_ptr(thread) }.remove();
@@ -697,7 +349,7 @@ impl ProcessorSet {
 
     /// Takes `processor`, coming up, and sets its quanta again; the caller
     /// holds `members`' token.
-    pub(super) fn add_processor(&'static self, processor: &'static Processor) {
+    pub(crate) fn add_processor(&'static self, processor: &'static Processor) {
         processor
             .set
             .store(ptr::from_ref(self).cast_mut(), Ordering::Release);
@@ -727,7 +379,7 @@ impl ProcessorSet {
 
     /// Its quantum for the threads waiting now, up to one each of its
     /// processors.
-    pub(super) fn current_quantum(&self) -> u32 {
+    pub(crate) fn current_quantum(&self) -> u32 {
         let waiting = self
             .queued()
             .min(self.processor_count.load(Ordering::Relaxed));
@@ -739,7 +391,7 @@ impl ProcessorSet {
 
     /// How many threads wait on its run queue: those its processors' run
     /// queues hold that are not bound to them, read without their locks.
-    pub(super) fn queued(&self) -> u32 {
+    pub(crate) fn queued(&self) -> u32 {
         (0..MAX_CPUS)
             .map(|cpu| smp::of(cpu).processor())
             .filter(|processor| processor.set().is_some_and(|set| ptr::eq(set, self)))
@@ -753,7 +405,7 @@ impl ProcessorSet {
     ///
     /// If one of its processors is another running CPU's: that comes with
     /// SMP.
-    pub(super) fn best_queued(&self) -> Option<Priority> {
+    pub(crate) fn best_queued(&self) -> Option<Priority> {
         (0..MAX_CPUS)
             .map(|cpu| smp::of(cpu).processor())
             .filter(|processor| processor.set().is_some_and(|set| ptr::eq(set, self)))
@@ -770,7 +422,7 @@ impl ProcessorSet {
     /// `quantum` adjusted at run time: its processors take turns at
     /// quanta spread from the shortest to it, so theirs do not run out
     /// together. It has more than one processor.
-    pub(super) fn adjust_quantum(&self, quantum: u32) -> u32 {
+    pub(crate) fn adjust_quantum(&self, quantum: u32) -> u32 {
         let count = self.processor_count.load(Ordering::Relaxed);
         let index = self
             .adjust_index
@@ -781,7 +433,7 @@ impl ProcessorSet {
     }
 
     /// Adds it to the list of all sets.
-    fn join_all(&'static self) {
+    pub(super) fn join_all(&'static self) {
         let mut all = ALL_SETS.lock();
         all.list.push_back(self);
         all.count += 1;
@@ -790,7 +442,7 @@ impl ProcessorSet {
 
     /// Takes `task`, new and in no set; the task keeps the reference the
     /// caller took for it.
-    pub(super) fn add_task(&self, task: &'static Task) {
+    pub(crate) fn add_task(&self, task: &'static Task) {
         let mut members = self.members.lock();
         members.tasks.push_back(task);
         task.set
@@ -805,7 +457,7 @@ impl ProcessorSet {
     /// # Panics
     ///
     /// If `task` is in another set: not yet.
-    pub(super) fn remove_task(&self, task: &Task) {
+    pub(crate) fn remove_task(&self, task: &Task) {
         let mut members = self.members.lock();
         assert!(
             ptr::eq(task.set.load(Ordering::Relaxed), self),
@@ -857,59 +509,4 @@ unsafe impl Counted for ProcessorSet {
         // provenance; nothing uses it after.
         drop(unsafe { CacheBox::from_raw(&SET_CACHE, set) });
     }
-}
-
-/// The default set, where every processor and thread starts; its own
-/// reference never drops.
-pub static DEFAULT_SET: ProcessorSet = {
-    let mut set = ProcessorSet::new();
-    set.active = AtomicBool::new(true);
-    set
-};
-
-/// The cache processor sets other than the default come from.
-static SET_CACHE: Cache<ProcessorSet> = Cache::new("processor_set");
-
-/// The boot CPU's processor.
-pub static BOOT_PROCESSOR: OnceLock<&'static Processor> = OnceLock::new();
-
-/// Records the boot CPU's processor, on the boot CPU.
-///
-/// # Panics
-///
-/// On a second call.
-pub fn bootstrap() {
-    assert!(
-        BOOT_PROCESSOR.set(smp::current().processor()).is_ok(),
-        "processor: bootstrapped twice"
-    );
-}
-
-/// Sets up processor sets, on the boot CPU: gives every processor but the
-/// boot CPU's its ports, and creates the slave set.
-pub fn init() {
-    SET_CACHE.register();
-    for cpu in (1..MAX_CPUS).filter(|&cpu| machine::has_processor(cpu)) {
-        ipc_host::init_processor(smp::of(cpu).processor());
-    }
-    DEFAULT_SET.join_all();
-    let set = ProcessorSet::create().unwrap_or_else(|error| panic!("pset_sys_init: {error:?}"));
-    assert!(SLAVE_SET.set(set).is_ok(), "pset_sys_init: twice");
-}
-
-/// Brings the current CPU's processor up, on that CPU, under the default
-/// set's token and the slave set's: it joins the default set, or the slave
-/// set for a CPU but the boot CPU's, and runs.
-pub fn up(cpu: usize) {
-    let processor = smp::current().processor();
-    let slave_set = SLAVE_SET.get().expect("cpu_up: no slave set");
-    let default_members = DEFAULT_SET.members.lock();
-    let slave_members = slave_set.members.lock();
-    let set = if cpu == 0 { &DEFAULT_SET } else { slave_set };
-    set.add_processor(processor);
-    processor
-        .state
-        .store(State::Running.number(), Ordering::Release);
-    drop(slave_members);
-    drop(default_members);
 }

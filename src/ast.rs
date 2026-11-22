@@ -6,7 +6,7 @@
 
 use core::ptr;
 
-use crate::processor::State;
+use crate::processor::state::State;
 use crate::sched::{
     self,
     policy::{Policies, Policy},

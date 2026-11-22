@@ -9,7 +9,9 @@ use core::sync::atomic::Ordering;
 
 use crate::host::HOST;
 use crate::ipc::port::{KernelObject, Port};
-use crate::processor::{BOOT_PROCESSOR, DEFAULT_SET, Processor, ProcessorSet};
+use crate::processor::all_sets::{BOOT_PROCESSOR, DEFAULT_SET};
+use crate::processor::processor::Processor;
+use crate::processor::set::ProcessorSet;
 use crate::reference::Reference;
 
 /// Gives the host, the default set and the boot processor their ports, on
