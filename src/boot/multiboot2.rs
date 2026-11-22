@@ -3,7 +3,7 @@
 //! Multiboot2, from its specification: header values, and the boot
 //! information read in place, trusting the loader.
 
-use core::ffi::{CStr, c_char};
+use core::ffi::CStr;
 use core::marker::PhantomData;
 use core::ops::Range;
 use core::{iter, ptr, slice};
@@ -66,41 +66,11 @@ impl ElfSectionType {
 /// Bytes before the first tag: `total_size` and `reserved`.
 const INFO_HEADER_SIZE: usize = 8;
 
+/// Bytes of every tag's `type` and `size`.
+const TAG_HEADER_SIZE: usize = 8;
+
 /// Tags start on 8-byte boundaries.
 const TAG_ALIGN: usize = 8;
-
-/// Start of every tag.
-#[repr(C)]
-struct TagHeader {
-    ty: TagType,
-    size: u32,
-}
-
-/// Start of the module tag; the module's command line follows.
-#[repr(C)]
-struct ModuleTag {
-    _header: TagHeader,
-    mod_start: u32,
-    mod_end: u32,
-}
-
-/// Start of the memory map tag; the entries follow.
-#[repr(C)]
-struct MmapTag {
-    header: TagHeader,
-    entry_size: u32,
-    _entry_version: u32,
-}
-
-/// Start of the ELF sections tag; the section headers follow, 4-byte
-/// aligned.
-#[repr(C)]
-struct ElfSectionsTag {
-    _header: TagHeader,
-    num: u32,
-    entsize: u32,
-    _shndx: u32,
-}
 
 /// The boot information structure.
 #[derive(Clone, Copy)]
@@ -124,27 +94,22 @@ impl<'a> Info<'a> {
 
     /// The structure's physical range.
     pub fn range(self) -> Range<usize> {
-        // SAFETY: `total_size` comes first; guaranteed by `from_address`.
-        let total_size = unsafe { ptr::with_exposed_provenance::<u32>(self.address).read() };
-        self.address..self.address + usize::try_from(total_size).unwrap()
+        self.address..self.address + self.bytes().len()
     }
 
     /// The tags before the end tag, in order.
     pub fn tags(self) -> impl Iterator<Item = Tag<'a>> {
-        let mut address = self.address + INFO_HEADER_SIZE;
+        let mut rest = &self.bytes()[INFO_HEADER_SIZE..];
         iter::from_fn(move || {
-            let tag = address;
-            // SAFETY: the loader puts its tags one after another, the end
-            // tag last.
-            let header = unsafe { ptr::with_exposed_provenance::<TagHeader>(tag).read() };
-            address += usize::try_from(header.size)
-                .unwrap()
-                .next_multiple_of(TAG_ALIGN);
-            Some((tag, header))
+            let ty = TagType(u32::from_le_bytes(*rest.first_chunk().unwrap()));
+            let size =
+                usize::try_from(u32::from_le_bytes(*rest[4..].first_chunk().unwrap())).unwrap();
+            let tag = &rest[..size];
+            rest = &rest[size.next_multiple_of(TAG_ALIGN)..];
+            Some((ty, tag))
         })
-        .take_while(|(_, header)| header.ty != TagType::END)
-        // SAFETY: as above.
-        .map(|(tag, header)| unsafe { Tag::parse(tag, &header) })
+        .take_while(|&(ty, _)| ty != TagType::END)
+        .map(|(ty, tag)| Tag::parse(ty, &tag[TAG_HEADER_SIZE..]))
     }
 
     /// The memory map, if a tag holds one.
@@ -153,6 +118,19 @@ impl<'a> Info<'a> {
             Tag::Mmap(mmap) => Some(mmap),
             _ => None,
         })
+    }
+
+    /// The structure's bytes, `total_size` of them.
+    fn bytes(self) -> &'a [u8] {
+        // SAFETY: the structure, `total_size` first, is readable and
+        // unchanged for `'a`; guaranteed by `from_address`.
+        unsafe {
+            let total_size = ptr::with_exposed_provenance::<u32>(self.address).read();
+            slice::from_raw_parts(
+                ptr::with_exposed_provenance(self.address),
+                usize::try_from(total_size).unwrap(),
+            )
+        }
     }
 }
 
@@ -180,44 +158,24 @@ pub enum Tag<'a> {
     Other,
 }
 
-impl Tag<'_> {
-    /// The tag at `address`, whose header is `header`.
-    ///
-    /// # Safety
-    ///
-    /// `address` holds the loader's tag, readable and unchanged for the
-    /// result's lifetime.
-    unsafe fn parse(address: usize, header: &TagHeader) -> Self {
-        let body = address + size_of::<TagHeader>();
-        let len = usize::try_from(header.size).unwrap() - size_of::<TagHeader>();
-        // SAFETY: guaranteed by the caller.
-        unsafe {
-            match header.ty {
-                TagType::CMDLINE => {
-                    Self::Cmdline(CStr::from_ptr(ptr::with_exposed_provenance::<c_char>(body)))
-                }
-                TagType::MODULE => {
-                    let tag = ptr::with_exposed_provenance::<ModuleTag>(address).read();
-                    let cmdline = address + size_of::<ModuleTag>();
-                    Self::Module {
-                        mod_start: usize::try_from(tag.mod_start).unwrap(),
-                        mod_end: usize::try_from(tag.mod_end).unwrap(),
-                        cmdline: CStr::from_ptr(ptr::with_exposed_provenance::<c_char>(cmdline)),
-                    }
-                }
-                TagType::MMAP => Self::Mmap(Mmap::new(address)),
-                TagType::ELF_SECTIONS => Self::ElfSections(ElfSections::new(address)),
-                TagType::ACPI_OLD => Self::AcpiOld(slice::from_raw_parts(
-                    ptr::with_exposed_provenance(body),
-                    len,
-                )),
-                TagType::ACPI_NEW => Self::AcpiNew(slice::from_raw_parts(
-                    ptr::with_exposed_provenance(body),
-                    len,
-                )),
-                TagType::EFI64 => Self::Efi64(ptr::with_exposed_provenance::<u64>(body).read()),
-                _ => Self::Other,
-            }
+impl<'a> Tag<'a> {
+    /// The tag of type `ty` whose bytes past its header are `body`.
+    fn parse(ty: TagType, body: &'a [u8]) -> Self {
+        match ty {
+            TagType::CMDLINE => Self::Cmdline(CStr::from_bytes_until_nul(body).unwrap()),
+            TagType::MODULE => Self::Module {
+                mod_start: usize::try_from(u32::from_le_bytes(*body.first_chunk().unwrap()))
+                    .unwrap(),
+                mod_end: usize::try_from(u32::from_le_bytes(*body[4..].first_chunk().unwrap()))
+                    .unwrap(),
+                cmdline: CStr::from_bytes_until_nul(&body[8..]).unwrap(),
+            },
+            TagType::MMAP => Self::Mmap(Mmap::new(body)),
+            TagType::ELF_SECTIONS => Self::ElfSections(ElfSections::new(body)),
+            TagType::ACPI_OLD => Self::AcpiOld(body),
+            TagType::ACPI_NEW => Self::AcpiNew(body),
+            TagType::EFI64 => Self::Efi64(u64::from_le_bytes(*body.first_chunk().unwrap())),
+            _ => Self::Other,
         }
     }
 }
@@ -225,27 +183,17 @@ impl Tag<'_> {
 /// The memory map's entries.
 #[derive(Clone)]
 pub struct Mmap<'a> {
-    next: usize,
-    end: usize,
+    entries: &'a [u8],
     entry_size: usize,
-    _info: PhantomData<&'a [u8]>,
 }
 
-impl Mmap<'_> {
-    /// The map in the memory map tag at `address`.
-    ///
-    /// # Safety
-    ///
-    /// `address` holds the loader's memory map tag, readable and unchanged
-    /// for the result's lifetime.
-    unsafe fn new(address: usize) -> Self {
-        // SAFETY: guaranteed by the caller.
-        let tag = unsafe { ptr::with_exposed_provenance::<MmapTag>(address).read() };
+impl<'a> Mmap<'a> {
+    /// The map in the memory map tag whose bytes past its header are `body`.
+    fn new(body: &'a [u8]) -> Self {
         Self {
-            next: address + size_of::<MmapTag>(),
-            end: address + usize::try_from(tag.header.size).unwrap(),
-            entry_size: usize::try_from(tag.entry_size).unwrap(),
-            _info: PhantomData,
+            entry_size: usize::try_from(u32::from_le_bytes(*body.first_chunk().unwrap())).unwrap(),
+            // Past `entry_size` and `entry_version`.
+            entries: &body[8..],
         }
     }
 }
@@ -254,14 +202,15 @@ impl Iterator for Mmap<'_> {
     type Item = MmapEntry;
 
     fn next(&mut self) -> Option<MmapEntry> {
-        (self.next < self.end).then(|| {
-            // SAFETY: the loader's entries fill the tag, `entry_size` apart.
-            let entry = unsafe { ptr::with_exposed_provenance::<RawMmapEntry>(self.next).read() };
-            self.next += self.entry_size;
+        (!self.entries.is_empty()).then(|| {
+            let (entry, rest) = self.entries.split_at(self.entry_size);
+            self.entries = rest;
             MmapEntry {
-                base_addr: usize::try_from(entry.base_addr).unwrap(),
-                length: usize::try_from(entry.length).unwrap(),
-                ty: entry.ty,
+                base_addr: usize::try_from(u64::from_le_bytes(*entry.first_chunk().unwrap()))
+                    .unwrap(),
+                length: usize::try_from(u64::from_le_bytes(*entry[8..].first_chunk().unwrap()))
+                    .unwrap(),
+                ty: MemoryType(u32::from_le_bytes(*entry[16..].first_chunk().unwrap())),
             }
         })
     }
@@ -275,39 +224,24 @@ pub struct MmapEntry {
     pub ty: MemoryType,
 }
 
-/// A memory map entry as the loader lays it out.
-#[repr(C)]
-struct RawMmapEntry {
-    base_addr: u64,
-    length: u64,
-    ty: MemoryType,
-    _reserved: u32,
-}
-
 /// The ELF sections tag's section headers.
 #[derive(Clone)]
 pub struct ElfSections<'a> {
-    next: usize,
-    left: usize,
+    headers: &'a [u8],
     entsize: usize,
-    _info: PhantomData<&'a [u8]>,
+    left: usize,
 }
 
-impl ElfSections<'_> {
-    /// The section headers in the ELF sections tag at `address`.
-    ///
-    /// # Safety
-    ///
-    /// `address` holds the loader's ELF sections tag, readable and unchanged
-    /// for the result's lifetime.
-    unsafe fn new(address: usize) -> Self {
-        // SAFETY: guaranteed by the caller.
-        let tag = unsafe { ptr::with_exposed_provenance::<ElfSectionsTag>(address).read() };
+impl<'a> ElfSections<'a> {
+    /// The section headers in the ELF sections tag whose bytes past its
+    /// header are `body`.
+    fn new(body: &'a [u8]) -> Self {
         Self {
-            next: address + size_of::<ElfSectionsTag>(),
-            left: usize::try_from(tag.num).unwrap(),
-            entsize: usize::try_from(tag.entsize).unwrap(),
-            _info: PhantomData,
+            left: usize::try_from(u32::from_le_bytes(*body.first_chunk().unwrap())).unwrap(),
+            entsize: usize::try_from(u32::from_le_bytes(*body[4..].first_chunk().unwrap()))
+                .unwrap(),
+            // Past `num`, `entsize` and `shndx`.
+            headers: &body[12..],
         }
     }
 }
@@ -317,17 +251,15 @@ impl Iterator for ElfSections<'_> {
 
     fn next(&mut self) -> Option<ElfSection> {
         (self.left > 0).then(|| {
-            // SAFETY: the loader's `num` headers follow the tag, `entsize`
-            // apart.
-            let section = unsafe {
-                ptr::with_exposed_provenance::<RawElfSection>(self.next).read_unaligned()
-            };
-            self.next += self.entsize;
+            let (section, rest) = self.headers.split_at(self.entsize);
+            self.headers = rest;
             self.left -= 1;
             ElfSection {
-                ty: section.ty,
-                addr: usize::try_from(section.addr).unwrap(),
-                size: usize::try_from(section.size).unwrap(),
+                ty: ElfSectionType(u32::from_le_bytes(*section[4..].first_chunk().unwrap())),
+                addr: usize::try_from(u64::from_le_bytes(*section[16..].first_chunk().unwrap()))
+                    .unwrap(),
+                size: usize::try_from(u64::from_le_bytes(*section[32..].first_chunk().unwrap()))
+                    .unwrap(),
             }
         })
     }
@@ -339,19 +271,4 @@ pub struct ElfSection {
     pub ty: ElfSectionType,
     pub addr: usize,
     pub size: usize,
-}
-
-/// An ELF64 section header as the loader lays it out.
-#[repr(C)]
-struct RawElfSection {
-    _name: u32,
-    ty: ElfSectionType,
-    _flags: u64,
-    addr: u64,
-    _offset: u64,
-    size: u64,
-    _link: u32,
-    _info: u32,
-    _addralign: u64,
-    _entsize: u64,
 }
