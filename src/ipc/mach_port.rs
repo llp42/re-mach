@@ -227,24 +227,6 @@ impl Space {
         SpaceState::release_user_reference(state, name);
     }
 
-    /// Moves the rights of `old_name` in it to `new_name`, as
-    /// `mach_port_rename` does.
-    ///
-    /// # Errors
-    ///
-    /// As `Space::rename_entry`.
-    ///
-    /// # Panics
-    ///
-    /// If `new_name` is null or dead: not yet; as `Space::rename_entry`.
-    pub fn rename(&self, old_name: PortName, new_name: PortName) -> Result<(), Error> {
-        assert!(
-            new_name.is_valid(),
-            "mach_port_rename: KERN_INVALID_VALUE, not yet"
-        );
-        self.rename_entry(old_name, new_name)
-    }
-
     /// Puts a new right of the kind numbered `right` in it under a free
     /// name, as `mach_port_allocate` does, and gives the name: a receive right,
     /// a port set or a dead name.

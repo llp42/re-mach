@@ -18,7 +18,6 @@ mig::subsystem! {
     base 3200;
     0 mach_port_names(task = Port::task_space) -> (names: OutOfLine<PortName>, types: OutOfLine<PortType>);
     1 mach_port_type(task = Port::task_space, name: PortName) -> (port_type: PortType);
-    2 mach_port_rename(task = Port::task_space, old_name: PortName, new_name: PortName);
     3 mach_port_allocate_name(task = Port::task_space, right: u32, name: PortName);
     4 mach_port_allocate(task = Port::task_space, right: u32) -> (name: PortName);
     5 mach_port_destroy(task = Port::task_space, name: PortName);
@@ -51,21 +50,6 @@ fn mach_port_names(
 fn mach_port_type(space: Option<&Reference<Space>>, name: PortName) -> Result<PortType, Error> {
     let space = space.unwrap_or_else(|| panic!("mach_port_type: KERN_INVALID_TASK, not yet"));
     Ok(space.port_type(name))
-}
-
-/// Serves `mach_port_rename`: `old_name`'s rights in `space` move to
-/// `new_name`.
-///
-/// # Panics
-///
-/// With no space: not yet. As `Space::rename`.
-fn mach_port_rename(
-    space: Option<&Reference<Space>>,
-    old_name: PortName,
-    new_name: PortName,
-) -> Result<(), Error> {
-    let space = space.unwrap_or_else(|| panic!("mach_port_rename: KERN_INVALID_TASK, not yet"));
-    space.rename(old_name, new_name)
 }
 
 /// Serves `mach_port_allocate_name`: a new right of the kind numbered

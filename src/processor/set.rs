@@ -186,6 +186,7 @@ impl ProcessorSet {
     /// # Panics
     ///
     /// If it is out of use: not yet.
+    #[expect(dead_code, reason = "the Phase 1 processor-set RPCs use it")]
     pub fn port(set: Reference<Self>) -> Reference<Port> {
         let members = set.members.lock();
         assert!(
@@ -209,6 +210,7 @@ impl ProcessorSet {
     /// # Panics
     ///
     /// If it is out of use: not yet.
+    #[expect(dead_code, reason = "the Phase 1 processor-set RPCs use it")]
     pub fn name_port(set: Reference<Self>) -> Reference<Port> {
         let members = set.members.lock();
         assert!(
@@ -248,86 +250,6 @@ impl ProcessorSet {
         ipc_host::init_set(set);
         set.join_all();
         Ok(set)
-    }
-
-    /// Ends it, as `processor_set_destroy` does: out of use, its ports
-    /// standing for nothing, then destroyed, so that their rights name dead
-    /// ports, and its own reference dropped; the caller holds another.
-    ///
-    /// # Errors
-    ///
-    /// `InvalidArgument` for the default set; `Failure` if it is out of use
-    /// already.
-    ///
-    /// # Panics
-    ///
-    /// If it has tasks, threads or processors, which go to the default set:
-    /// not yet. As `Port::deallocate_kernel`.
-    pub fn destroy(&self) -> Result<(), Error> {
-        if ptr::eq(self, &raw const DEFAULT_SET) {
-            return Err(Error::InvalidArgument);
-        }
-        let members = self.members.lock();
-        if !self.active.swap(false, Ordering::Relaxed) {
-            drop(members);
-            return Err(Error::Failure);
-        }
-        // As ipc_pset_disable: each port stands for nothing, and the
-        // reference it kept drops, never the last.
-        for slot in [&self.port, &self.name_port] {
-            // SAFETY: the slot keeps its port's reference until below.
-            unsafe { slot.load(Ordering::Acquire).as_ref() }
-                .expect("ipc_pset_disable: no port")
-                .replace_kernel_object(None);
-            // SAFETY: the reference the port kept, from `ipc_host::init_set`.
-            drop(unsafe { Reference::from_raw(NonNull::from(self)) });
-        }
-        assert!(
-            members.task_count == 0,
-            "processor_set_destroy: task_assign, not yet"
-        );
-        assert!(
-            members.thread_count == 0,
-            "processor_set_destroy: thread_assign, not yet"
-        );
-        assert!(
-            self.processor_count() == 0,
-            "processor_set_destroy: processor_assign, not yet"
-        );
-        drop(members);
-        // As ipc_pset_terminate: each port destroyed, then its slot's
-        // reference dropped.
-        for slot in [&self.port, &self.name_port] {
-            let port = NonNull::new(slot.swap(ptr::null_mut(), Ordering::AcqRel))
-                .expect("ipc_pset_terminate: no port");
-            // SAFETY: the slot's reference, which this handle takes.
-            let port = unsafe { Reference::from_raw(port) };
-            port.deallocate_kernel();
-        }
-        // SAFETY: its own reference, from `create`; never the last, as the
-        // caller holds one.
-        drop(unsafe { Reference::from_raw(NonNull::from(self)) });
-        Ok(())
-    }
-
-    /// Writes its scheduling information into `info`, as
-    /// `processor_set_info`'s `PROCESSOR_SET_SCHED_INFO` does; `info`'s
-    /// length is the count asked for. Gives the count written.
-    ///
-    /// # Errors
-    ///
-    /// `Failure` for a count short of the record.
-    pub(crate) fn sched_info(&self, info: &mut [i32]) -> Result<usize, Error> {
-        // Mach's processor_set_sched_info: policies, then max_priority.
-        let Some(sched) = info.first_chunk_mut::<2>() else {
-            return Err(Error::Failure);
-        };
-        // Fixed when it is made, so read without its token.
-        *sched = [
-            i32::try_from(self.policies.bits()).unwrap(),
-            i32::try_from(u32::from(self.max_priority)).unwrap(),
-        ];
-        Ok(sched.len())
     }
 
     /// Takes `thread`, new and in no set, into its `members`; the thread

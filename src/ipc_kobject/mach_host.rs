@@ -4,19 +4,13 @@
 //! The host calls' server routines, as MIG makes them from `mach_host`'s
 //! definitions; only those written so far.
 
-use core::mem::ManuallyDrop;
-use core::ptr::NonNull;
-use core::sync::atomic::Ordering;
-
 use super::mig;
 use super::mig::boolean::Boolean;
 use super::mig::string_char::StringC;
 use crate::error::Error;
-use crate::host::{self, HOST, Host};
+use crate::host::{self, Host};
 use crate::ipc::MessageType;
 use crate::ipc::port::port::Port;
-use crate::processor::all_sets::DEFAULT_SET;
-use crate::processor::set::ProcessorSet;
 use crate::reference::Reference;
 use crate::sched::priority::{BasePriority, Priority};
 use crate::task::ports::Threads;
@@ -25,15 +19,10 @@ use crate::{clock, machine};
 
 mig::subsystem! {
     base 2600;
-    6 processor_set_default(host = Port::as_host) -> (default_set: Port);
-    8 processor_set_create(host = Port::as_privileged_host) -> (new_set: Port, new_name: Port);
-    9 processor_set_destroy(set = Port::to_processor_set);
     22 task_priority(task = Port::to_task, priority: i32, change_threads: Boolean);
     34 host_get_time(host = Port::as_host) -> (current_time: RpcTimeValue);
     35 host_reboot(host = Port::as_privileged_host, options: i32);
     38 host_info(host = Port::as_host, flavor: i32) -> (info: [i32; ..1024], CountInOut);
-    40 processor_set_info(set_name = Port::to_processor_set_name, flavor: i32)
-        -> (host: Port, info_out: [i32; ..1024], CountInOut);
     43 host_get_time64(host = Port::as_host) -> (current_time: TimeValue64);
     46 host_get_kernel_version(host = Port::as_host) -> (kernel_version: StringC<512>);
     47 host_get_uptime64(host = Port::as_host) -> (uptime: TimeValue64);
@@ -76,66 +65,6 @@ struct TimeValue64 {
 // SAFETY: `repr(C)`, integers only, no padding.
 unsafe impl mig::argument::Inline for TimeValue64 {
     const WORD: u64 = mig::argument::type_word(MessageType::Integer64, 64, 2);
-}
-
-/// Serves `processor_set_default`: a send right for the default set's name
-/// port, as `convert_pset_name_to_port` gives it.
-///
-/// # Errors
-///
-/// `InvalidArgument` for no host.
-///
-/// # Panics
-///
-/// As `ProcessorSet::name_port`.
-fn processor_set_default(host: Option<&&Host>) -> Result<Reference<Port>, Error> {
-    if host.is_none() {
-        return Err(Error::InvalidArgument);
-    }
-    // SAFETY: the default set's own reference never drops; this handle
-    // borrows it and never drops it.
-    let set = ManuallyDrop::new(unsafe { Reference::from_raw(NonNull::from(&DEFAULT_SET)) });
-    Ok(ProcessorSet::name_port(Reference::clone(&set)))
-}
-
-/// Serves `processor_set_create`: a new set; send rights for its port and
-/// its name port, as `convert_pset_to_port` and `convert_pset_name_to_port`
-/// make them.
-///
-/// # Errors
-///
-/// `InvalidArgument` for no privileged host; as `ProcessorSet::create`.
-///
-/// # Panics
-///
-/// As `ProcessorSet::port` and `ProcessorSet::name_port`.
-fn processor_set_create(host: Option<&&Host>) -> Result<(Reference<Port>, Reference<Port>), Error> {
-    if host.is_none() {
-        return Err(Error::InvalidArgument);
-    }
-    let set = NonNull::from(ProcessorSet::create()?);
-    // SAFETY: the references `create` took for the caller's set and name.
-    let (new_set, new_name) = unsafe { (Reference::from_raw(set), Reference::from_raw(set)) };
-    Ok((
-        ProcessorSet::port(new_set),
-        ProcessorSet::name_port(new_name),
-    ))
-}
-
-/// Serves `processor_set_destroy`: ends `set`.
-///
-/// # Errors
-///
-/// `InvalidArgument` for no set; as `ProcessorSet::destroy`.
-///
-/// # Panics
-///
-/// As `ProcessorSet::destroy`.
-fn processor_set_destroy(set: Option<&Reference<ProcessorSet>>) -> Result<(), Error> {
-    let Some(set) = set else {
-        return Err(Error::InvalidArgument);
-    };
-    set.destroy()
 }
 
 /// Serves `task_priority`: sets `task`'s priority to `priority`, its
@@ -199,40 +128,6 @@ fn host_reboot(host: Option<&&Host>, options: i32) -> Result<(), Error> {
 /// As `host::info`.
 fn host_info(host: Option<&&Host>, flavor: i32, info: &mut [i32]) -> Result<usize, Error> {
     host::info(host.copied(), flavor, info)
-}
-
-/// Serves `processor_set_info`: up to `info_out.len()` integers of
-/// `flavor` for `set_name`; gives a send right for the host's port, as
-/// `convert_host_to_port` makes it, and how many.
-///
-/// # Errors
-///
-/// `InvalidArgument` for no set or a flavor Mach lacks; as
-/// `ProcessorSet::sched_info`.
-///
-/// # Panics
-///
-/// If the host has no port. For `PROCESSOR_SET_BASIC_INFO`: not yet.
-fn processor_set_info(
-    set_name: Option<&Reference<ProcessorSet>>,
-    flavor: i32,
-    info_out: &mut [i32],
-) -> Result<(Reference<Port>, usize), Error> {
-    let Some(set) = set_name else {
-        return Err(Error::InvalidArgument);
-    };
-    // PROCESSOR_SET_BASIC_INFO, PROCESSOR_SET_SCHED_INFO.
-    let count = match flavor {
-        1 => panic!("processor_set_info: PROCESSOR_SET_BASIC_INFO, not yet"),
-        2 => set.sched_info(info_out)?,
-        _ => return Err(Error::InvalidArgument),
-    };
-    let port = NonNull::new(HOST.port.load(Ordering::Acquire))
-        .expect("convert_host_to_port: no host port");
-    // SAFETY: the host's slot keeps its port's reference for good, which
-    // the handle borrows and never drops.
-    let port = ManuallyDrop::new(unsafe { Reference::from_raw(port) });
-    Ok((Port::make_send(&port), count))
 }
 
 /// Serves `host_get_time64`: the time of day for `host`.

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 
-use crate::ipc::entry::{EntryBits, Rights};
+use crate::ipc::entry::Rights;
 use crate::ipc::object::Object;
 use crate::ipc::port::port::Port;
 use crate::ipc::port::port_name::PortName;
@@ -149,76 +149,5 @@ impl SpaceState {
         };
         entry.bits.rights.remove(Rights::SEND_ONCE);
         port
-    }
-
-    /// Moves the rights of `old_name`'s entry to `new_name`'s, new and holding
-    /// none, in the write-locked, alive space, as `ipc_right_rename` does; the
-    /// old entry is freed.
-    ///
-    /// # Panics
-    ///
-    /// If the space is dead, either name has no entry, or the new entry holds
-    /// rights, or for rights that are none of Mach's. If the old entry has a
-    /// dead-name or message-accepted request, or its rights are a receive,
-    /// send-once, port set or dead name right: not yet. As
-    /// `SpaceState::deallocate`.
-    pub(in crate::ipc) fn move_rights(&mut self, old_name: PortName, new_name: PortName) {
-        assert!(self.active, "ipc_right_rename: a dead space");
-        let Self {
-            map, reverse_map, ..
-        } = self;
-        let old = map
-            .get_mut(old_name.key())
-            .expect("ipc_right_rename: no old entry");
-        let EntryBits {
-            rights,
-            user_references,
-            message_accepted,
-        } = old.bits;
-        let (request, object) = (old.request, old.object.take());
-        assert!(
-            request == 0,
-            "ipc_right_rename: ipc_right_check and ipc_port_dnrename, not yet"
-        );
-        assert!(
-            !message_accepted,
-            "ipc_right_rename: ipc_marequest_rename, not yet"
-        );
-        // The name map's own pointer, for the reverse map, and its entry.
-        let (Some(pointer), Some(new)) = (map.lookup(new_name.key()), map.get_mut(new_name.key()))
-        else {
-            panic!("ipc_right_rename: no new entry");
-        };
-        assert!(
-            !new.in_use() && new.bits.user_references == 0 && !new.bits.message_accepted,
-            "ipc_right_rename: a new entry with rights"
-        );
-        new.bits = EntryBits {
-            rights,
-            user_references,
-            message_accepted,
-        };
-        new.request = request;
-        new.object = object;
-        if rights.bits() == Rights::SEND.bits() {
-            let Some(Object::Port(port)) = &new.object else {
-                panic!("ipc_right_rename: a send right with no port");
-            };
-            reverse_map.remove(port.reverse_key());
-            new.name = new_name;
-            // As in GNU Mach, a failure leaves the entry out of the reverse map.
-            let _ = reverse_map.insert(port.reverse_key(), pointer);
-        } else if rights.contains(Rights::RECEIVE) {
-            panic!("ipc_right_rename: MACH_PORT_TYPE_RECEIVE, not yet");
-        } else if rights.bits() == Rights::SEND_ONCE.bits() {
-            panic!("ipc_right_rename: MACH_PORT_TYPE_SEND_ONCE, not yet");
-        } else if rights.bits() == Rights::PORT_SET.bits() {
-            panic!("ipc_right_rename: MACH_PORT_TYPE_PORT_SET, not yet");
-        } else if rights.bits() == Rights::DEAD_NAME.bits() {
-            panic!("ipc_right_rename: MACH_PORT_TYPE_DEAD_NAME, not yet");
-        } else {
-            panic!("ipc_right_rename: strange rights");
-        }
-        self.deallocate(old_name);
     }
 }

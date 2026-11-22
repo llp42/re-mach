@@ -36,9 +36,15 @@ pub enum KernelObject {
     /// The host's privileged port.
     HostPrivileged(&'static Host),
     /// A processor set's port.
-    ProcessorSet(NonNull<ProcessorSet>),
+    ProcessorSet(
+        #[expect(dead_code, reason = "the Phase 1 processor-set RPCs read it")]
+        NonNull<ProcessorSet>,
+    ),
     /// A processor set's name port.
-    ProcessorSetName(NonNull<ProcessorSet>),
+    ProcessorSetName(
+        #[expect(dead_code, reason = "the Phase 1 processor-set RPCs read it")]
+        NonNull<ProcessorSet>,
+    ),
     /// A processor's port.
     Processor(
         #[expect(dead_code, reason = "convert_port_to_processor reads it")] &'static Processor,
@@ -107,6 +113,7 @@ impl Port {
     /// The set it stands for, if it is a set's port, not its name port,
     /// with a reference to it taken under the port's lock, as
     /// `convert_port_to_pset` gives it.
+    #[expect(dead_code, reason = "the Phase 1 processor-set RPCs use it")]
     pub fn to_processor_set(&self) -> Option<Reference<ProcessorSet>> {
         self.with_kernel_object(|object| match object {
             Some(KernelObject::ProcessorSet(set)) => {
@@ -122,6 +129,7 @@ impl Port {
     /// The set it stands for, if it is a set's port or name port, with a
     /// reference to it taken under the port's lock, as
     /// `convert_port_to_pset_name` gives it.
+    #[expect(dead_code, reason = "the Phase 1 processor-set RPCs use it")]
     pub fn to_processor_set_name(&self) -> Option<Reference<ProcessorSet>> {
         self.with_kernel_object(|object| match object {
             Some(KernelObject::ProcessorSet(set) | KernelObject::ProcessorSetName(set)) => {

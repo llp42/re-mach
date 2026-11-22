@@ -347,29 +347,4 @@ impl Space {
         drop(state);
         Ok(())
     }
-
-    /// Moves the rights of `old_name` in it to `new_name`, as
-    /// `ipc_object_rename` does.
-    ///
-    /// # Errors
-    ///
-    /// `ResourceShortage` if the new entry or a map node can't be allocated.
-    ///
-    /// # Panics
-    ///
-    /// If `new_name` holds rights, or `old_name` is `new_name` or holds none:
-    /// not yet. As `SpaceState::allocate_name` and `SpaceState::move_rights`.
-    pub(super) fn rename_entry(&self, old_name: PortName, new_name: PortName) -> Result<(), Error> {
-        let mut state = self.state.write();
-        // As ipc_right_inuse.
-        let used = state.allocate_name(new_name)?.in_use();
-        assert!(!used, "ipc_object_rename: KERN_NAME_EXISTS, not yet");
-        assert!(
-            old_name != new_name && state.lookup(old_name).is_some(),
-            "ipc_object_rename: KERN_INVALID_NAME, not yet"
-        );
-        state.move_rights(old_name, new_name);
-        drop(state);
-        Ok(())
-    }
 }
