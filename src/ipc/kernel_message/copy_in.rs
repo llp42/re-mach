@@ -9,9 +9,9 @@ use super::KernelMessage;
 use super::header::{Header, MessageBits};
 use crate::arch::{self, Machine as _};
 use crate::error::Error;
+use crate::ipc::MessageType;
 use crate::ipc::port::{KernelObject, Port, PortName};
 use crate::ipc::space::Space;
-use crate::ipc::{MessageType, object};
 use crate::kalloc;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
@@ -238,7 +238,7 @@ impl KernelMessage {
     /// is to be deallocated or goes to a port that takes it as page lists, a
     /// right is not a copied, made or moved send right, or a name is dead:
     /// not yet. As `kalloc::allocate`, `vm::user::deallocate`,
-    /// `object::copy_in` and `Map::copy_in`.
+    /// `Space::copy_in` and `Map::copy_in`.
     #[expect(
         clippy::too_many_lines,
         reason = "ipc_kmsg_copyin_body's steps, in GNU Mach's order"
@@ -378,7 +378,7 @@ impl KernelMessage {
                     let port_name =
                         PortName::from(u32::from_le_bytes(slot[..4].try_into().unwrap()));
                     let address = if port_name.is_valid() {
-                        let copied = object::copy_in(space, port_name, message_type);
+                        let copied = space.copy_in(port_name, message_type);
                         Reference::into_raw(copied).as_ptr().expose_provenance()
                     } else {
                         assert!(

@@ -137,15 +137,14 @@ impl Port {
     ///
     /// # Errors
     ///
-    /// As `object::allocate`.
+    /// As `Space::insert_object`.
     ///
     /// # Panics
     ///
-    /// As `object::allocate`.
+    /// As `Space::insert_object`.
     pub fn allocate(space: &Space) -> Result<PortName, Error> {
         let port = CACHE.allocate(Self::new(NonNull::from(space)))?;
-        object::allocate(
-            space,
+        space.insert_object(
             port,
             // As ipc_port_init: its name there.
             |port, name| port.state.get_mut().receiver_name = name,
@@ -159,16 +158,16 @@ impl Port {
     /// # Errors
     ///
     /// `ResourceShortage` if no port can be allocated; as
-    /// `object::allocate_name`.
+    /// `Space::insert_object_as`.
     ///
     /// # Panics
     ///
-    /// As `object::allocate_name`.
+    /// As `Space::insert_object_as`.
     pub(super) fn allocate_name(space: &Space, name: PortName) -> Result<(), Error> {
         let mut port = CACHE.allocate(Self::new(NonNull::from(space)))?;
         // As ipc_port_init: its name there.
         port.state.get_mut().receiver_name = name;
-        object::allocate_name(space, port, name, |port| {
+        space.insert_object_as(port, name, |port| {
             object::Object::Port(Reference::from(port))
         })
     }
@@ -355,11 +354,13 @@ impl Port {
     ///
     /// # Panics
     ///
-    /// If the copy-out fails: not yet; as `object::copy_out`.
+    /// If the copy-out fails: not yet; as `Space::copy_out`.
     pub fn copy_out_send(port: Reference<Self>, space: &Space) -> PortName {
-        object::copy_out(space, port, MessageType::PortSend).unwrap_or_else(|(error, _)| {
-            panic!("ipc_port_copyout_send: a failed copy-out, not yet: {error:?}")
-        })
+        space
+            .copy_out(port, MessageType::PortSend)
+            .unwrap_or_else(|(error, _)| {
+                panic!("ipc_port_copyout_send: a failed copy-out, not yet: {error:?}")
+            })
     }
 
     /// Destroys the port, alive, cleared of its receiver and of locked state

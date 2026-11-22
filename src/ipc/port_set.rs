@@ -6,7 +6,7 @@
 use intrusive_collections::LinkedList;
 
 use super::kernel_message;
-use super::object::{self, Object};
+use super::object::Object;
 use super::port::PortName;
 use super::space::Space;
 use crate::error::Error;
@@ -59,15 +59,14 @@ impl PortSet {
     /// # Errors
     ///
     /// `ResourceShortage` if no port set can be allocated; as
-    /// `object::allocate`.
+    /// `Space::insert_object`.
     ///
     /// # Panics
     ///
-    /// As `object::allocate`.
+    /// As `Space::insert_object`.
     pub(super) fn allocate(space: &Space) -> Result<PortName, Error> {
         let set = CACHE.allocate(Self::new())?;
-        object::allocate(
-            space,
+        space.insert_object(
             set,
             // As ipc_target_init: its name; `new` gave it an empty queue.
             |set, name| set.state.get_mut().local_name = name,
@@ -81,18 +80,16 @@ impl PortSet {
     /// # Errors
     ///
     /// `ResourceShortage` if no port set can be allocated; as
-    /// `object::allocate_name`.
+    /// `Space::insert_object_as`.
     ///
     /// # Panics
     ///
-    /// As `object::allocate_name`.
+    /// As `Space::insert_object_as`.
     pub(super) fn allocate_name(space: &Space, name: PortName) -> Result<(), Error> {
         let mut set = CACHE.allocate(Self::new())?;
         // As ipc_target_init: its name; `new` gave it an empty queue.
         set.state.get_mut().local_name = name;
-        object::allocate_name(space, set, name, |set| {
-            Object::PortSet(CacheBox::into_raw(set))
-        })
+        space.insert_object_as(set, name, |set| Object::PortSet(CacheBox::into_raw(set)))
     }
 
     /// Destroys the port set of locked state `state`, alive, as

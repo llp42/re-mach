@@ -10,7 +10,7 @@ use super::KernelMessage;
 use super::header::{Header, MessageBits};
 use crate::arch::{self, Machine as _};
 use crate::ipc::MessageType;
-use crate::ipc::object::{self, Object};
+use crate::ipc::object::Object;
 use crate::ipc::port::{Port, PortName};
 use crate::ipc::space::Space;
 use crate::kalloc;
@@ -32,10 +32,10 @@ impl KernelMessage {
     /// If it has no destination type. For a reply port's right that is not
     /// a send-once right, a dead space, reply port or destination, an entry
     /// that can't be allocated, or a protected payload: not yet. As
-    /// `SpaceState::put_right` and `object::copy_out_dest`.
+    /// `SpaceState::put_right` and `Space::copy_out_destination`.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the ports' guards are moved into SpaceState::put_right and object::copy_out_dest"
+        reason = "the ports' guards are moved into SpaceState::put_right and Space::copy_out_destination"
     )]
     pub(in crate::ipc) fn copy_out_header(&mut self, space: &Space) {
         let header = self.header_mut();
@@ -112,7 +112,7 @@ impl KernelMessage {
             destination_state.protected_payload.is_none(),
             "ipc_kmsg_copyout_header: MACH_MSG_TYPE_PROTECTED_PAYLOAD, not yet"
         );
-        let destination_name = object::copy_out_dest(space, destination_state, destination_type);
+        let destination_name = space.copy_out_destination(destination_state, destination_type);
         // The right's reference, as ipc_object_copyout_dest's io_release.
         drop(destination);
         let swapped = MessageBits::new(reply_type, Some(destination_type));
@@ -138,7 +138,7 @@ impl KernelMessage {
     /// If empty out-of-line data has an address. If an item carries rights
     /// other than send rights, a port is null or dead, a right can't be
     /// copied out, or memory can't be allocated or copied out: not yet. As
-    /// `object::copy_out` and `Map::copy_out`.
+    /// `Space::copy_out` and `Map::copy_out`.
     #[expect(
         clippy::too_many_lines,
         reason = "ipc_kmsg_copyout_body's steps, in GNU Mach's order"
@@ -210,12 +210,13 @@ impl KernelMessage {
                     // to it given up by `into_raw`, which the handle takes, as the
                     // slot is overwritten below.
                     let port = unsafe { Reference::from_raw(port) };
-                    let port_name = object::copy_out(space, port, MessageType::PortSend)
-                        .unwrap_or_else(|(error, _)| {
+                    let port_name = space.copy_out(port, MessageType::PortSend).unwrap_or_else(
+                        |(error, _)| {
                             panic!(
                                 "ipc_kmsg_copyout_object: {error:?}, ipc_object_destroy, not yet"
                             )
-                        });
+                        },
+                    );
                     // The name, zero-extended.
                     *slot = usize::try_from(u32::from(port_name)).unwrap().to_le_bytes();
                 }

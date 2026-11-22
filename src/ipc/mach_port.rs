@@ -7,7 +7,7 @@ use core::{ptr, slice};
 
 use super::MessageType;
 use super::entry::{Entry, Rights};
-use super::object::{self, Object};
+use super::object::Object;
 use super::port::{self, Port, PortName, PortType, Right};
 use super::port_set::PortSet;
 use super::space::{Space, SpaceState};
@@ -224,17 +224,17 @@ pub fn deallocate(space: &Space, name: PortName) {
 ///
 /// # Errors
 ///
-/// As `object::rename`.
+/// As `Space::rename_entry`.
 ///
 /// # Panics
 ///
-/// If `new_name` is null or dead: not yet; as `object::rename`.
+/// If `new_name` is null or dead: not yet; as `Space::rename_entry`.
 pub fn rename(space: &Space, old_name: PortName, new_name: PortName) -> Result<(), Error> {
     assert!(
         new_name.is_valid(),
         "mach_port_rename: KERN_INVALID_VALUE, not yet"
     );
-    object::rename(space, old_name, new_name)
+    space.rename_entry(old_name, new_name)
 }
 
 /// Puts a new right of the kind numbered `right` in `space` under a free
@@ -243,12 +243,12 @@ pub fn rename(space: &Space, old_name: PortName, new_name: PortName) -> Result<(
 ///
 /// # Errors
 ///
-/// As `Port::allocate`, `PortSet::allocate` and `object::allocate_dead`.
+/// As `Port::allocate`, `PortSet::allocate` and `Space::insert_dead_name`.
 ///
 /// # Panics
 ///
 /// If `right` is none of those kinds: not yet. As `Port::allocate`,
-/// `PortSet::allocate` and `object::allocate_dead`.
+/// `PortSet::allocate` and `Space::insert_dead_name`.
 pub fn allocate(space: &Space, right: u32) -> Result<PortName, Error> {
     let right = Right::try_from(right).unwrap_or_else(|right| {
         panic!("mach_port_allocate: KERN_INVALID_VALUE for right {right}, not yet")
@@ -256,7 +256,7 @@ pub fn allocate(space: &Space, right: u32) -> Result<PortName, Error> {
     match right {
         Right::Receive => Port::allocate(space),
         Right::PortSet => PortSet::allocate(space),
-        Right::DeadName => object::allocate_dead(space),
+        Right::DeadName => space.insert_dead_name(),
     }
 }
 
@@ -267,13 +267,13 @@ pub fn allocate(space: &Space, right: u32) -> Result<PortName, Error> {
 /// # Errors
 ///
 /// As `Port::allocate_name`, `PortSet::allocate_name` and
-/// `object::allocate_dead_name`.
+/// `Space::insert_dead_name_as`.
 ///
 /// # Panics
 ///
 /// If `name` is null or dead, or `right` is none of those kinds: not yet.
 /// As `Port::allocate_name`, `PortSet::allocate_name` and
-/// `object::allocate_dead_name`.
+/// `Space::insert_dead_name_as`.
 pub fn allocate_name(space: &Space, right: u32, name: PortName) -> Result<(), Error> {
     assert!(
         name.is_valid(),
@@ -285,7 +285,7 @@ pub fn allocate_name(space: &Space, right: u32, name: PortName) -> Result<(), Er
     match right {
         Right::Receive => Port::allocate_name(space, name),
         Right::PortSet => PortSet::allocate_name(space, name),
-        Right::DeadName => object::allocate_dead_name(space, name),
+        Right::DeadName => space.insert_dead_name_as(name),
     }
 }
 
@@ -294,11 +294,11 @@ pub fn allocate_name(space: &Space, right: u32, name: PortName) -> Result<(), Er
 ///
 /// # Errors
 ///
-/// As `object::copy_out_name`, which gives the right back.
+/// As `Space::copy_out_as`, which gives the right back.
 ///
 /// # Panics
 ///
-/// If `name` is null or dead: not yet; as `object::copy_out_name`.
+/// If `name` is null or dead: not yet; as `Space::copy_out_as`.
 pub fn insert_right(
     space: &Space,
     name: PortName,
@@ -309,5 +309,5 @@ pub fn insert_right(
         name.is_valid(),
         "mach_port_insert_right: an invalid name, not yet"
     );
-    object::copy_out_name(space, port, message_type, name)
+    space.copy_out_as(port, message_type, name)
 }
