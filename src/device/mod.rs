@@ -21,7 +21,7 @@ use crate::ipc::port::port::Port;
 use crate::reference::{Count, Counted, Reference};
 use crate::sync::Spinlock;
 use crate::vm::Protection;
-use crate::vm::object::Offset;
+use crate::vm::object::offset::Offset;
 
 /// The master device port, which devices are opened through; once
 /// `create_service` makes it.

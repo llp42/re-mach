@@ -16,7 +16,7 @@ use crate::arch::PAGE_SIZE;
 use crate::error::Error;
 use crate::reference::Reference;
 use crate::sync::OnceLock;
-use crate::vm::object::{self, Object, Offset};
+use crate::vm::object::{self, object::Object, offset::Offset};
 use crate::vm::phys_map::MachinePhysMap as _;
 use crate::vm::{Inheritance, Protection, VirtualAddress};
 
@@ -129,7 +129,7 @@ impl Map {
                 object: slot,
                 offset: previous_offset,
             } = &previous.backing
-            && let Some((joined, object_offset)) = object::coalesce(
+            && let Some((joined, object_offset)) = object::shadow::coalesce(
                 NonNull::new(slot.load(Ordering::Relaxed))
                     .map(|previous| {
                         // SAFETY: the entry holds a reference on its object, or
@@ -200,7 +200,7 @@ impl Map {
                 object: slot,
                 offset: next_offset,
             } = &next.backing
-            && object::coalesce(
+            && object::shadow::coalesce(
                 object.as_ref(),
                 NonNull::new(slot.load(Ordering::Relaxed))
                     .map(|next| {

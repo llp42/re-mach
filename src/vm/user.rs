@@ -6,7 +6,7 @@
 use super::map::change::{Change, Placement};
 use super::map::copy::MapCopy;
 use super::map::map::Map;
-use super::object::{self, Object, Offset};
+use super::object::{self, object::Object, offset::Offset};
 use super::{Inheritance, Protection, VirtualAddress, Wire};
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
@@ -97,7 +97,7 @@ pub fn map(
     let (object, offset, mapping) = memory_object.map_or_else(
         || (None, Offset::from(0), Mapping::Object),
         |port| {
-            let object = object::enter(port, size)
+            let object = object::external::enter(port, size)
                 .unwrap_or_else(|| panic!("vm_map: memory_object_proxy_lookup, not yet"));
             (Some(object), offset, mapping)
         },

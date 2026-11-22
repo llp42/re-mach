@@ -17,7 +17,7 @@ use crate::ipc::port::port::Port;
 use crate::reference::Reference;
 use crate::slab::{Cache, CacheBox};
 use crate::vm::Protection;
-use crate::vm::object::{self, CopyStrategy, Offset};
+use crate::vm::object::{self, offset::Offset, state::CopyStrategy};
 
 intrusive_adapter!(
     #[expect(
@@ -146,7 +146,7 @@ pub fn init_pager(pager: &Pager, request: Reference<Port>, name: Reference<Port>
         .store(Reference::into_raw(name).as_ptr(), Ordering::Release);
     // A character device's pager: not cached, no copy help.
     // SAFETY: the record holds the reference `request` gave up.
-    object::ready(unsafe { request.as_ref() }, CopyStrategy::None);
+    object::external::ready(unsafe { request.as_ref() }, CopyStrategy::None);
 }
 
 /// The frame at `offset` in `pager`'s memory, as `device_map_page` gives

@@ -7,7 +7,7 @@ use core::ptr::{self, NonNull};
 
 use super::map::change::{Placement, Usage};
 use super::map::map::Map;
-use super::object::{KERNEL_OBJECT, Offset};
+use super::object::{object::KERNEL_OBJECT, offset::Offset};
 use super::page::{self, page::Page};
 use super::phys_map::MachinePhysMap as _;
 use super::{Inheritance, Protection, VirtualAddress};

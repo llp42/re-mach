@@ -11,7 +11,7 @@ use super::map::Map;
 use crate::error::Error;
 use crate::reference::Reference;
 use crate::sync::TokenGuard;
-use crate::vm::object::{self, Object, ObjectState, Offset};
+use crate::vm::object::{self, object::Object, offset::Offset, state::ObjectState};
 use crate::vm::{Protection, VirtualAddress};
 
 /// What `Map::lookup` finds for an address; `object` must outlive `state`.
@@ -85,7 +85,7 @@ impl Map {
             // kernel object: it holds the object's reference, as `into_raw`
             // gave it up. That reference moves into the shadow.
             let source = unsafe { Reference::from_raw(source) };
-            let shadow = object::shadow(
+            let shadow = object::shadow::shadow(
                 source,
                 Offset::from(offset.load(Ordering::Relaxed)),
                 entry.end() - entry.start(),
@@ -97,7 +97,7 @@ impl Map {
         }
         let object = NonNull::new(slot.load(Ordering::Relaxed)).map_or_else(
             || {
-                let object = object::allocate(entry.end() - entry.start());
+                let object = object::init::allocate(entry.end() - entry.start());
                 let lookup = Reference::clone(&object);
                 // The entry holds the first reference.
                 slot.store(Reference::into_raw(object).as_ptr(), Ordering::Relaxed);

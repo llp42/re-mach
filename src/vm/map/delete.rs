@@ -15,7 +15,7 @@ use crate::reference::Reference;
 use crate::vm::VirtualAddress;
 use crate::vm::fault;
 use crate::vm::object;
-use crate::vm::object::Flags;
+use crate::vm::object::state::Flags;
 use crate::vm::phys_map::MachinePhysMap as _;
 
 impl Map {
@@ -92,7 +92,7 @@ impl Map {
                 // The kernel object's pages go now; another's with no pager
                 // and no other reference.
                 let mut state = object.lock();
-                if ptr::eq(object, &raw const object::KERNEL_OBJECT)
+                if ptr::eq(object, &raw const object::object::KERNEL_OBJECT)
                     || (!state.flags.contains(Flags::PAGER_CREATED)
                         && object.references() == 1
                         && state.paging_in_progress == 0)

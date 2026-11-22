@@ -20,7 +20,7 @@ use crate::thread::machine::MachineThread as _;
 use crate::thread::thread::Thread;
 use crate::vm::map::change::{Change, Placement};
 use crate::vm::map::map::Map;
-use crate::vm::object::Offset;
+use crate::vm::object::offset::Offset;
 use crate::vm::user::Mapping;
 use crate::vm::{self, Inheritance, Protection, VirtualAddress};
 

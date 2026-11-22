@@ -14,7 +14,7 @@ use super::queue::{QUEUES, color};
 use crate::arch::{PAGE_SIZE, PhysAddr};
 use crate::slab::{Cache, Slab};
 use crate::sync::Spinlock;
-use crate::vm::object::Object;
+use crate::vm::object::object::Object;
 
 /// A physical page.
 pub struct Page {

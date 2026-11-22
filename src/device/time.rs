@@ -8,7 +8,7 @@ use core::ptr;
 use crate::arch::{PhysAddr, PhysMap};
 use crate::clock::mapped_time::MAPPED_TIME;
 use crate::vm::Protection;
-use crate::vm::object::Offset;
+use crate::vm::object::offset::Offset;
 use crate::vm::phys_map::MachinePhysMap as _;
 
 /// The page of the mapped time, which every offset maps, as `timemmap`

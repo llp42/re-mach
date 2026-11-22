@@ -12,7 +12,7 @@ use crate::ipc::port::port_name::{PortName, PortType};
 use crate::slab::CacheBox;
 use crate::vm::VirtualAddress;
 use crate::vm::map::copy::MapCopy;
-use crate::vm::object::Offset;
+use crate::vm::object::offset::Offset;
 
 /// An argument as MIG lays it out: its type word, then its data, padded to 8 bytes.
 #[repr(C)]

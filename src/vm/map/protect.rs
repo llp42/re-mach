@@ -328,7 +328,7 @@ impl Map {
                     panic!("vm_map_lookup: a submap, not yet");
                 };
                 if object.load(Ordering::Relaxed).is_null() {
-                    let new = object::allocate(entry.end() - entry.start());
+                    let new = object::init::allocate(entry.end() - entry.start());
                     // The entry holds its reference.
                     object.store(Reference::into_raw(new).as_ptr(), Ordering::Relaxed);
                     offset.store(0, Ordering::Relaxed);

@@ -10,7 +10,10 @@ use core::sync::atomic::Ordering;
 use super::map::entry::{Backing, Entry};
 use super::map::lookup::Lookup;
 use super::map::map::Map;
-use super::object::{Flags, Kind, Object, ObjectState};
+use super::object::{
+    object::Object,
+    state::{Flags, Kind, ObjectState},
+};
 use super::page::{self, page::Page};
 use super::phys_map::{MachinePhysMap as _, Wiring};
 use super::{Protection, STATISTICS, VirtualAddress};

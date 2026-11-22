@@ -20,7 +20,7 @@ use crate::vm::Inheritance;
 use crate::vm::Protection;
 use crate::vm::VirtualAddress;
 use crate::vm::object;
-use crate::vm::object::Flags;
+use crate::vm::object::state::Flags;
 use crate::vm::phys_map::MachinePhysMap as _;
 
 impl Map {
@@ -391,7 +391,7 @@ impl Map {
         // kernel object, whose own reference never drops; this handle borrows
         // it and never drops it.
         let object = ManuallyDrop::new(unsafe { Reference::from_raw(object) });
-        let Some(shared) = object::copy_temporary(&object) else {
+        let Some(shared) = object::shadow::copy_temporary(&object) else {
             return false;
         };
         // `new` holds it; both entries shadow the object before writing.

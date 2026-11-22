@@ -13,7 +13,7 @@ use super::map::Map;
 use crate::reference::Reference;
 use crate::slab::{Cache, CacheBox};
 use crate::sync::TokenGuard;
-use crate::vm::object::{Object, ObjectState, Offset};
+use crate::vm::object::{object::Object, offset::Offset, state::ObjectState};
 use crate::vm::{Inheritance, Protection, VirtualAddress};
 
 /// Entries allocated before a map's lock, for one operation to take under

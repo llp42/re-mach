@@ -12,7 +12,7 @@ use crate::device::{self, Device};
 use crate::error::Error;
 use crate::ipc::port::port::Port;
 use crate::reference::Reference;
-use crate::vm::object::Offset;
+use crate::vm::object::offset::Offset;
 
 mig::subsystem! {
     base 2800;

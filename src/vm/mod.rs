@@ -136,7 +136,7 @@ static STATISTICS: Statistics = Statistics {
 /// Sets up virtual memory before IPC, on the boot CPU.
 pub fn bootstrap() {
     page::load::setup();
-    object::bootstrap();
+    object::init::bootstrap();
     map::map::init();
     kernel::init();
     arch::PhysMap::init();
@@ -146,7 +146,7 @@ pub fn bootstrap() {
 
 /// Finishes setting up virtual memory once IPC is up, on the boot CPU.
 pub fn init() {
-    object::init();
+    object::init::init();
     proxy::init();
     page::pool::print_pools();
 }
