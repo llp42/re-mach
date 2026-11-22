@@ -20,7 +20,7 @@ use super::address::PhysAddr;
 use super::boot_header::IA32_EFER;
 use super::memory_layout::PAGE_SIZE;
 use super::per_cpu::{self, PerCpu};
-use super::phys_map::{self, PhysMap};
+use super::phys_map::{self, phys_map::PhysMap};
 use super::{apic, counter, cpuid, fpu, gdt, idt, syscall, tss};
 use crate::config::MAX_CPUS;
 use crate::println;
@@ -250,7 +250,7 @@ unsafe extern "sysv64" fn setup(cpu: usize) -> ! {
     unsafe { Cr4::update(|flags| flags.set(Cr4Flags::PAGE_GLOBAL, cpuid::features().has_pge())) };
     // SAFETY: the PAT MSR is this CPU's own; entries 0 to 3 keep the reset
     // values the live mappings use, and no mapping uses entries 4 to 7.
-    unsafe { phys_map::set_page_attributes() };
+    unsafe { phys_map::flags::set_page_attributes() };
     let features = cpuid::cpu_id().get_extended_feature_info();
     let has = |feature: fn(&ExtendedFeatures) -> bool| features.as_ref().is_some_and(feature);
     // SAFETY: the kernel runs no code at user addresses, and reaches user

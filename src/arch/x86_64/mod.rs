@@ -67,7 +67,7 @@ pub use memory_layout::{
     PAGE_SIZE,
 };
 pub use per_cpu::PerCpu;
-pub use phys_map::PhysMap;
+pub use phys_map::phys_map::PhysMap;
 use serial::Serial;
 
 /// The kernel's command line, once `init` copies the loader's.
@@ -167,7 +167,7 @@ extern "sysv64" fn init(info_address: usize, magic: u32) -> ! {
     // SAFETY: the modules lie below 4 GiB, which is identity-mapped.
     unsafe { copy_boot_info(boot_info) };
     // SAFETY: the boot CPU, once, after boot memory's bootstrap.
-    unsafe { phys_map::bootstrap() };
+    unsafe { phys_map::phys_map::bootstrap() };
     boot_memory::setup();
     // SAFETY: turns caching on; paging and protection stay as they are.
     unsafe {
