@@ -5,12 +5,12 @@
 
 use core::{ptr, slice};
 
+use super::MessageType;
 use super::entry::{Entry, Rights};
 use super::object::{self, Object};
 use super::port::{self, Port, PortName, PortType, Right};
 use super::port_set::PortSet;
-use super::space::Space;
-use super::{MessageType, right};
+use super::space::{Space, SpaceState};
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
 use crate::reference::Reference;
@@ -152,11 +152,11 @@ fn entry_type(entry: &Entry) -> PortType {
 ///
 /// # Panics
 ///
-/// As `right::lookup_write` and `right::info`.
+/// As `Space::lookup_write` and `SpaceState::entry_info`.
 pub fn type_of(space: &Space, name: PortName) -> PortType {
-    let state = right::lookup_write(space, name);
+    let state = space.lookup_write(name);
     let entry = state.lookup(name).expect("mach_port_type: no entry");
-    let (port_type, _) = right::info(&state, entry);
+    let (port_type, _) = state.entry_info(entry);
     drop(state);
     port_type
 }
@@ -169,14 +169,14 @@ pub fn type_of(space: &Space, name: PortName) -> PortType {
 ///
 /// If a dead name holds no user references, or for a strange right. If
 /// `right` is no kind of right, a send or send-once right, or `name` holds
-/// no right of that kind: not yet. As `right::lookup_write` and
-/// `right::info`.
+/// no right of that kind: not yet. As `Space::lookup_write` and
+/// `SpaceState::entry_info`.
 pub fn get_refs(space: &Space, name: PortName, right: u32) -> u32 {
     // Mach has `MACH_PORT_RIGHT_NUMBER` kinds, five.
     assert!(right < 5, "mach_port_get_refs: KERN_INVALID_VALUE, not yet");
-    let state = right::lookup_write(space, name);
+    let state = space.lookup_write(name);
     let entry = state.lookup(name).expect("mach_port_get_refs: no entry");
-    let (port_type, user_references) = right::info(&state, entry);
+    let (port_type, user_references) = state.entry_info(entry);
     drop(state);
     // `MACH_PORT_TYPE(right)`.
     if port_type.contains(PortType::from(Rights::from_bits_retain(1 << right))) {
@@ -202,10 +202,10 @@ pub fn get_refs(space: &Space, name: PortName, right: u32) -> u32 {
 ///
 /// # Panics
 ///
-/// As `right::lookup_write` and `right::destroy`.
+/// As `Space::lookup_write` and `SpaceState::destroy_rights`.
 pub fn destroy(space: &Space, name: PortName) {
-    let state = right::lookup_write(space, name);
-    right::destroy(space, state, name);
+    let state = space.lookup_write(name);
+    SpaceState::destroy_rights(state, space, name);
 }
 
 /// Releases a user reference of `name`'s right in `space`, as
@@ -213,10 +213,10 @@ pub fn destroy(space: &Space, name: PortName) {
 ///
 /// # Panics
 ///
-/// As `right::lookup_write` and `right::deallocate`.
+/// As `Space::lookup_write` and `SpaceState::release_user_reference`.
 pub fn deallocate(space: &Space, name: PortName) {
-    let state = right::lookup_write(space, name);
-    right::deallocate(state, name);
+    let state = space.lookup_write(name);
+    SpaceState::release_user_reference(state, name);
 }
 
 /// Moves the rights of `old_name` in `space` to `new_name`, as

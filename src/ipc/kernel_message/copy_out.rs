@@ -9,10 +9,10 @@ use core::slice;
 use super::KernelMessage;
 use super::header::{Header, MessageBits};
 use crate::arch::{self, Machine as _};
+use crate::ipc::MessageType;
 use crate::ipc::object::{self, Object};
 use crate::ipc::port::{Port, PortName};
 use crate::ipc::space::Space;
-use crate::ipc::{MessageType, right};
 use crate::kalloc;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
@@ -32,10 +32,10 @@ impl KernelMessage {
     /// If it has no destination type. For a reply port's right that is not
     /// a send-once right, a dead space, reply port or destination, an entry
     /// that can't be allocated, or a protected payload: not yet. As
-    /// `right::copy_out` and `object::copy_out_dest`.
+    /// `SpaceState::put_right` and `object::copy_out_dest`.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the ports' guards are moved into right::copy_out and object::copy_out_dest"
+        reason = "the ports' guards are moved into SpaceState::put_right and object::copy_out_dest"
     )]
     pub(in crate::ipc) fn copy_out_header(&mut self, space: &Space) {
         let header = self.header_mut();
@@ -83,14 +83,9 @@ impl KernelMessage {
                 "ipc_kmsg_copyout_header: a dead reply port, not yet"
             );
             // The entry takes the right's reference.
-            let entry = right::copy_out(
-                &mut state,
-                reply_name,
-                MessageType::PortSendOnce,
-                &reply,
-                reply_state,
-            )
-            .expect("ipc_kmsg_copyout_header: a send-once right merged");
+            let entry = state
+                .put_right(reply_name, MessageType::PortSendOnce, &reply, reply_state)
+                .expect("ipc_kmsg_copyout_header: a send-once right merged");
             entry.object = Some(Object::Port(reply));
             // Locked before the space is unlocked, so its receive right can't
             // move between the two copy-outs.

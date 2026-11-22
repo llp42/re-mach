@@ -11,7 +11,7 @@ use crate::arch::{self, Machine as _};
 use crate::error::Error;
 use crate::ipc::port::{KernelObject, Port, PortName};
 use crate::ipc::space::Space;
-use crate::ipc::{MessageType, object, right};
+use crate::ipc::{MessageType, object};
 use crate::kalloc;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
@@ -62,11 +62,12 @@ impl KernelMessage {
     ///
     /// # Panics
     ///
-    /// If the header is invalid, the space is dead, a valid name has no
-    /// entry, the reply's right can't be copied in, the reply name is dead,
-    /// or for other names or types: not yet. As `right::copy_in_check`,
-    /// `right::copy_in`, `right::make_send`, `right::make_send_once`,
-    /// `right::move_send_once` and `SpaceState::deallocate`.
+    /// If the header is invalid, the space is dead, a valid name has no entry,
+    /// the reply's right can't be copied in, the reply name is dead, or for
+    /// other names or types: not yet. As `SpaceState::can_copy_in`,
+    /// `SpaceState::copy_send`, `SpaceState::make_send`,
+    /// `SpaceState::make_send_once`, `SpaceState::move_send_once` and
+    /// `SpaceState::deallocate`.
     #[expect(
         clippy::too_many_lines,
         reason = "ipc_kmsg_copyin_header's general path, in GNU Mach's order"
@@ -111,7 +112,7 @@ impl KernelMessage {
             // A null name has no entry.
             let reply_type = reply_type.expect("ipc_kmsg_copyin_header: a reply port with no type");
             assert!(
-                right::copy_in_check(&state, entry, reply_type),
+                state.can_copy_in(entry, reply_type),
                 "ipc_kmsg_copyin_header: MACH_SEND_INVALID_REPLY, not yet"
             );
             // Made from the receive right, which can't die: so far a send
@@ -125,8 +126,8 @@ impl KernelMessage {
                 );
             };
             (
-                right::make_send(space, &state, destination_name),
-                Some(right::make_send_once(space, &state, reply_name)),
+                state.make_send(space, destination_name),
+                Some(state.make_send_once(space, reply_name)),
             )
         } else if !reply_name.is_valid() {
             // No reply port: only the destination is copied in.
@@ -141,7 +142,7 @@ impl KernelMessage {
                     destination_type.number()
                 );
             };
-            let destination = right::move_send_once(&mut state, destination_name);
+            let destination = state.move_send_once(destination_name);
             // The entry is freed once it holds no rights.
             if state.lookup(destination_name).is_none() {
                 state.deallocate(destination_name);
@@ -168,7 +169,7 @@ impl KernelMessage {
             // A valid name's type is not 0.
             let reply_type = reply_type.expect("ipc_kmsg_copyin_header: a reply port with no type");
             assert!(
-                right::copy_in_check(&state, entry, reply_type),
+                state.can_copy_in(entry, reply_type),
                 "ipc_kmsg_copyin_header: MACH_SEND_INVALID_REPLY, not yet"
             );
             // So far a send right copied or made, and a send-once right made
@@ -176,7 +177,7 @@ impl KernelMessage {
             // nothing to undo.
             let destination = match (destination_type, reply_type) {
                 (MessageType::CopySend, MessageType::MakeSendOnce) => {
-                    let Some(destination) = right::copy_in(&mut state, destination_name) else {
+                    let Some(destination) = state.copy_send(destination_name) else {
                         // invalid_dest, the entry now a dead name.
                         drop(state);
                         return Err(MACH_SEND_INVALID_DEST);
@@ -184,7 +185,7 @@ impl KernelMessage {
                     destination
                 }
                 (MessageType::MakeSend, MessageType::MakeSendOnce) => {
-                    right::make_send(space, &state, destination_name)
+                    state.make_send(space, destination_name)
                 }
                 _ => panic!(
                     "ipc_kmsg_copyin_header: types {} and {} for two names, not yet",
@@ -192,10 +193,7 @@ impl KernelMessage {
                     reply_type.number()
                 ),
             };
-            (
-                destination,
-                Some(right::make_send_once(space, &state, reply_name)),
-            )
+            (destination, Some(state.make_send_once(space, reply_name)))
         };
         drop(state);
         // As ipc_object_copyin_type.

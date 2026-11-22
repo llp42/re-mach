@@ -5,11 +5,11 @@
 
 use core::ptr::NonNull;
 
+use super::MessageType;
 use super::entry::Rights;
 use super::port::{Port, PortName, PortState, Receiver};
 use super::port_set::PortSet;
 use super::space::Space;
-use super::{MessageType, right};
 use crate::error::Error;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
@@ -156,15 +156,16 @@ pub(super) fn allocate_dead_name(space: &Space, name: PortName) -> Result<(), Er
 ///
 /// For a type that is not a right. For a right other than a copied, made
 /// or moved send right, or a copied one whose port died: not yet. As
-/// `right::lookup_write`, `right::copy_in`, `right::make_send`,
-/// `right::move_send` and `SpaceState::deallocate`.
+/// `Space::lookup_write`, `SpaceState::copy_send`, `SpaceState::make_send`,
+/// `SpaceState::move_send` and `SpaceState::deallocate`.
 pub(super) fn copy_in(space: &Space, name: PortName, message_type: MessageType) -> Reference<Port> {
-    let mut state = right::lookup_write(space, name);
+    let mut state = space.lookup_write(name);
     let port = match message_type {
-        MessageType::CopySend => right::copy_in(&mut state, name)
+        MessageType::CopySend => state
+            .copy_send(name)
             .unwrap_or_else(|| panic!("ipc_object_copyin: copy_dead, IO_DEAD, not yet")),
-        MessageType::MakeSend => right::make_send(space, &state, name),
-        MessageType::PortSend => right::move_send(&mut state, name),
+        MessageType::MakeSend => state.make_send(space, name),
+        MessageType::PortSend => state.move_send(name),
         MessageType::PortSendOnce | MessageType::MakeSendOnce => {
             panic!("ipc_right_copyin: MOVE_SEND_ONCE and MAKE_SEND_ONCE, not yet")
         }
@@ -188,8 +189,8 @@ pub(super) fn copy_in(space: &Space, name: PortName, message_type: MessageType) 
 ///
 /// # Panics
 ///
-/// If `space` or `port` is dead: not yet; as `right::reverse` and
-/// `right::copy_out`.
+/// If `space` or `port` is dead: not yet; as `SpaceState::reverse_lookup` and
+/// `SpaceState::put_right`.
 pub(super) fn copy_out(
     space: &Space,
     port: Reference<Port>,
@@ -200,7 +201,7 @@ pub(super) fn copy_out(
     // A space holds each send-once right under a name of its own.
     let reverse = !matches!(message_type, MessageType::PortSendOnce);
     let (name, port_state) = if let Some(found) = reverse
-        .then(|| right::reverse(space, &state, &port))
+        .then(|| state.reverse_lookup(space, &port))
         .flatten()
     {
         found
@@ -218,7 +219,7 @@ pub(super) fn copy_out(
     };
     // The entry takes the right's reference, unless the right merged into
     // one it holds.
-    if let Some(entry) = right::copy_out(&mut state, name, message_type, &port, port_state) {
+    if let Some(entry) = state.put_right(name, message_type, &port, port_state) {
         entry.object = Some(Object::Port(port));
     } else {
         drop(port);
@@ -287,13 +288,13 @@ pub(super) fn copy_out_dest(
 ///
 /// # Panics
 ///
-/// If the entry `right::reverse` finds holds neither a send nor a receive
-/// right. If `port` is dead, or `space` holds a send or receive right for
-/// it under another name: not yet; as `SpaceState::allocate_name`,
-/// `right::reverse` and `right::copy_out`.
+/// If the entry `SpaceState::reverse_lookup` finds holds neither a send nor a
+/// receive right. If `port` is dead, or `space` holds a send or receive right
+/// for it under another name: not yet; as `SpaceState::allocate_name`,
+/// `SpaceState::reverse_lookup` and `SpaceState::put_right`.
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the port's guard is moved into right::copy_out"
+    reason = "the port's guard is moved into SpaceState::put_right"
 )]
 pub(super) fn copy_out_name(
     space: &Space,
@@ -308,7 +309,7 @@ pub(super) fn copy_out_name(
     };
     let port_state = if let Some((found_name, port_state)) =
         (!matches!(message_type, MessageType::PortSendOnce))
-            .then(|| right::reverse(space, &state, &port))
+            .then(|| state.reverse_lookup(space, &port))
             .flatten()
     {
         assert!(
@@ -335,7 +336,7 @@ pub(super) fn copy_out_name(
     };
     // The entry takes the right's reference, unless the right merged into
     // one it holds.
-    if let Some(entry) = right::copy_out(&mut state, name, message_type, &port, port_state) {
+    if let Some(entry) = state.put_right(name, message_type, &port, port_state) {
         entry.object = Some(Object::Port(port));
     } else {
         drop(port);
@@ -354,7 +355,7 @@ pub(super) fn copy_out_name(
 /// # Panics
 ///
 /// If `new_name` holds rights, or `old_name` is `new_name` or holds none:
-/// not yet. As `SpaceState::allocate_name` and `right::rename`.
+/// not yet. As `SpaceState::allocate_name` and `SpaceState::move_rights`.
 pub(super) fn rename(space: &Space, old_name: PortName, new_name: PortName) -> Result<(), Error> {
     let mut state = space.state.write();
     // As ipc_right_inuse.
@@ -364,7 +365,7 @@ pub(super) fn rename(space: &Space, old_name: PortName, new_name: PortName) -> R
         old_name != new_name && state.lookup(old_name).is_some(),
         "ipc_object_rename: KERN_INVALID_NAME, not yet"
     );
-    right::rename(&mut state, old_name, new_name);
+    state.move_rights(old_name, new_name);
     drop(state);
     Ok(())
 }
