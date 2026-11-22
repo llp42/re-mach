@@ -5,7 +5,7 @@
 
 use core::ops::DerefMut;
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering, compiler_fence};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering, compiler_fence};
 
 use intrusive_collections::LinkedList;
 
@@ -19,7 +19,7 @@ use crate::thread::{RunQueueAdapter, SleepQueueAdapter, Thread};
 
 /// One CPU's machine-independent data, held in the machine's part.
 pub struct PerCpu {
-    id: usize,
+    id: AtomicUsize,
     /// How deep its interrupt handlers nest.
     interrupt_nesting: AtomicU32,
     /// How deep its critical sections nest before its first thread runs.
@@ -47,14 +47,14 @@ pub struct PerCpu {
 }
 
 impl PerCpu {
-    /// CPU `id`'s, before it starts.
+    /// A CPU's, before it starts.
     #[expect(
         clippy::large_stack_arrays,
         reason = "only PER_CPU's initializer calls it, at compile time"
     )]
-    pub const fn new(id: usize) -> Self {
+    pub const fn new() -> Self {
         Self {
-            id,
+            id: AtomicUsize::new(0),
             interrupt_nesting: AtomicU32::new(0),
             boot_nesting: AtomicU32::new(0),
             nesting: AtomicPtr::new(ptr::null_mut()),
@@ -73,8 +73,13 @@ impl PerCpu {
     }
 
     /// Its number.
-    pub const fn id(&self) -> usize {
-        self.id
+    pub fn id(&self) -> usize {
+        self.id.load(Ordering::Relaxed)
+    }
+
+    /// Sets its number; `init` does, before the GS base points here.
+    pub fn set_id(&self, id: usize) {
+        self.id.store(id, Ordering::Relaxed);
     }
 
     /// Its processor.

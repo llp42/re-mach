@@ -4,7 +4,7 @@
 
 use core::arch::asm;
 use core::cell::Cell;
-use core::mem::{self, MaybeUninit, offset_of};
+use core::mem::offset_of;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
@@ -63,16 +63,7 @@ pub(super) const PRIVILEGE_STACK: usize =
 unsafe impl Sync for PerCpu {}
 
 /// Each CPU's, by number.
-static PER_CPU: [PerCpu; MAX_CPUS] = {
-    let mut slots = [const { MaybeUninit::<PerCpu>::uninit() }; MAX_CPUS];
-    let mut id = 0;
-    while id < MAX_CPUS {
-        slots[id] = MaybeUninit::new(PerCpu::new(id));
-        id += 1;
-    }
-    // SAFETY: every slot is written.
-    unsafe { mem::transmute(slots) }
-};
+static PER_CPU: [PerCpu; MAX_CPUS] = [const { PerCpu::new() }; MAX_CPUS];
 
 /// Points the GS base at CPU `cpu_id`'s data.
 ///
@@ -81,6 +72,7 @@ static PER_CPU: [PerCpu; MAX_CPUS] = {
 /// Runs first on CPU `cpu_id`, and only there.
 pub unsafe fn init(cpu_id: usize) {
     let slot = &PER_CPU[cpu_id];
+    slot.common.set_id(cpu_id);
     slot.this
         .store(ptr::from_ref(slot).cast_mut(), Ordering::Relaxed);
     // SAFETY: GS holds nothing else.
@@ -90,11 +82,11 @@ pub unsafe fn init(cpu_id: usize) {
 }
 
 impl PerCpu {
-    /// CPU `id`'s, before it starts.
-    const fn new(id: usize) -> Self {
+    /// A CPU's, before it starts.
+    const fn new() -> Self {
         Self {
             this: AtomicPtr::new(ptr::null_mut()),
-            common: smp::PerCpu::new(id),
+            common: smp::PerCpu::new(),
             apic_id: OnceLock::new(),
             gdt: GlobalDescriptorTable::from_raw_entries(&[0; gdt::ENTRIES]),
             tss: Cell::new(TaskStateSegment::new()),
