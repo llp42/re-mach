@@ -361,7 +361,7 @@ unsafe extern "sysv64" fn user_trap(frame: *const TrapFrame) -> ! {
             };
             raise_page_fault(usize::try_from(cr2).unwrap(), access);
         }
-        Some(ExceptionVector::DeviceNotAvailable) => fpu::no_extension_fault(),
+        Some(ExceptionVector::DeviceNotAvailable) => fpu::context::no_extension_fault(),
         _ => {
             // SAFETY: guaranteed by the caller.
             let frame = unsafe { &*frame };

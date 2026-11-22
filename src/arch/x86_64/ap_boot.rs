@@ -296,7 +296,7 @@ unsafe extern "sysv64" fn setup(cpu: usize) -> ! {
         tss::init(this, top(&PARAMETERS.double_fault), top(&PARAMETERS.debug));
     }
     println!("AP=({cpu}) ktss done");
-    fpu::init_cpu();
+    fpu::init::init_cpu();
     apic::setup_other_cpu();
     // startrtclock, from cpu_launch_first_thread: no tick is taken before
     // the release sets IF.

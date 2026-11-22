@@ -360,7 +360,7 @@ impl Machine for X86_64 {
 
     fn init() {
         boot_memory::free_usable();
-        fpu::init();
+        fpu::init::init();
         if let Err(error) = acpi::init_apics() {
             panic!("acpi_apic_init failed with {error:?}");
         }

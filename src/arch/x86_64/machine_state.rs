@@ -14,7 +14,7 @@ use x86_64::registers::model_specific::{FsBase, KernelGsBase};
 use x86_64::structures::gdt::SegmentSelector;
 use x86_64::{PrivilegeLevel, VirtAddr};
 
-use super::fpu::{self, FloatState};
+use super::fpu::{self, state::FloatState};
 use super::gdt::{USER_CODE, USER_DATA};
 use super::memory_layout::MAX_USER_ADDRESS;
 use super::per_cpu::PerCpu;
@@ -145,7 +145,7 @@ impl MachineState {
 impl MachineThread for MachineState {
     fn module_init() {
         CACHE.register();
-        fpu::module_init();
+        fpu::init::module_init();
     }
 
     fn new() -> Result<CacheBox<Self>, Error> {
@@ -163,7 +163,7 @@ impl MachineThread for MachineState {
     }
 
     fn inherit(&self) {
-        fpu::inherit(self);
+        fpu::context::inherit(self);
     }
 
     fn attach_stack(&self, stack: &KernelStack, start: fn() -> !) {
@@ -217,7 +217,7 @@ impl MachineThread for MachineState {
     }
 
     unsafe fn switch(&self, next: &Self, current: &'static Thread) -> &'static Thread {
-        fpu::save_context(current);
+        fpu::context::save_context(current);
         let cpu = PerCpu::current();
         // A trap from user mode saves the thread's registers in its machine
         // state.
@@ -328,7 +328,7 @@ impl MachineThread for MachineState {
                     return Err(Error::InvalidArgument);
                 };
                 // SAFETY: guaranteed by the caller: its thread is stopped.
-                let float = unsafe { fpu::read_state(self) };
+                let float = unsafe { fpu::state::read_state(self) };
                 // SAFETY: `words` holds a `FloatState`'s bytes, which its
                 // fields, padding included, all set.
                 unsafe {
@@ -343,13 +343,13 @@ impl MachineThread for MachineState {
                 panic!("thread_getstatus: i386_FSGS_BASE_STATE, not yet")
             }
             Ok(StateFlavor::ExtendedFloat) => {
-                let count = fpu::xstate_size() / size_of::<u32>();
+                let count = fpu::state::xstate_size() / size_of::<u32>();
                 let Some(words) = state.get_mut(..count) else {
                     return Err(Error::InvalidArgument);
                 };
                 // SAFETY: guaranteed by the caller: its thread is stopped;
                 // `words` holds `xstate_size` bytes.
-                unsafe { fpu::read_extended_state(self, words) };
+                unsafe { fpu::state::read_extended_state(self, words) };
                 Ok(count)
             }
             Err(flavor) => panic!("thread_getstatus: flavor {flavor}, not yet"),
@@ -405,7 +405,7 @@ impl MachineThread for MachineState {
                 let float = unsafe { ptr::from_ref(words).cast::<FloatState>().read_unaligned() };
                 // SAFETY: guaranteed by the caller: its thread is stopped, or
                 // is the current thread.
-                unsafe { fpu::write_state(self, &float) };
+                unsafe { fpu::state::write_state(self, &float) };
                 Ok(())
             }
             Ok(StateFlavor::Debug) => panic!("thread_setstatus: i386_DEBUG_STATE, not yet"),
@@ -433,13 +433,13 @@ impl MachineThread for MachineState {
                 Ok(())
             }
             Ok(StateFlavor::ExtendedFloat) => {
-                let count = fpu::xstate_size() / size_of::<u32>();
+                let count = fpu::state::xstate_size() / size_of::<u32>();
                 let Some(words) = state.get(..count) else {
                     return Err(Error::InvalidArgument);
                 };
                 // SAFETY: guaranteed by the caller: its thread is stopped, or
                 // is the current thread; `words` holds `xstate_size` bytes.
-                unsafe { fpu::write_extended_state(self, words) }
+                unsafe { fpu::state::write_extended_state(self, words) }
             }
             Err(flavor) => panic!("thread_setstatus: flavor {flavor}, not yet"),
         }
@@ -468,7 +468,7 @@ impl MachineThread for MachineState {
         if let Some(buffer) = NonNull::new(state.fpu.load(Ordering::Relaxed)) {
             // SAFETY: its thread's buffer; that thread's last switch saved
             // its state there and cleared the CPU's FPU owner.
-            unsafe { fpu::free(buffer) };
+            unsafe { fpu::state::free(buffer) };
         }
         // No LDT exists to free.
         drop(state);

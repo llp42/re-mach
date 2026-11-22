@@ -25,5 +25,5 @@ fn i386_get_xstate_size(host: Option<&&Host>) -> Result<usize, Error> {
     if host.is_none() {
         return Err(Error::InvalidArgument);
     }
-    Ok(fpu::xstate_size())
+    Ok(fpu::state::xstate_size())
 }
