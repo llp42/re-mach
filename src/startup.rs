@@ -7,7 +7,8 @@ use crate::arch::{self, Machine as _};
 use crate::collections::radix_tree;
 use crate::config::MAX_CPUS;
 use crate::sync::CriticalSection;
-use crate::thread::{self, Thread};
+use crate::thread::thread::Thread;
+use crate::thread::{create, reaper};
 use crate::{bootstrap, clock, machine, processor, sched, task};
 use crate::{device, ipc, smp, vm};
 
@@ -46,13 +47,13 @@ fn start_kernel_threads() -> ! {
             .resume()
             .unwrap_or_else(|error| panic!("start_kernel_threads: thread_resume: {error:?}"));
     }
-    thread::kernel_thread(kernel_task, thread::reaper_thread)
+    create::kernel_thread(kernel_task, reaper::reaper_thread)
         .unwrap_or_else(|error| panic!("start_kernel_threads: kernel_thread: {error:?}"));
-    thread::kernel_thread(kernel_task, sched::sched_thread)
+    create::kernel_thread(kernel_task, sched::sched_thread)
         .unwrap_or_else(|error| panic!("start_kernel_threads: kernel_thread: {error:?}"));
-    thread::kernel_thread(kernel_task, device::interrupt::intr_thread)
+    create::kernel_thread(kernel_task, device::interrupt::intr_thread)
         .unwrap_or_else(|error| panic!("start_kernel_threads: kernel_thread: {error:?}"));
-    thread::kernel_thread(kernel_task, sched::action_thread)
+    create::kernel_thread(kernel_task, sched::action_thread)
         .unwrap_or_else(|error| panic!("start_kernel_threads: kernel_thread: {error:?}"));
     arch::Current::start_other_cpus();
     device::create_service();
@@ -82,7 +83,7 @@ pub fn start() -> ! {
     clock::mapped_time::map_time();
     machine::init_info();
     task::init();
-    thread::init();
+    create::init();
     processor::init();
     sched::recompute_priorities(&sched::RECOMPUTE_PRIORITIES);
     sched::compute_mach_factor();

@@ -5,7 +5,7 @@
 
 use crate::config::HZ;
 use crate::sched::{self, Event};
-use crate::thread;
+use crate::thread::timeout;
 
 /// What the interrupt thread waits on; only its address counts.
 static INTR: u8 = 0;
@@ -16,7 +16,7 @@ static INTR: u8 = 0;
 pub fn intr_thread() -> ! {
     loop {
         sched::assert_wait(Some(Event::of(&INTR)));
-        thread::set_own_timeout(u64::from(HZ));
+        timeout::set_own_timeout(u64::from(HZ));
         sched::block();
     }
 }

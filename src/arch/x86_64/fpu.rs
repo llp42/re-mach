@@ -19,7 +19,7 @@ use crate::error::Error;
 use crate::slab::RawCache;
 use crate::smp::{self, MachinePerCpu as _};
 use crate::sync::{CriticalSection, OnceLock};
-use crate::thread::Thread;
+use crate::thread::thread::Thread;
 
 /// How a thread's floating-point state is saved; always in the standard
 /// layout, so the state a thread reads back is laid out alike on every CPU.

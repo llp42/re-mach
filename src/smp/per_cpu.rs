@@ -15,7 +15,7 @@ use crate::clock::timeout::Wheel;
 use crate::processor::Processor;
 use crate::sched::{SLEEP_QUEUES, SleepQueue};
 use crate::sync::{CpuLock, CriticalSection, Spinlock};
-use crate::thread::{RunQueueAdapter, SleepQueueAdapter, Thread};
+use crate::thread::thread::{RunQueueAdapter, SleepQueueAdapter, Thread};
 
 /// One CPU's machine-independent data, held in the machine's part.
 pub struct PerCpu {

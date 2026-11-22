@@ -18,7 +18,7 @@ use super::{cpuid, gdt, interrupt};
 use crate::config::MAX_CPUS;
 use crate::smp::{self, MachinePerCpu};
 use crate::sync::OnceLock;
-use crate::thread::Thread;
+use crate::thread::thread::Thread;
 
 /// One CPU's machine-dependent data, holding its machine-independent part;
 /// the GS base points at the current CPU's. Each starts its own cache line.

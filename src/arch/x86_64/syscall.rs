@@ -15,7 +15,7 @@ use super::trap::{TrapFrame, raise_page_fault};
 use super::{MachineState, copy, gdt};
 use crate::exception::{self, Exception};
 use crate::syscall::MACH_TRAPS;
-use crate::thread::MachineThread as _;
+use crate::thread::machine::MachineThread as _;
 use crate::vm::Protection;
 
 /// `EXC_I386_INVOP`: the code of a bad instruction's exception.

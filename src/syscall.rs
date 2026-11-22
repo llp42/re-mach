@@ -13,7 +13,7 @@ use crate::host::HOST;
 use crate::ipc::mach_msg;
 use crate::ipc::port::{Port, PortName};
 use crate::reference::Reference;
-use crate::thread::MachineThread as _;
+use crate::thread::machine::MachineThread as _;
 use crate::{print, smp};
 
 /// A Mach trap, as the table holds it.

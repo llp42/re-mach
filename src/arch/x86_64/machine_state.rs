@@ -24,7 +24,9 @@ use crate::ast;
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
 use crate::smp::{self, MachinePerCpu as _};
-use crate::thread::{self, MachineThread, Thread};
+use crate::thread::create;
+use crate::thread::machine::MachineThread;
+use crate::thread::thread::Thread;
 use crate::vm::kernel::KernelStack;
 
 /// A thread's machine state: its user registers, and where its kernel
@@ -76,7 +78,7 @@ global_asm!(
     "call *%rbx",
     "ud2",
     ".popsection",
-    begin = sym thread::begin,
+    begin = sym create::begin,
     options(att_syntax),
 );
 

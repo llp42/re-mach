@@ -15,7 +15,7 @@ use crate::sched::{self, WaitResult};
 use crate::smp;
 use crate::sync::{CachePadded, Token};
 use crate::task::Task;
-use crate::thread::Thread;
+use crate::thread::thread::Thread;
 use crate::vm::{Protection, VirtualAddress};
 
 bitflags::bitflags! {

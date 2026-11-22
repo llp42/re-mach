@@ -9,14 +9,14 @@ use super::timeout::TimeoutFlags;
 use crate::sched::{self, Priority};
 use crate::smp;
 use crate::sync::CriticalSection;
-use crate::thread;
+use crate::thread::priority;
 
 /// A softclock thread's work, on the CPU of the processor it is bound to:
 /// at the highest priority, each time it runs it calls the timeouts due on
 /// its wheel up to the current tick; caught up, it marks itself not running
 /// and waits with no event, in one critical section.
 pub fn softclock() -> ! {
-    thread::set_own_priority(Priority::HIGHEST);
+    priority::set_own_priority(Priority::HIGHEST);
     loop {
         // Bound, it stays on its wheel's CPU.
         let wheel = smp::current().timeouts();

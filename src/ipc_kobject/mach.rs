@@ -13,7 +13,9 @@ use crate::ipc::port::{Port, SendRight};
 use crate::reference::Reference;
 use crate::smp;
 use crate::task::{Memory, SpecialPort, Task};
-use crate::thread::{self, MachineThread as _, Thread};
+use crate::thread;
+use crate::thread::machine::MachineThread as _;
+use crate::thread::thread::Thread;
 use crate::vm::map::{Change, Map, Placement};
 use crate::vm::object::Offset;
 use crate::vm::user::Mapping;
@@ -510,7 +512,7 @@ fn thread_set_special_port(
     let Some(thread) = thread else {
         return Err(Error::InvalidArgument);
     };
-    let Ok(which) = thread::SpecialPort::try_from(which_port) else {
+    let Ok(which) = thread::ports::SpecialPort::try_from(which_port) else {
         return Err(Error::InvalidArgument);
     };
     thread.set_special_port(which, special_port)

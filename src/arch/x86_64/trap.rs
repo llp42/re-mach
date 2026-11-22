@@ -23,7 +23,7 @@ use super::thread_state::UserRegisters;
 use super::{MachineState, fpu, gdt};
 use crate::exception::{self, Exception};
 use crate::smp;
-use crate::thread::MachineThread as _;
+use crate::thread::machine::MachineThread as _;
 use crate::vm::fault::Purpose;
 use crate::vm::kernel::KERNEL_MAP;
 use crate::vm::{self, Protection};

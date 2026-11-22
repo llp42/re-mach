@@ -20,7 +20,8 @@ use crate::machine::CpuState;
 use crate::processor::{self, Processor, State};
 use crate::smp;
 use crate::sync::{CriticalSection, OnceLock, SpinlockGuard};
-use crate::thread::{Quantum, RunQueueAdapter, SleepQueueAdapter, Thread, ThreadState};
+use crate::thread::state::{Quantum, ThreadState};
+use crate::thread::thread::{RunQueueAdapter, SleepQueueAdapter, Thread};
 
 /// The threads sleeping on the events that hash to one slot.
 pub type SleepQueue = LinkedList<SleepQueueAdapter>;

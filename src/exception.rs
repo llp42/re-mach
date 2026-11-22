@@ -12,7 +12,7 @@ use crate::ipc::mach_msg;
 use crate::ipc::port::Port;
 use crate::reference::Reference;
 use crate::smp;
-use crate::thread::Thread;
+use crate::thread::thread::Thread;
 
 /// An exception, by Mach's `EXC_*` names; only those raised so far.
 #[derive(Clone, Copy)]

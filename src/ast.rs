@@ -10,7 +10,9 @@ use crate::processor::State;
 use crate::sched::{self, Policies, Policy};
 use crate::smp;
 use crate::sync::CriticalSection;
-use crate::thread::{self, Thread, ThreadState};
+use crate::thread::reaper;
+use crate::thread::state::ThreadState;
+use crate::thread::thread::Thread;
 
 bitflags::bitflags! {
     /// Why a CPU takes an AST, as Mach numbers them; only those used here.
@@ -46,7 +48,7 @@ pub fn taken() {
         return;
     }
     while thread.asts().intersects(Ast::HALT | Ast::TERMINATE) {
-        thread::halt_self();
+        reaper::halt_self();
     }
     // A halt may have woken a higher thread.
     if reasons.contains(Ast::BLOCK) || sched::switch_needed(thread, smp::current().processor()) {

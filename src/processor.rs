@@ -25,7 +25,7 @@ use crate::slab::{Cache, CacheBox};
 use crate::smp;
 use crate::sync::{CpuLock, CriticalSection, OnceLock, Token, TokenGuard};
 use crate::task::{SetTaskAdapter, Task};
-use crate::thread::{RunQueueAdapter, SetThreadAdapter, Thread};
+use crate::thread::thread::{RunQueueAdapter, SetThreadAdapter, Thread};
 use crate::{ipc_host, machine};
 
 /// A processor: one per CPU, in that CPU's data.

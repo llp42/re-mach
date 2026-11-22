@@ -12,7 +12,7 @@ use super::space::Space;
 use crate::error::Error;
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{Spinlock, SpinlockGuard};
-use crate::thread::IpcQueueAdapter;
+use crate::thread::thread::IpcQueueAdapter;
 
 /// A port set: its state under its lock.
 pub struct PortSet {

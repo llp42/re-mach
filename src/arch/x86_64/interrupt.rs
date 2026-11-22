@@ -21,7 +21,7 @@ use crate::config::HZ;
 use crate::machine::Mode;
 use crate::smp::MachinePerCpu as _;
 use crate::sync::CriticalSection;
-use crate::thread::MachineThread as _;
+use crate::thread::machine::MachineThread as _;
 
 // Each entry pushes a zero error code and its vector, and adds its address
 // to `entries`; the common path saves the registers as a `TrapFrame`. An

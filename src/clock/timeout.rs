@@ -10,7 +10,7 @@ use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter}
 
 use crate::smp;
 use crate::sync::{CriticalSection, OnceLock, Spinlock};
-use crate::thread::Thread;
+use crate::thread::thread::Thread;
 
 bitflags::bitflags! {
     /// Where a timeout stands, as Mach numbers it.
