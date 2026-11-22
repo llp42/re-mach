@@ -470,7 +470,7 @@ pub fn steal_pages(count: usize) -> PhysAddr {
     }
     for Range { start, end } in memory.segments.iter().map_while(Clone::clone) {
         if free.start < end && free.end > start {
-            page::load_heap(free.start.max(start)..free.end.min(end));
+            page::load::load_heap(free.start.max(start)..free.end.min(end));
         }
     }
     start
@@ -493,7 +493,7 @@ pub fn free_usable() {
         let mut start = entry.range.start.max(LOW_MEMORY_BASE);
         while let Some(gap) = memory.find_gap(start..end) {
             start = gap.end;
-            page::release(gap);
+            page::load::release(gap);
         }
     }
 }
@@ -503,6 +503,6 @@ pub fn setup() {
     let memory = BOOT_MEMORY.borrow();
     memory.show_map();
     for Range { start, end } in memory.segments.iter().map_while(Clone::clone) {
-        page::load(start..end);
+        page::load::load(start..end);
     }
 }

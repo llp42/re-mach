@@ -15,7 +15,7 @@ use crate::arch::{PAGE_SIZE, PhysAddr};
 use crate::error::Error;
 use crate::sync::{CpuLocal, Spinlock};
 use crate::vm;
-use crate::vm::page::{self, Page, PageQueueAdapter};
+use crate::vm::page::{self, page::Page, page::PageQueueAdapter};
 
 /// The smallest alignment of a cache's objects: a free one holds a link to
 /// the next.
@@ -168,7 +168,7 @@ impl RawCache {
                 }
                 _ => {
                     // A CPU's slabs index their pages, at colour 0.
-                    let page = page::allocate(cpu.slabs).ok_or(Error::ResourceShortage)?;
+                    let page = page::alloc::allocate(cpu.slabs).ok_or(Error::ResourceShortage)?;
                     // A new slab has nothing freed to it.
                     page.slab.free.take();
                     cpu.slabs += 1;
@@ -226,7 +226,7 @@ impl RawCache {
     fn slab_of(&self, buffer: NonNull<u8>) -> (&'static Page, usize) {
         if self.slab_size == PAGE_SIZE {
             let address = PhysAddr::from_direct_map(buffer.as_ptr());
-            let page = page::lookup(address).expect("slab: buffer outside the page array");
+            let page = page::alloc::lookup(address).expect("slab: buffer outside the page array");
             (page, address - page.address())
         } else {
             // A zone is aligned to its size, and its first page holds its

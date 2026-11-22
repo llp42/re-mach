@@ -28,7 +28,7 @@ use crate::slab::{Cache, CacheBox};
 use crate::smp::{self, CpuMask};
 use crate::sync::{OnceLock, Spinlock};
 use crate::vm::Protection;
-use crate::vm::page::{self, Page};
+use crate::vm::page::{self, page::Page};
 use crate::vm::phys_map::{MachinePhysMap, Wiring};
 
 /// Entries per table.
@@ -144,7 +144,9 @@ impl MachinePhysMap for PhysMap {
             lock: Spinlock::new(()),
         })?;
         // In no object, so at index 0.
-        let pml4 = page::allocate_zeroed(0).expect("pmap_create").address();
+        let pml4 = page::alloc::allocate_zeroed(0)
+            .expect("pmap_create")
+            .address();
         // SAFETY: the new table is zeroed and the physical map's alone; the
         // kernel's is read atomically, as the CPU sets its accessed bits.
         // Tables are arrays of entries, reached through the direct map.
@@ -199,7 +201,9 @@ impl MachinePhysMap for PhysMap {
             })
         };
         let free = |table: PhysAddr| {
-            page::free(page::lookup(table).expect("pmap_destroy: a table outside the page array"));
+            page::alloc::free(
+                page::alloc::lookup(table).expect("pmap_destroy: a table outside the page array"),
+            );
         };
         // The user slots' tables, each after the tables below it, then the
         // PML4; kernel space's are shared.
@@ -249,7 +253,7 @@ impl MachinePhysMap for PhysMap {
                 "pmap_enter: {address:#x} is not a kernel address"
             );
             assert!(
-                page::lookup(physical).is_some(),
+                page::alloc::lookup(physical).is_some(),
                 "pmap_enter: memory outside the page array, uncached, not yet"
             );
             assert!(
@@ -285,8 +289,10 @@ impl MachinePhysMap for PhysMap {
                     .take(missing)
                 {
                     // In no object, so at index 0.
-                    *spare =
-                        Some(page::allocate_zeroed(0).expect("pmap_expand: VM_PAGE_WAIT, not yet"));
+                    *spare = Some(
+                        page::alloc::allocate_zeroed(0)
+                            .expect("pmap_expand: VM_PAGE_WAIT, not yet"),
+                    );
                 }
             }
             let tables = self.lock.lock();
@@ -295,11 +301,11 @@ impl MachinePhysMap for PhysMap {
             }
         };
         assert!(
-            page::lookup(physical).is_some(),
+            page::alloc::lookup(physical).is_some(),
             "pmap_enter: memory outside the page array, uncached, not yet"
         );
         // The page table's lock, before the physical map's drops.
-        let entries = page::lookup(table)
+        let entries = page::alloc::lookup(table)
             .expect("pmap_enter: a page table outside the page array")
             .table_lock
             .lock();
@@ -345,7 +351,7 @@ impl MachinePhysMap for PhysMap {
         }
         drop(entries);
         for spare in spares.into_iter().flatten() {
-            page::free(spare);
+            page::alloc::free(spare);
         }
     }
 
@@ -360,7 +366,7 @@ impl MachinePhysMap for PhysMap {
                 .expand(address, &mut [])
                 .unwrap_or_else(|_| panic!("pmap_change_wiring: pte missing"));
             // The page table's lock, before the physical map's drops.
-            let entries = page::lookup(table)
+            let entries = page::alloc::lookup(table)
                 .expect("pmap_change_wiring: a page table outside the page array")
                 .table_lock
                 .lock();
@@ -407,7 +413,7 @@ impl MachinePhysMap for PhysMap {
                     });
                 // Page tables stay until the physical map goes.
                 if let Ok(table) = self.expand(address, &mut []) {
-                    let entries = page::lookup(table)
+                    let entries = page::alloc::lookup(table)
                         .expect("pmap_remove: a page table outside the page array")
                         .table_lock
                         .lock();
@@ -516,7 +522,7 @@ impl MachinePhysMap for PhysMap {
                     (next & !(LARGE_PAGE_SIZE - 1)).min(range.end)
                 });
             if let Ok(table) = self.expand(address, &mut []) {
-                let entries = page::lookup(table)
+                let entries = page::alloc::lookup(table)
                     .expect("pmap_protect: a page table outside the page array")
                     .table_lock
                     .lock();

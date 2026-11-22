@@ -107,7 +107,7 @@ pub fn bootstrap() {
 pub fn init() {
     vm::kernel::submap(
         &KERNEL_MAP,
-        MIN_KERNEL_MAP_SIZE.max(vm::page::span_size() / 8),
+        MIN_KERNEL_MAP_SIZE.max(vm::page::alloc::span_size() / 8),
     );
     ipc_host::init();
 }

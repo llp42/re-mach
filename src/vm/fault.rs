@@ -11,7 +11,7 @@ use super::map::entry::{Backing, Entry};
 use super::map::lookup::Lookup;
 use super::map::map::Map;
 use super::object::{Flags, Kind, Object, ObjectState};
-use super::page::{self, Page};
+use super::page::{self, page::Page};
 use super::phys_map::{MachinePhysMap as _, Wiring};
 use super::{Protection, STATISTICS, VirtualAddress};
 use crate::arch::PAGE_SIZE;
@@ -375,7 +375,7 @@ fn fault_page(
     );
     // The placeholder: a real page, busy, where GNU Mach's is fictitious.
     // Objects have no colour of their own yet.
-    let page = page::allocate(offset / PAGE_SIZE)
+    let page = page::alloc::allocate(offset / PAGE_SIZE)
         .expect("vm_fault_page: VM_FAULT_MEMORY_SHORTAGE, not yet");
     page.set_busy();
     state.insert(object, page, offset);

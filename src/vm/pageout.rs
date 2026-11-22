@@ -22,7 +22,7 @@ pub fn run() -> ! {
     priority::set_own_priority(Priority::HIGHEST);
     loop {
         let requested = REQUESTED.lock();
-        assert!(page::usable(), "vm_pageout_scan: eviction, not yet");
+        assert!(page::pool::usable(), "vm_pageout_scan: eviction, not yet");
         sched::wait::sleep(Event::of(&REQUESTED), requested);
     }
 }

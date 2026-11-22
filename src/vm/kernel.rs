@@ -8,7 +8,7 @@ use core::ptr::{self, NonNull};
 use super::map::change::{Placement, Usage};
 use super::map::map::Map;
 use super::object::{KERNEL_OBJECT, Offset};
-use super::page::{self, Page};
+use super::page::{self, page::Page};
 use super::phys_map::MachinePhysMap as _;
 use super::{Inheritance, Protection, VirtualAddress};
 use core::ops::Range;
@@ -160,7 +160,7 @@ pub fn address_of(page: &Page) -> usize {
 /// The page kernel `address` is mapped to; `None` if none, or one outside
 /// the page array.
 pub fn page_of(address: usize) -> Option<&'static Page> {
-    arch::PhysMap::extract_kernel(address).and_then(page::lookup)
+    arch::PhysMap::extract_kernel(address).and_then(page::alloc::lookup)
 }
 
 /// Maps a zeroed, wired page of the kernel object at each page of `range`,
@@ -169,7 +169,8 @@ fn fill(range: Range<usize>) -> Result<(), Error> {
     for address in range.step_by(PAGE_SIZE) {
         let offset = address - MIN_KERNEL_ADDRESS;
         // The kernel object's colour is 0.
-        let page = page::allocate_zeroed(offset / PAGE_SIZE).ok_or(Error::ResourceShortage)?;
+        let page =
+            page::alloc::allocate_zeroed(offset / PAGE_SIZE).ok_or(Error::ResourceShortage)?;
         let mut state = KERNEL_OBJECT.lock();
         state.insert(&KERNEL_OBJECT, page, offset);
         page.wire();

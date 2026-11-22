@@ -170,7 +170,7 @@ pub fn init_info() {
         major_version: MAJOR_VERSION,
         minor_version: MINOR_VERSION,
         max_cpus: i32::try_from(MAX_CPUS).unwrap(),
-        memory_size: vm::page::memory_size(),
+        memory_size: vm::page::load::memory_size(),
     };
     assert!(INFO.set(info).is_ok(), "machine: information filled twice");
 }

@@ -135,7 +135,7 @@ pub fn create() {
     // Every page of each copy, which took whole pages.
     for module in modules {
         let (start, end) = (module.range.start, module.range.end);
-        vm::page::release(start..start + (end - start).next_multiple_of(PAGE_SIZE));
+        vm::page::load::release(start..start + (end - start).next_multiple_of(PAGE_SIZE));
     }
 }
 

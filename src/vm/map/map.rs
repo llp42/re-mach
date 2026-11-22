@@ -76,7 +76,7 @@ impl Map {
         phys_map: &'static PhysMap,
         bounds: Range<VirtualAddress>,
     ) -> Result<CacheBox<Self>, Error> {
-        let size = page::memory_size();
+        let size = page::load::memory_size();
         let mut map = Self::new(phys_map, bounds);
         let contents = map.contents.get_mut();
         contents.size_limit = size;

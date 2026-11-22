@@ -13,7 +13,7 @@ use intrusive_collections::{
 };
 
 use super::STATISTICS;
-use super::page::{self, Page, PageTreeAdapter};
+use super::page::{self, page::Page, page::PageTreeAdapter};
 use crate::arch::{MAX_KERNEL_ADDRESS, MIN_KERNEL_ADDRESS, PAGE_SIZE};
 use crate::device::pager::{self, Pager};
 use crate::ipc::port::kernel_object::KernelObject;
@@ -312,7 +312,7 @@ impl ObjectState {
                             backing_state.pages.tree.front_mut().remove();
                             backing_state.pages.count -= 1;
                             page.remove_from_queue();
-                            page::free(page);
+                            page::alloc::free(page);
                         }
                     }
                 }
@@ -393,7 +393,7 @@ impl ObjectState {
             let page = cursor.remove().unwrap();
             self.pages.count -= 1;
             page.remove_from_queue();
-            page::free(page);
+            page::alloc::free(page);
         }
     }
 }
