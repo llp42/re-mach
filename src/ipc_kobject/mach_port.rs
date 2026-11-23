@@ -23,6 +23,7 @@ mig::subsystem! {
     5 mach_port_destroy(task = Port::task_space, name: PortName);
     6 mach_port_deallocate(task = Port::task_space, name: PortName);
     7 mach_port_get_refs(task = Port::task_space, name: PortName, right: u32) -> (refs: u32);
+    8 mach_port_mod_refs(task = Port::task_space, name: PortName, right: u32, delta: i32);
     15 mach_port_insert_right(task = Port::task_space, name: PortName, poly: SendRight);
 }
 
@@ -118,6 +119,24 @@ fn mach_port_get_refs(
 ) -> Result<u32, Error> {
     let space = space.unwrap_or_else(|| panic!("mach_port_get_refs: KERN_INVALID_TASK, not yet"));
     Ok(space.user_references(name, right))
+}
+
+/// Serves `mach_port_mod_refs`: adds `delta` to `name`'s user references of
+/// the right numbered `right` in `space`.
+///
+/// # Errors
+///
+/// As `Space::mod_refs`.
+fn mach_port_mod_refs(
+    space: Option<&Reference<Space>>,
+    name: PortName,
+    right: u32,
+    delta: i32,
+) -> Result<(), Error> {
+    let Some(space) = space else {
+        return Err(Error::InvalidTask);
+    };
+    space.mod_refs(name, right, delta)
 }
 
 /// Serves `mach_port_insert_right`: `poly`'s send right goes into `space`

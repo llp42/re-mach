@@ -189,7 +189,8 @@ impl Space {
         // `MACH_PORT_TYPE(right)`.
         if port_type.contains(PortType::from(Rights::from_bits_retain(1 << right))) {
             match Right::try_from(right) {
-                Ok(Right::PortSet | Right::Receive) => 1,
+                Ok(Right::Send) => u32::from(user_references),
+                Ok(Right::Receive | Right::PortSet | Right::SendOnce) => 1,
                 Ok(Right::DeadName) => {
                     assert!(
                         user_references > 0,
@@ -197,8 +198,6 @@ impl Space {
                     );
                     u32::from(user_references)
                 }
-                Err(0) => panic!("mach_port_get_refs: MACH_PORT_RIGHT_SEND, not yet"),
-                Err(2) => panic!("mach_port_get_refs: MACH_PORT_RIGHT_SEND_ONCE, not yet"),
                 Err(right) => panic!("mach_port_get_refs: strange rights {right}"),
             }
         } else {
@@ -247,6 +246,7 @@ impl Space {
             Right::Receive => Port::allocate(self),
             Right::PortSet => PortSet::allocate(self),
             Right::DeadName => self.insert_dead_name(),
+            Right::Send | Right::SendOnce => Err(Error::InvalidValue),
         }
     }
 
@@ -276,6 +276,7 @@ impl Space {
             Right::Receive => Port::allocate_name(self, name),
             Right::PortSet => PortSet::allocate_name(self, name),
             Right::DeadName => self.insert_dead_name_as(name),
+            Right::Send | Right::SendOnce => Err(Error::InvalidValue),
         }
     }
 

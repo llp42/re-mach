@@ -27,6 +27,14 @@ pub enum Error {
     InvalidTask,
     /// The target is not a host, or not the host port the call needs.
     InvalidHost,
+    /// The name denotes no right.
+    InvalidName,
+    /// The name does not denote the right the call names.
+    InvalidRight,
+    /// An argument's value is invalid for the call.
+    InvalidValue,
+    /// The user references would overflow.
+    UrefsOverflow,
     /// The wait's time ran out.
     TimedOut,
 }
@@ -44,6 +52,10 @@ impl From<Error> for u32 {
             Error::NameExists => 13,
             Error::InvalidTask => 16,
             Error::InvalidHost => 22,
+            Error::InvalidName => 15,
+            Error::InvalidRight => 17,
+            Error::InvalidValue => 18,
+            Error::UrefsOverflow => 19,
             Error::TimedOut => 27,
         }
     }

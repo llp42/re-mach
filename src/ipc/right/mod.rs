@@ -4,6 +4,7 @@
 //! Rights: what a space's entries hold of ports.
 
 pub mod copy;
+pub mod delta;
 pub mod destroy;
 pub mod lookup;
 pub mod make;

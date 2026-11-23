@@ -64,8 +64,12 @@ impl From<Rights> for PortType {
 
 /// A kind of right, Mach's `mach_port_right_t`; only the kinds used here.
 pub(in crate::ipc) enum Right {
+    /// `MACH_PORT_RIGHT_SEND`.
+    Send,
     /// `MACH_PORT_RIGHT_RECEIVE`.
     Receive,
+    /// `MACH_PORT_RIGHT_SEND_ONCE`.
+    SendOnce,
     /// `MACH_PORT_RIGHT_PORT_SET`.
     PortSet,
     /// `MACH_PORT_RIGHT_DEAD_NAME`.
@@ -78,7 +82,9 @@ impl TryFrom<u32> for Right {
     /// The kind of Mach's number `number`, if it is one used here.
     fn try_from(number: u32) -> Result<Self, u32> {
         match number {
+            0 => Ok(Self::Send),
             1 => Ok(Self::Receive),
+            2 => Ok(Self::SendOnce),
             3 => Ok(Self::PortSet),
             4 => Ok(Self::DeadName),
             _ => Err(number),
