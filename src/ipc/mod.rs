@@ -24,6 +24,8 @@ use crate::{ipc_host, vm};
 pub enum MessageType {
     /// `MACH_MSG_TYPE_BOOLEAN`: booleans.
     Boolean,
+    /// `MACH_MSG_TYPE_INTEGER_16`: 16-bit integers.
+    Integer16,
     /// `MACH_MSG_TYPE_BYTE`: bytes.
     Byte,
     /// `MACH_MSG_TYPE_INTEGER_32`: 32-bit integers.
@@ -53,6 +55,7 @@ impl MessageType {
     pub const fn number(self) -> u8 {
         match self {
             Self::Boolean => 0,
+            Self::Integer16 => 1,
             Self::Byte => 9,
             Self::Integer32 => 2,
             Self::Integer64 => 11,
@@ -73,6 +76,7 @@ impl TryFrom<u8> for MessageType {
     /// The type of Mach's number `number`, if it is one used here.
     fn try_from(number: u8) -> Result<Self, u8> {
         match number {
+            1 => Ok(Self::Integer16),
             2 => Ok(Self::Integer32),
             11 => Ok(Self::Integer64),
             12 => Ok(Self::StringC),

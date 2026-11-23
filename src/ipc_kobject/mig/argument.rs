@@ -132,6 +132,11 @@ impl<T: Element> OutOfLine<T> {
 }
 
 // SAFETY: a primitive.
+unsafe impl Inline for u16 {
+    const WORD: u64 = type_word(MessageType::Integer16, 16, 1);
+}
+
+// SAFETY: a primitive.
 unsafe impl Inline for i32 {
     const WORD: u64 = type_word(MessageType::Integer32, 32, 1);
 }

@@ -55,6 +55,13 @@ pub enum KernelObject {
     Task(NonNull<Task>),
     /// A thread's port.
     Thread(NonNull<Thread>),
+    /// An I/O permission's port, for the ports `from` through `to`.
+    IoPerm {
+        #[expect(dead_code, reason = "i386_io_perm_modify reads it")]
+        from: u16,
+        #[expect(dead_code, reason = "i386_io_perm_modify reads it")]
+        to: u16,
+    },
 }
 
 impl Port {
