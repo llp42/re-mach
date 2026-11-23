@@ -92,6 +92,57 @@ pub fn enter(pager: &Reference<Port>, size: usize) -> Option<Reference<Object>> 
     Some(object)
 }
 
+/// Makes `object`, internal and with no pager, a pager of its own, as
+/// `vm_object_pager_create` does: a port whose receive right the default
+/// manager gets, with the request and name ports' send rights, all in one
+/// `memory_object_create`; gives a send right for the pager's port.
+///
+/// # Panics
+///
+/// If its pager isn't ready yet, no port can be allocated, or no default
+/// manager is registered: not yet.
+pub(in crate::vm) fn create_pager(object: &Reference<Object>) -> Option<Reference<Port>> {
+    let mut state = object.lock();
+    if state.flags.contains(Flags::PAGER_CREATED) {
+        assert!(
+            state.flags.contains(Flags::PAGER_INITIALIZED),
+            "vm_object_pager_create: waiting for its pager, not yet"
+        );
+        return state.pager.as_ref().map(Port::copy_send);
+    }
+    state.flags.insert(Flags::PAGER_CREATED);
+    let size = state.size;
+    drop(state);
+    let pager = Reference::from(
+        Port::allocate_kernel().unwrap_or_else(|error| panic!("vm_object_pager_create: {error:?}")),
+    );
+    pager.set_kernel_object(KernelObject::Pager(Reference::as_ptr(object)));
+    let mapped = Port::make_send(&pager);
+    let request = Reference::from(
+        Port::allocate_kernel().unwrap_or_else(|error| panic!("vm_object_pager_create: {error:?}")),
+    );
+    request.set_kernel_object(KernelObject::PagingRequest(Reference::as_ptr(object)));
+    let request_send = Port::make_send(&request);
+    let name_send = object
+        .name_port()
+        .expect("vm_object_pager_create: no name port");
+    let mut state = object.lock();
+    state.pager = Some(Port::copy_send(&pager));
+    state.pager_request = Some(request);
+    // Internal objects are ready at once.
+    state
+        .flags
+        .insert(Flags::PAGER_READY | Flags::PAGER_INITIALIZED);
+    drop(state);
+    // Its receive right goes to the default manager, not the kernel; no
+    // send right made since the last clears the make-send count.
+    pager.clear_receiver_limbo();
+    let manager = super::super::user::default_manager()
+        .unwrap_or_else(|| panic!("vm_object_pager_create: no default manager, not yet"));
+    super::super::pager::memory_object_create(manager, pager, size, request_send, name_send, 4096);
+    Some(mapped)
+}
+
 /// Readies the object whose request port `request` is, as its pager's
 /// `memory_object_ready` asks, with `memory_object_set_attributes_common`:
 /// not to persist, copied as `copy_strategy` says.

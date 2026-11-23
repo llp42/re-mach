@@ -9,9 +9,11 @@ use crate::ipc::kernel_message::{self, KernelMessage};
 use crate::ipc::object::Object;
 use crate::ipc::port::port::{Port, Receiver};
 use crate::ipc::port::port_name::PortName;
+use crate::ipc::port_set::{self, PortSet};
+use crate::slab::CacheBox;
 use crate::smp;
 
-use super::queue::dequeue;
+use super::queue::{dequeue, dequeue_set};
 use super::trap::Options;
 
 /// A receive's status when no message came in time, as Mach numbers it.
@@ -57,40 +59,59 @@ pub(super) fn receive(
     let entry = state
         .lookup(name)
         .unwrap_or_else(|| panic!("ipc_mqueue_copyin: MACH_RCV_INVALID_NAME, not yet"));
-    let port = if entry.bits.rights.contains(Rights::RECEIVE) {
+    let timeout = options
+        .contains(Options::RECEIVE_TIMEOUT)
+        .then_some(timeout);
+    let (mut received, sequence_number) = if entry.bits.rights.contains(Rights::RECEIVE) {
         let Some(Object::Port(port)) = &entry.object else {
             panic!("ipc_mqueue_copyin: an entry with no port");
         };
-        port.clone()
+        let port = port.clone();
+        let port_state = port.state.lock();
+        assert!(
+            port_state.active
+                && port_state.receiver_name == name
+                && port_state.receiver == Receiver::Space(NonNull::from(&**space)),
+            "ipc_mqueue_copyin: a receive right not the space's"
+        );
+        let result = if let Some(set) = port_state.set {
+            // A port in a set receives from the set's queue; this call
+            // keeps the set alive while it waits.
+            // SAFETY: the port's reference keeps the set alive.
+            unsafe { set.as_ref() }.reference();
+            drop(port_state);
+            drop(state);
+            let result = receive_set(set, timeout);
+            drop(port);
+            result
+        } else {
+            drop(state);
+            let result = dequeue(&port, port_state, timeout);
+            // ipc_object_release.
+            drop(port);
+            result
+        };
+        match result {
+            Ok(received) => received,
+            Err(status) => return status,
+        }
     } else if entry.bits.rights.contains(Rights::PORT_SET) {
-        panic!("ipc_mqueue_copyin: a port set, not yet");
+        let Some(Object::PortSet(set)) = &entry.object else {
+            panic!("ipc_mqueue_copyin: a port set right with no set");
+        };
+        // The entry's reference keeps it alive while the space is locked;
+        // this call keeps its own.
+        // SAFETY: the set's entry holds its reference, which the space's
+        // lock keeps.
+        let set = *set;
+        unsafe { set.as_ref() }.reference();
+        drop(state);
+        match receive_set(set, timeout) {
+            Ok(received) => received,
+            Err(status) => return status,
+        }
     } else {
         panic!("ipc_mqueue_copyin: MACH_RCV_INVALID_NAME, not yet");
-    };
-    let port_state = port.state.lock();
-    assert!(
-        port_state.active
-            && port_state.receiver_name == name
-            && port_state.receiver == Receiver::Space(NonNull::from(&**space)),
-        "ipc_mqueue_copyin: a receive right not the space's"
-    );
-    drop(state);
-    assert!(
-        port_state.set.is_none(),
-        "ipc_mqueue_copyin: a port in a set, not yet"
-    );
-    let result = dequeue(
-        &port,
-        port_state,
-        options
-            .contains(Options::RECEIVE_TIMEOUT)
-            .then_some(timeout),
-    );
-    // ipc_object_release.
-    drop(port);
-    let (mut received, sequence_number) = match result {
-        Ok(received) => received,
-        Err(status) => return status,
     };
     received.header_mut().sequence_number = sequence_number;
     let size = received.header().size;
@@ -110,6 +131,25 @@ pub(super) fn receive(
     kernel_message::put(message, received, size);
     // MACH_MSG_SUCCESS.
     0
+}
+
+/// Receives from the queue of `set`, which the caller has referenced, as
+/// `ipc_mqueue_receive` does for a port set; gives the message with its
+/// sequence number, or the receive's status.
+///
+/// # Panics
+///
+/// As `dequeue_set`.
+fn receive_set(set: NonNull<PortSet>, timeout: Option<u32>) -> Result<(KernelMessage, u32), u32> {
+    // SAFETY: the caller's reference keeps the set alive.
+    let this = unsafe { set.as_ref() };
+    let result = dequeue_set(this, this.state.lock(), timeout);
+    if this.release() {
+        // SAFETY: the last reference was the caller's, and the set's box
+        // came from its cache; nothing uses it after.
+        drop(unsafe { CacheBox::from_raw(&port_set::CACHE, set) });
+    }
+    result
 }
 
 /// Waits on `port`, a reply port the caller holds a reference to, for its

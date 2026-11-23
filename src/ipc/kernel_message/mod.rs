@@ -148,6 +148,11 @@ impl KernelMessage {
         queue.push_back(unsafe { UnsafeRef::from_raw(message.0.as_ptr()) });
     }
 
+    /// The message whose buffer `buffer` is, taken off its queue.
+    pub(in crate::ipc) fn from_queued(buffer: UnsafeRef<Buffer>) -> Self {
+        Self(NonNull::new(UnsafeRef::into_raw(buffer)).unwrap())
+    }
+
     /// The first message on `queue`, a port's, taken off it, as
     /// `ipc_kmsg_rmqueue_first` does; `None` if it is empty.
     pub(super) fn dequeue(queue: &mut LinkedList<QueueAdapter>) -> Option<Self> {

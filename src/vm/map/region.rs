@@ -14,6 +14,7 @@ use super::map::Map;
 use crate::error::Error;
 use crate::ipc::port::port::Port;
 use crate::reference::Reference;
+use crate::vm::object::object::Object;
 use crate::vm::object::offset::Offset;
 use crate::vm::{Inheritance, Protection, VirtualAddress};
 
@@ -29,6 +30,8 @@ pub struct Region {
     pub(crate) max_protection: Protection,
     /// What a child task gets of it.
     pub(crate) inheritance: Inheritance,
+    /// The object behind it, with a reference of the region's.
+    pub(crate) object: Reference<Object>,
     /// A send right for its object's name port, if it has one.
     pub(crate) object_name: Option<Reference<Port>>,
     /// Where it starts in the object.
@@ -92,8 +95,9 @@ impl Map {
             max_protection,
             inheritance,
             object_name: object.name_port(),
-            offset,
             pager: object.pager_port(),
+            object,
+            offset,
         })
     }
 }

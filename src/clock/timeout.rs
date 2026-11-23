@@ -4,7 +4,7 @@
 //! Timeouts, in a wheel for each CPU.
 
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
 
@@ -32,6 +32,8 @@ pub struct Timeout {
     argument: AtomicPtr<()>,
     /// The tick it is due at, counted from boot on its wheel's CPU.
     pub(super) deadline: AtomicU64,
+    /// The CPU whose wheel it waits in, while pending.
+    wheel: AtomicUsize,
     /// Where it stands.
     pub(super) flags: AtomicU8,
 }
@@ -44,6 +46,7 @@ impl Timeout {
             function,
             argument: AtomicPtr::new(ptr::null_mut()),
             deadline: AtomicU64::new(0),
+            wheel: AtomicUsize::new(0),
             flags: AtomicU8::new(0),
         }
     }
@@ -128,6 +131,7 @@ pub fn set_timeout(timeout: &'static Timeout, ticks: u64) {
     // in its slot.
     let _section = CriticalSection::enter();
     let wheel = smp::current().timeouts();
+    timeout.wheel.store(smp::current().id(), Ordering::Relaxed);
     // Counting from the next tick leaves out the one under way.
     let deadline = wheel.ticks.load(Ordering::Relaxed) + ticks + 1;
     let mut slot = wheel.slot(deadline).lock();
@@ -141,20 +145,22 @@ pub fn set_timeout(timeout: &'static Timeout, ticks: u64) {
 }
 
 /// Cancels `timeout`, which is then not set.
-///
-/// # Panics
-///
-/// If it is waiting in a wheel: not yet.
-fn reset_timeout(timeout: &Timeout) {
+fn reset_timeout(timeout: &'static Timeout) {
     let _section = CriticalSection::enter();
-    assert!(
-        !TimeoutFlags::from_bits_truncate(timeout.flags.load(Ordering::Relaxed))
-            .contains(TimeoutFlags::PENDING),
-        "reset_timeout: a pending timeout, not yet"
+    let flags = TimeoutFlags::from_bits_truncate(timeout.flags.load(Ordering::Relaxed));
+    if flags.contains(TimeoutFlags::PENDING) {
+        // Off its wheel, under the slot's lock, which its tick holds to run
+        // it.
+        let wheel = smp::of(timeout.wheel.load(Ordering::Relaxed)).timeouts();
+        let mut slot = wheel.slot(timeout.deadline.load(Ordering::Relaxed)).lock();
+        // SAFETY: pending, it is on that slot's list.
+        unsafe { slot.cursor_mut_from_ptr(timeout) }.remove();
+        drop(slot);
+    }
+    timeout.flags.fetch_and(
+        !(TimeoutFlags::ACTIVE | TimeoutFlags::PENDING).bits(),
+        Ordering::Relaxed,
     );
-    timeout
-        .flags
-        .fetch_and(!TimeoutFlags::ACTIVE.bits(), Ordering::Relaxed);
 }
 
 /// Cancels `timeout` if it is set.
@@ -162,7 +168,7 @@ fn reset_timeout(timeout: &Timeout) {
 /// # Panics
 ///
 /// If it is waiting in a wheel: not yet.
-pub fn reset_timeout_check(timeout: &Timeout) {
+pub fn reset_timeout_check(timeout: &'static Timeout) {
     if TimeoutFlags::from_bits_truncate(timeout.flags.load(Ordering::Relaxed))
         .contains(TimeoutFlags::ACTIVE)
     {

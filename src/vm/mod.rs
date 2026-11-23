@@ -9,6 +9,7 @@ pub mod map;
 pub mod object;
 pub mod page;
 pub mod pageout;
+pub mod pager;
 pub mod phys_map;
 pub mod proxy;
 pub mod user;

@@ -8,6 +8,16 @@ use crate::ipc::MessageType;
 use crate::ipc::space::Space;
 use crate::reference::Reference;
 impl Port {
+    /// Readies its receive right to be handed over, as
+    /// `ipc_port_clear_receiver` does but for the port to live on.
+    ///
+    /// # Panics
+    ///
+    /// As `PortState::clear_receiver_limbo`.
+    pub fn clear_receiver_limbo(&self) {
+        self.state.lock().clear_receiver_limbo();
+    }
+
     /// Makes a send right for `port` from its receive right, whose
     /// reference the caller lends; gives the right's reference.
     pub fn make_send(port: &Reference<Self>) -> Reference<Self> {

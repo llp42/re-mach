@@ -165,6 +165,15 @@ macro_rules! subsystem {
             @sort $name $head [$($ins)*] [$($outs)* ($out send_once)] [] [$($($rest)*)?]
         );
     };
+    // A send right out, or null.
+    (
+        @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*] []
+        [$out:ident: PortMaybe $(, $($rest:tt)*)?]
+    ) => {
+        $crate::ipc_kobject::mig::subsystem!(
+            @sort $name $head [$($ins)*] [$($outs)* ($out maybe_send)] [] [$($($rest)*)?]
+        );
+    };
     // A fixed inline out-argument.
     (
         @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*] []
@@ -362,6 +371,7 @@ macro_rules! subsystem {
     (@field reply out_of_line $element:ty) => { mig::argument::Argument<usize> };
     (@field reply send_right) => { mig::argument::Argument<usize> };
     (@field reply send_once) => { mig::argument::Argument<usize> };
+    (@field reply maybe_send) => { mig::argument::Argument<usize> };
     (@field reply port_array) => { mig::argument::Argument<usize> };
     // Its check: the word, whole, or the bits its kind checks.
     (@check $request:ident $in:ident send_right $($intran:path)?) => {
@@ -420,6 +430,9 @@ macro_rules! subsystem {
     (@value out_of_line $element:ty) => { mig::argument::OutOfLine<$element> };
     (@value send_right) => { $crate::reference::Reference<$crate::ipc::port::port::Port> };
     (@value send_once) => {
+        Option<$crate::reference::Reference<$crate::ipc::port::port::Port>>
+    };
+    (@value maybe_send) => {
         Option<$crate::reference::Reference<$crate::ipc::port::port::Port>>
     };
     (@value port_array) => { mig::port_array::PortArray };
@@ -487,6 +500,18 @@ macro_rules! subsystem {
                 .expose_provenance()
         });
     };
+    // A send right, or null for none, makes the reply complex; its word,
+    // then its port, whose right the reply takes.
+    (@pack $reply:ident $out:ident maybe_send) => {
+        $reply.head.header.bits = $reply.head.header.bits.with_complex();
+        $reply.$out.word =
+            mig::argument::type_word($crate::ipc::MessageType::PortSend, 64, 1);
+        $reply.$out.data = $out.map_or(0, |port| {
+            $crate::reference::Reference::into_raw(port)
+                .as_ptr()
+                .expose_provenance()
+        });
+    };
     (@pack $reply:ident $out:ident send_right) => {
         $reply.head.header.bits = $reply.head.header.bits.with_complex();
         $reply.$out.word = mig::argument::type_word($crate::ipc::MessageType::PortSend, 64, 1);
@@ -499,6 +524,7 @@ macro_rules! subsystem {
     (@size $out:ident out_of_line $element:ty) => { size_of::<Reply>() };
     (@size $out:ident send_right) => { size_of::<Reply>() };
     (@size $out:ident send_once) => { size_of::<Reply>() };
+    (@size $out:ident maybe_send) => { size_of::<Reply>() };
     (@size $out:ident port_array) => { size_of::<Reply>() };
     (@size $out:ident count $element:ty, $max:literal) => {
         core::mem::offset_of!(Reply, $out.data) + (size_of::<$element>() * $out).next_multiple_of(8)

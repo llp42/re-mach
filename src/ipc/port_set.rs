@@ -14,6 +14,7 @@ use super::kernel_message;
 use super::object::Object;
 use super::port::port::Port;
 use super::port::port_name::PortName;
+use super::port::state::PortState;
 use super::space::Space;
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
@@ -34,10 +35,6 @@ pub struct PortSet {
 
 /// A port set's state under its lock: whether it is alive, its reference
 /// count, its name, and its message queue.
-#[expect(
-    dead_code,
-    reason = "receiving from a set reads its name and its messages"
-)]
 pub(super) struct PortSetState {
     /// Whether it is alive.
     pub(super) active: bool,
@@ -46,9 +43,15 @@ pub(super) struct PortSetState {
     /// Its name in the space that holds it.
     pub(in crate::ipc) local_name: PortName,
     /// The messages queued on it, oldest first.
-    messages: LinkedList<kernel_message::QueueAdapter>,
+    pub(super) messages: LinkedList<kernel_message::QueueAdapter>,
+    /// How many messages are queued on it.
+    pub(super) message_count: u32,
+    /// How many messages it queues before senders wait.
+    pub(super) queue_limit: u32,
+    /// The sequence number of the next message received from it.
+    pub(super) sequence_number: u32,
     /// The threads waiting to receive from it, latest first.
-    receivers: LinkedList<IpcQueueAdapter>,
+    pub(super) receivers: LinkedList<IpcQueueAdapter>,
 }
 
 impl PortSet {
@@ -60,6 +63,10 @@ impl PortSet {
                 references: 1,
                 local_name: PortName::NULL,
                 messages: LinkedList::new(kernel_message::QueueAdapter::NEW),
+                // MACH_PORT_QLIMIT_DEFAULT.
+                message_count: 0,
+                queue_limit: 5,
+                sequence_number: 0,
                 receivers: LinkedList::new(IpcQueueAdapter::NEW),
             }),
         }
@@ -150,6 +157,48 @@ impl PortSet {
         let mut state = self.state.lock();
         state.references -= 1;
         state.references == 0
+    }
+
+    /// Moves the messages `port` has queued on it to it, as `ipc_pset_add`
+    /// does on a move into the set; both the port and the set are locked.
+    ///
+    /// # Panics
+    ///
+    /// If the port has messages under other destinations: not yet.
+    pub(super) fn take_port_messages(&self, port: &Port, port_state: &mut PortState) {
+        let mut state = self.state.lock();
+        while let Some(message) = kernel_message::KernelMessage::dequeue(&mut port_state.messages) {
+            assert!(
+                message.header().remote_port == ptr::from_ref(port).addr(),
+                "ipc_mqueue_move: a message for another port, not yet"
+            );
+            port_state.message_count -= 1;
+            state.message_count += 1;
+            message.enqueue(&mut state.messages);
+        }
+        drop(state);
+    }
+
+    /// Moves back the messages queued on it for `port`, as `ipc_pset_remove`
+    /// does on a move out of the set; both the port and the set are locked.
+    pub(super) fn return_port_messages(&self, port: &Port, port_state: &mut PortState) {
+        let mut state = self.state.lock();
+        let mut moved = 0;
+        let mut cursor = state.messages.front_mut();
+        while let Some(message) = cursor.get() {
+            if message.header().remote_port == ptr::from_ref(port).addr() {
+                let message = kernel_message::KernelMessage::from_queued(
+                    cursor.remove().expect("ipc_mqueue_move: no message"),
+                );
+                moved += 1;
+                port_state.message_count += 1;
+                message.enqueue(&mut port_state.messages);
+            } else {
+                cursor.move_next();
+            }
+        }
+        state.message_count -= moved;
+        drop(state);
     }
 }
 
@@ -338,7 +387,14 @@ impl Port {
         if let Some(set) = set {
             // SAFETY: the set's entry keeps it alive while the space is
             // read-locked.
-            unsafe { set.as_ref() }.reference();
+            let set = unsafe { set.as_ref() };
+            set.reference();
+            set.take_port_messages(self, &mut state);
+        }
+        if let Some(old) = old {
+            // SAFETY: this port's reference kept the set alive.
+            let old = unsafe { old.as_ref() };
+            old.return_port_messages(self, &mut state);
         }
         state.set = set;
         drop(state);

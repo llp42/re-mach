@@ -14,8 +14,10 @@ use crate::arch::PAGE_SIZE;
 use crate::error::Error;
 use crate::ipc::port::kernel_object::KernelObject;
 use crate::ipc::port::port::Port;
+use crate::ipc::port::send_right::SendRight;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
+use crate::sync::Spinlock;
 
 /// The most an unprivileged host may wire, as GNU Mach caps it.
 const WIRE_LIMIT: usize = 8 << 20;
@@ -188,12 +190,40 @@ pub fn region_create_proxy(
     if len > region.end - region.start {
         return Err(Error::InvalidArgument);
     }
-    let Some(pager) = region.pager else {
-        panic!("vm_object_pager_create: not yet");
+    let pager = match region.pager {
+        Some(pager) => pager,
+        // An internal object gets a pager now, which the default manager
+        // takes.
+        None => object::external::create_pager(&region.object)
+            .unwrap_or_else(|| panic!("vm_object_pager_create: no pager, not yet")),
     };
     let start = (address - region.start) + usize::from(region.offset);
     let end = start.checked_add(len).ok_or(Error::InvalidArgument)?;
     Proxy::create(pager, max_protection & region.max_protection, start..end)
+}
+
+/// The default memory manager: the port new internal objects are given to,
+/// held as a send right.
+static DEFAULT_MANAGER: Spinlock<Option<Reference<Port>>> = Spinlock::new(None);
+
+/// Sets the default memory manager to `manager`, which it keeps, as
+/// `vm_set_default_memory_manager` does; gives the previous manager's send
+/// right or, for none, a send right for the current one.
+///
+/// # Panics
+///
+/// If the current manager is dead, for none: not yet. As `Port::copy_send`.
+pub fn set_default_memory_manager(manager: Option<SendRight>) -> Option<Reference<Port>> {
+    let mut slot = DEFAULT_MANAGER.lock();
+    let Some(manager) = manager else {
+        return slot.as_ref().map(Port::copy_send);
+    };
+    slot.replace(manager.into_reference())
+}
+
+/// A send right for the default memory manager, if one is registered.
+pub(in crate::vm) fn default_manager() -> Option<Reference<Port>> {
+    DEFAULT_MANAGER.lock().as_ref().map(Port::copy_send)
 }
 
 /// The page cache statistics `vm_cache_statistics` reports, as GNU Mach

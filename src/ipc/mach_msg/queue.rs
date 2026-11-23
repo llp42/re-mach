@@ -9,6 +9,7 @@ use crate::ipc::MessageType;
 use crate::ipc::kernel_message::KernelMessage;
 use crate::ipc::port::port::Port;
 use crate::ipc::port::state::PortState;
+use crate::ipc::port_set::{PortSet, PortSetState};
 use crate::reference::Reference;
 use crate::sched::{self, wait::WaitResult};
 use crate::smp;
@@ -40,6 +41,45 @@ pub(super) fn queue(message: KernelMessage, options: Options) {
     let port = unsafe { &*ptr::with_exposed_provenance::<Port>(message.header().remote_port) };
     let mut port_state = port.state.lock();
     assert!(port_state.active, "ipc_mqueue_send: a dead port, not yet");
+    // A port in a set queues on the set.
+    if let Some(set) = port_state.set {
+        // SAFETY: the port's reference keeps its set alive.
+        let set = unsafe { set.as_ref() };
+        let mut set_state = set.state.lock();
+        assert!(
+            set_state.message_count < set_state.queue_limit
+                || options.contains(Options::SEND_ALWAYS)
+                || matches!(
+                    message.header().bits.remote(),
+                    Some(MessageType::PortSendOnce)
+                ),
+            "ipc_mqueue_send: a full queue, ip_blocked, not yet"
+        );
+        assert!(
+            !port_state.orphaned,
+            "ipc_mqueue_send: an orphaned reply port in a set, not yet"
+        );
+        set_state.message_count += 1;
+        message.enqueue(&mut set_state.messages);
+        // The oldest, with a reference that keeps it through the wake.
+        let receiver = set_state.receivers.pop_back().map(|receiver| {
+            // SAFETY: a thread lives while it waits on a set's queue.
+            unsafe { Reference::upgrade(NonNull::from(receiver)) }
+                .expect("ipc_mqueue_send: a receiver being freed")
+        });
+        drop(set_state);
+        drop(port_state);
+        if let Some(receiver) = receiver {
+            // SAFETY: the reference keeps it alive through the wake, and a
+            // runnable thread holds its own.
+            sched::wait::clear_wait(
+                unsafe { Reference::as_ptr(&receiver).as_ref() },
+                WaitResult::Awakened,
+            );
+        }
+        thread.task().messages_sent.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
     // Under the limit, MACH_SEND_ALWAYS, or a send-once right: no wait.
     assert!(
         port_state.message_count < port_state.queue_limit
@@ -51,10 +91,6 @@ pub(super) fn queue(message: KernelMessage, options: Options) {
         "ipc_mqueue_send: a full queue, ip_blocked, not yet"
     );
     port_state.message_count += 1;
-    assert!(
-        port_state.set.is_none(),
-        "ipc_mqueue_send: a port in a set, not yet"
-    );
     message.enqueue(&mut port_state.messages);
     // The oldest, with a reference that keeps it through the wake.
     let receiver = port_state.receivers.pop_back().map(|receiver| {
@@ -166,6 +202,78 @@ pub(super) fn dequeue<'a>(
             }
             WaitResult::Interrupted => {
                 drop(port_state);
+                return Err(MACH_RCV_INTERRUPTED);
+            }
+            WaitResult::Awakened => panic!("ipc_mqueue_receive: awakened with no message"),
+        }
+    }
+}
+
+/// Takes the first message off the queue of `set`, which `set_state` holds
+/// locked and alive, waiting for one at most `timeout` milliseconds if
+/// given, as `ipc_mqueue_receive` does for a port set: gives it with its
+/// sequence number, taken now, else `MACH_RCV_TIMED_OUT`. The set is
+/// unlocked. A receiver a sender woke, off the set's receivers, looks at the
+/// queue again.
+///
+/// # Panics
+///
+/// If no thread runs on the CPU, or it wakes for no cause. If the set dies
+/// while it waits: not yet.
+pub(super) fn dequeue_set<'a>(
+    set: &'a PortSet,
+    mut set_state: SpinlockGuard<'a, PortSetState>,
+    mut timeout: Option<u32>,
+) -> Result<(KernelMessage, u32), u32> {
+    let thread = smp::current()
+        .active_thread()
+        .expect("ipc_mqueue_receive: no current thread");
+    loop {
+        if let Some(message) = KernelMessage::dequeue(&mut set_state.messages) {
+            let sequence_number = set_state.sequence_number;
+            set_state.sequence_number = sequence_number.wrapping_add(1);
+            set_state.message_count -= 1;
+            drop(set_state);
+            thread
+                .task()
+                .messages_received
+                .fetch_add(1, Ordering::Relaxed);
+            return Ok((message, sequence_number));
+        }
+        match timeout {
+            Some(0) => {
+                drop(set_state);
+                return Err(MACH_RCV_TIMED_OUT);
+            }
+            Some(milliseconds) => sched::wait::will_wait_with_timeout(milliseconds),
+            None => sched::wait::will_wait(),
+        }
+        set_state.receivers.push_front(thread);
+        drop(set_state);
+        sched::switch::block();
+        set_state = set.state.lock();
+        assert!(
+            set_state.active,
+            "ipc_mqueue_receive: MACH_RCV_PORT_DIED, not yet"
+        );
+        if !thread.is_queued_to_receive() {
+            if matches!(thread.wait_result(), WaitResult::TimedOut) {
+                timeout = Some(0);
+            }
+            continue;
+        }
+        // SAFETY: still linked, it is on the one queue it joined, this one.
+        unsafe { set_state.receivers.cursor_mut_from_ptr(thread) }.remove();
+        match thread.wait_result() {
+            WaitResult::TimedOut => {
+                assert!(
+                    timeout.is_some(),
+                    "ipc_mqueue_receive: timed out with no timeout"
+                );
+                timeout = Some(0);
+            }
+            WaitResult::Interrupted => {
+                drop(set_state);
                 return Err(MACH_RCV_INTERRUPTED);
             }
             WaitResult::Awakened => panic!("ipc_mqueue_receive: awakened with no message"),

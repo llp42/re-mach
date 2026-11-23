@@ -12,6 +12,7 @@ use super::mig::boolean::Boolean;
 use super::mig::port_array::PortArray;
 use crate::arch;
 use crate::error::Error;
+use crate::host::Host;
 use crate::ipc::port::port::Port;
 use crate::ipc::port::send_right::SendRight;
 use crate::reference::Reference;
@@ -83,6 +84,8 @@ mig::subsystem! {
         offset: usize
     );
     30 vm_statistics(target_task = Port::task_map) -> (vm_stats: [i32; 13]);
+    41 vm_set_default_memory_manager(host = Port::as_privileged_host, default_manager: SendRight)
+        -> (default_manager: PortMaybe);
     56 task_suspend(target_task = Port::to_task);
     57 task_resume(target_task = Port::to_task);
     59 task_set_special_port(task = Port::to_task, which_port: i32, special_port: SendRight);
@@ -358,6 +361,27 @@ fn vm_protect(
         change,
         Protection::from_bits_retain(protection),
     )
+}
+
+/// Serves `vm_set_default_memory_manager`: `default_manager`, which it
+/// keeps, the host's default memory manager; gives the previous one's send
+/// right, or a send right for the current one for none.
+///
+/// # Errors
+///
+/// `InvalidHost` unless `host` is the privileged host.
+///
+/// # Panics
+///
+/// If the current manager is dead: not yet.
+fn vm_set_default_memory_manager(
+    host: Option<&&Host>,
+    default_manager: Option<SendRight>,
+) -> Result<Option<Reference<Port>>, Error> {
+    if host.is_none() {
+        return Err(Error::InvalidHost);
+    }
+    Ok(vm::user::set_default_memory_manager(default_manager))
 }
 
 /// Serves `vm_statistics`: the host's page statistics.
