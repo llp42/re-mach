@@ -26,21 +26,24 @@ use crate::task;
 /// The size of a reply's buffer.
 const REPLY_SIZE: usize = 8192;
 
+/// MIG's "bad request message ID", as `mig_errors.h` has it, in a reply's
+/// return code.
+const MIG_BAD_ID: u32 = u32::from_ne_bytes((-303_i32).to_ne_bytes());
+
 /// Serves `request`, sent to a port the kernel receives on, as
 /// `ipc_kobject_server` does: a reply with its header filled in, for the
-/// routine its id names to finish, counted in the kernel task's messages;
-/// then the request's destination right is released and its buffer saved
-/// or freed; if the routine failed, the request is destroyed instead.
-/// Gives the reply, or `None` if the request has no reply port, the reply
-/// destroyed.
+/// routine its id names to finish, or `MIG_BAD_ID` for an id none serves,
+/// counted in the kernel task's messages; then the request's destination
+/// right is released and its buffer saved or freed; if the routine failed,
+/// the request is destroyed instead. Gives the reply, or `None` if the
+/// request has no reply port, the reply destroyed.
 ///
 /// # Panics
 ///
-/// If no reply can be allocated, or no routine serves the request's id:
-/// not yet; as the routine. If the destination right is neither a send nor
-/// a send-once right; for a send-once right: not yet; as
-/// `Port::release_send`. If the reply port is dead, or null for a complex
-/// reply: not yet.
+/// If no reply can be allocated: not yet; as the routine. If the
+/// destination right is neither a send nor a send-once right; for a
+/// send-once right: not yet; as `Port::release_send`. If the reply port is
+/// dead, or null for a complex reply: not yet.
 pub fn server(mut request: KernelMessage) -> Option<KernelMessage> {
     let mut reply = KernelMessage::allocate(REPLY_SIZE)
         .unwrap_or_else(|_| panic!("ipc_kobject_server: dropping request, not yet"));
@@ -64,15 +67,21 @@ pub fn server(mut request: KernelMessage) -> Option<KernelMessage> {
         .or_else(|| mach_debug::routine(header.id))
         .or_else(|| device::routine(header.id))
         .or_else(|| gnumach::routine(header.id))
-        .or_else(|| arch::Current::server_routine(header.id))
-        .unwrap_or_else(|| panic!("ipc_kobject_server: MIG_BAD_ID, not yet"));
-    routine(&mut request, &mut reply);
+        .or_else(|| arch::Current::server_routine(header.id));
     let kernel_task = task::create::KERNEL_TASK
         .get()
         .expect("ipc_kobject_server: no kernel task");
-    kernel_task
-        .messages_received
-        .fetch_add(1, Ordering::Relaxed);
+    if let Some(routine) = routine {
+        routine(&mut request, &mut reply);
+        kernel_task
+            .messages_received
+            .fetch_add(1, Ordering::Relaxed);
+    } else {
+        // SAFETY: MIG's reply header, as above.
+        unsafe { reply.layout_mut::<mig::reply::ReplyHeader>() }
+            .return_code
+            .data = MIG_BAD_ID;
+    }
     kernel_task.messages_sent.fetch_add(1, Ordering::Relaxed);
     // The destination's right is released: a send-once notification would
     // come back here.
