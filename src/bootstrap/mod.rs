@@ -403,6 +403,22 @@ fn insert_right(task: &Task, port: &Reference<Port>) -> PortName {
     insert_send_right(task, Port::make_send(port))
 }
 
+/// The boot script's insert of a task argument: a send right for `target`'s
+/// port, given to `task`; the name it takes there.
+///
+/// # Panics
+///
+/// If `target` has no port.
+fn insert_task_right(task: &Task, target: &Task) -> PortName {
+    let port = target
+        .ports
+        .lock()
+        .self_port
+        .clone()
+        .expect("boot_script_insert_task_port: a task with no port");
+    insert_right(task, &port)
+}
+
 /// Gives `task` a send right for `port`, with its reference, under the
 /// first free name from 1; that name.
 ///

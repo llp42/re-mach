@@ -12,6 +12,7 @@ use core::slice;
 
 use crate::boot::BootModule;
 use crate::ipc::port::port::Port;
+use crate::ipc::port::port_name::PortName;
 use crate::reference::Reference;
 use crate::task::task::Task;
 use crate::{bootstrap, kalloc};
@@ -24,6 +25,9 @@ pub enum Value {
     String(&'static str),
     /// A port, of which each task the script names it to gets a send right.
     Port(NonNull<Port>),
+    /// A task, whose port each task the script names it to gets a send
+    /// right for.
+    Task(&'static Task),
     /// A symbol whose value is resolved when the script runs.
     Symbol(usize),
 }
@@ -310,8 +314,8 @@ impl Script {
     ///
     /// # Panics
     ///
-    /// On a syntax error, a builtin in `${...}`, an assignment, a value in
-    /// `$(...)`, or prompt-task-resume: not yet.
+    /// On a syntax error, a builtin in `${...}`, a malformed assignment, a
+    /// value in `$(...)`, or prompt-task-resume: not yet.
     fn parse_expression(
         &mut self,
         rest: &'static str,
@@ -331,16 +335,26 @@ impl Script {
             .find(')')
             .unwrap_or_else(|| panic!("boot_script_parse_line: syntax error"));
         let expression = &rest[2..end];
-        match expression {
-            "task-create" => command.task = Some(bootstrap::create_task(command.path)),
-            "task-resume" => self.functions.push(Function::ResumeTask),
-            "prompt-task-resume" => panic!("boot_script_prompt_task_resume: not yet"),
-            _ => {
-                assert!(
-                    !expression.contains('='),
-                    "boot_script_parse_line: an assignment, not yet"
-                );
-                panic!("boot_script_parse_line: a value in $(...), not yet")
+        if let Some((target, function)) = expression.split_once('=') {
+            assert!(
+                !target.is_empty() && !BUILTINS.contains(&target),
+                "boot_script_parse_line: invalid variable in assignment"
+            );
+            match function {
+                "task-create" => {
+                    let task = bootstrap::create_task(command.path);
+                    command.task = Some(task);
+                    let symbol = self.symbol(target)?;
+                    self.symbols.get_mut(symbol).value = Some(Value::Task(task));
+                }
+                _ => panic!("boot_script_parse_line: a function in assignment, not yet"),
+            }
+        } else {
+            match expression {
+                "task-create" => command.task = Some(bootstrap::create_task(command.path)),
+                "task-resume" => self.functions.push(Function::ResumeTask),
+                "prompt-task-resume" => panic!("boot_script_prompt_task_resume: not yet"),
+                _ => panic!("boot_script_parse_line: a value in $(...), not yet"),
             }
         }
         Ok((None, &rest[end + 1..]))
@@ -428,21 +442,10 @@ impl Script {
                             // SAFETY: the slots the script's ports come from keep their
                             // references for good, which the handle borrows and never drops.
                             let port = ManuallyDrop::new(unsafe { Reference::from_raw(port) });
-                            let name = bootstrap::insert_right(task, &port);
-                            // Its name in decimal, written from the end.
-                            let mut digits = [0; 10];
-                            let (mut start, mut rest) = (digits.len(), u32::from(name));
-                            loop {
-                                start -= 1;
-                                digits[start] = b'0' + u8::try_from(rest % 10).unwrap();
-                                rest /= 10;
-                                if rest == 0 {
-                                    break;
-                                }
-                            }
-                            for &digit in &digits[start..] {
-                                line.push(digit);
-                            }
+                            push_name(&mut line, bootstrap::insert_right(task, &port));
+                        }
+                        Value::Task(target) => {
+                            push_name(&mut line, bootstrap::insert_task_right(task, target));
                         }
                         Value::Symbol(_) => unreachable!(),
                     }
@@ -492,8 +495,26 @@ fn resolve(symbols: &Table<Symbol>, value: Value) -> Value {
 fn value_length(symbols: &Table<Symbol>, value: Value) -> usize {
     match resolve(symbols, value) {
         Value::String(text) => text.len(),
-        Value::Port(_) => 10,
+        Value::Port(_) | Value::Task(_) => 10,
         Value::Symbol(_) => unreachable!(),
+    }
+}
+
+/// Pushes `name`'s decimal digits to `line`.
+fn push_name(line: &mut Table<u8>, name: PortName) {
+    // Its name in decimal, written from the end.
+    let mut digits = [0; 10];
+    let (mut start, mut rest) = (digits.len(), u32::from(name));
+    loop {
+        start -= 1;
+        digits[start] = b'0' + u8::try_from(rest % 10).unwrap();
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    for &digit in &digits[start..] {
+        line.push(digit);
     }
 }
 
