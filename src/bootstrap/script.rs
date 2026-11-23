@@ -20,7 +20,7 @@ use crate::{bootstrap, kalloc};
 #[derive(Clone, Copy)]
 pub enum Value {
     /// A string.
-    String(#[expect(dead_code, reason = "boot_script_exec's string case reads it")] &'static str),
+    String(&'static str),
     /// A port, of which each task the script names it to gets a send right.
     Port(NonNull<Port>),
 }
@@ -38,6 +38,15 @@ const BUILTINS: [&str; 3] = ["task-create", "task-resume", "prompt-task-resume"]
 enum Function {
     /// task-resume: resumes the command's task.
     ResumeTask,
+}
+
+/// An argument: the text before a `${...}`, then the value the run
+/// appends to it.
+struct Argument {
+    /// Its text, if it has any.
+    text: Option<&'static str>,
+    /// Its value, if it has one.
+    value: Option<Value>,
 }
 
 /// A command: a line's program, and what it runs with.
@@ -119,7 +128,7 @@ impl<T> Drop for Table<T> {
 /// tables drop in cleanup's order.
 pub struct Script {
     /// The commands' arguments, each command's in a row.
-    arguments: Table<Value>,
+    arguments: Table<Argument>,
     /// The commands' functions, each command's in a row.
     functions: Table<Function>,
     /// The commands, a line's each, in order.
@@ -145,8 +154,19 @@ impl fmt::Display for Error {
 impl Script {
     /// An empty script, with room for `variables` variables and for what
     /// the command lines of `modules` may give: a command each, an argument
-    /// for each `${`, a function for each `$(`.
+    /// for each word, a function for each `$(`.
     pub fn new(variables: usize, modules: &[BootModule]) -> Self {
+        let arguments = modules
+            .iter()
+            .map(|module| {
+                module
+                    .command_line
+                    .to_bytes()
+                    .split(|&byte| matches!(byte, b' ' | b'\t' | b'\n'))
+                    .filter(|token| !token.is_empty())
+                    .count()
+            })
+            .sum::<usize>();
         let count = |pattern: &[u8]| {
             modules
                 .iter()
@@ -159,7 +179,7 @@ impl Script {
         Self {
             symbols: Table::new(variables),
             commands: Table::new(modules.len()),
-            arguments: Table::new(count(b"${")),
+            arguments: Table::new(arguments),
             functions: Table::new(count(b"$(")),
         }
     }
@@ -176,8 +196,9 @@ impl Script {
     }
 
     /// Parses `line`, the command line of `module`: a program's path, then
-    /// `${variable}` arguments and `$(function)` calls. task-create runs
-    /// now; task-resume is kept for once every command has run.
+    /// its arguments, text and `${variable}`s, and `$(function)` calls.
+    /// task-create runs now; task-resume is kept for once every command
+    /// has run.
     ///
     /// # Errors
     ///
@@ -185,28 +206,21 @@ impl Script {
     ///
     /// # Panics
     ///
-    /// On a comment, a line with no command, plain text, a variable not
-    /// set, an assignment, a value in `$(...)`, prompt-task-resume, a
-    /// builtin misused or a syntax error: not yet. If task-create fails:
-    /// the cleanup, not yet.
+    /// On a syntax error, a variable not set, an assignment, a value in
+    /// `$(...)`, a builtin in `${...}`, or prompt-task-resume: not yet.
+    /// If task-create fails: the cleanup, not yet.
     pub fn parse_line(
         &mut self,
         module: &'static BootModule,
         line: &'static str,
     ) -> Result<(), Error> {
         let line = line.trim_start_matches([' ', '\t']);
-        assert!(
-            !line.starts_with('#'),
-            "boot_script_parse_line: a comment, not yet"
-        );
+        if line.is_empty() || line.starts_with('\n') || line.starts_with('#') {
+            return Ok(());
+        }
         let end = line.find([' ', '\t', '\n']).unwrap_or(line.len());
-        assert!(
-            end != 0,
-            "boot_script_parse_line: a line with no command, not yet"
-        );
         let path = &line[..end];
-        // Past the character that ends the path.
-        let mut rest = line.get(end + 1..).unwrap_or_default();
+        let mut rest = line.get(end..).unwrap_or_default();
         // Where GNU Mach allocates the command.
         self.commands.reserve()?;
         self.arguments.reserve()?;
@@ -227,54 +241,104 @@ impl Script {
                 return Ok(());
             }
             // `${...}` names a value, `$(...)` a function.
-            let end_char = match rest.get(..2) {
-                Some("${") => '}',
-                Some("$(") => ')',
-                _ => panic!("boot_script_parse_line: plain text, not yet"),
-            };
-            let symbol = &rest[2..];
-            let name = match symbol.find([end_char, '=', '\n']) {
-                Some(end) if end != 0 && symbol[end..].starts_with(end_char) => &symbol[..end],
-                Some(end) if end != 0 && end_char == ')' && symbol[end..].starts_with('=') => {
-                    assert!(
-                        !BUILTINS.contains(&&symbol[..end]),
-                        "boot_script_parse_line: invalid variable in assignment, not yet"
-                    );
-                    panic!("boot_script_parse_line: an assignment, not yet")
+            if rest.starts_with("${") || rest.starts_with("$(") {
+                let (argument, following) = self.parse_expression(rest, &mut command);
+                if let Some(argument) = argument {
+                    self.arguments.push(argument);
                 }
-                _ => panic!("boot_script_parse_line: syntax error, not yet"),
-            };
-            rest = &symbol[name.len() + 1..];
-            match name {
-                _ if end_char == '}' && BUILTINS.contains(&name) => {
-                    panic!("boot_script_parse_line: invalid variable in expression, not yet")
-                }
-                "task-create" => command.task = Some(bootstrap::create_task(path)),
-                "task-resume" => self.functions.push(Function::ResumeTask),
-                "prompt-task-resume" => panic!("boot_script_prompt_task_resume: not yet"),
-                _ => {
-                    let symbol = self
-                        .symbols
-                        .items()
-                        .iter()
-                        .find(|symbol| symbol.name == name)
-                        .unwrap_or_else(|| panic!("sym_enter: not yet"));
-                    // Alone in `${...}`, a value makes an argument.
-                    assert!(
-                        end_char == '}',
-                        "boot_script_parse_line: a value in $(...), not yet"
-                    );
-                    self.arguments.push(symbol.value);
-                }
+                rest = following;
+                continue;
+            }
+            // Text, up to a space or a `${...}` in the same argument.
+            let stop = rest.find([' ', '\t', '\n']).unwrap_or(rest.len());
+            if let Some(start) = rest[..stop].find("${") {
+                let (value, following) = self.parse_value(&rest[start..]);
+                self.arguments.push(Argument {
+                    text: Some(&rest[..start]),
+                    value: Some(value),
+                });
+                rest = following;
+            } else {
+                self.arguments.push(Argument {
+                    text: Some(&rest[..stop]),
+                    value: None,
+                });
+                rest = &rest[stop..];
             }
         }
     }
 
+    /// Parses the `${...}` or `$(...)` `rest` starts with: gives the
+    /// argument it makes, if any, and what follows.
+    ///
+    /// # Panics
+    ///
+    /// On a syntax error, a variable not set, a builtin in `${...}`, an
+    /// assignment, a value in `$(...)`, or prompt-task-resume: not yet.
+    fn parse_expression(
+        &mut self,
+        rest: &'static str,
+        command: &mut Command,
+    ) -> (Option<Argument>, &'static str) {
+        if rest.starts_with("${") {
+            let (value, rest) = self.parse_value(rest);
+            return (
+                Some(Argument {
+                    text: None,
+                    value: Some(value),
+                }),
+                rest,
+            );
+        }
+        let end = rest
+            .find(')')
+            .unwrap_or_else(|| panic!("boot_script_parse_line: syntax error"));
+        let expression = &rest[2..end];
+        match expression {
+            "task-create" => command.task = Some(bootstrap::create_task(command.path)),
+            "task-resume" => self.functions.push(Function::ResumeTask),
+            "prompt-task-resume" => panic!("boot_script_prompt_task_resume: not yet"),
+            _ => {
+                assert!(
+                    !expression.contains('='),
+                    "boot_script_parse_line: an assignment, not yet"
+                );
+                panic!("boot_script_parse_line: a value in $(...), not yet")
+            }
+        }
+        (None, &rest[end + 1..])
+    }
+
+    /// Parses the `${...}` `rest` starts with: gives its value and what
+    /// follows.
+    ///
+    /// # Panics
+    ///
+    /// On a syntax error, a builtin in `${...}`, or a variable not set:
+    /// not yet.
+    fn parse_value(&self, rest: &'static str) -> (Value, &'static str) {
+        let end = rest
+            .find('}')
+            .unwrap_or_else(|| panic!("boot_script_parse_line: syntax error"));
+        let name = &rest[2..end];
+        assert!(
+            !name.is_empty() && !name.contains('=') && !BUILTINS.contains(&name),
+            "boot_script_parse_line: invalid variable in expression"
+        );
+        let symbol = self
+            .symbols
+            .items()
+            .iter()
+            .find(|symbol| symbol.name == name)
+            .unwrap_or_else(|| panic!("sym_enter: not yet"));
+        (symbol.value, &rest[end + 1..])
+    }
+
     /// Runs the commands: builds each one's command line and arguments from
     /// kalloc, runs it in its task, then frees them; the line holds the
-    /// path, then each port argument's name in the task, in decimal, each
-    /// ending with a NUL, and the arguments are their offsets in it. Then
-    /// runs each command's functions, and drops the script.
+    /// path, then each argument's text and value, each ending with a NUL,
+    /// and the arguments are their offsets in it. Then runs each command's
+    /// functions, and drops the script.
     ///
     /// # Errors
     ///
@@ -282,56 +346,73 @@ impl Script {
     ///
     /// # Panics
     ///
-    /// On a command with no task, a string argument, or a command line
-    /// past its room: not yet. As `bootstrap::run_command`, if a command's
-    /// thread can't be created or resumed, and `bootstrap::resume_task`, if
-    /// its task can't be resumed.
+    /// On a command with no task: not yet. As `bootstrap::run_command`, if
+    /// a command's thread can't be created or resumed, and
+    /// `bootstrap::resume_task`, if its task can't be resumed.
     pub fn run(self) -> Result<(), Error> {
         for command in self.commands.items() {
             let task = command
                 .task
                 .unwrap_or_else(|| panic!("boot_script_exec: a command with no task, not yet"));
-            // The path and its NUL, with 100 bytes to spare.
-            let mut line = Table::new(command.path.len() + 1 + 100);
+            let values = &self.arguments.items()[command.arguments.clone()];
+            // The path, then each argument's text and value, with its NUL.
+            let mut capacity = command.path.len() + 1;
+            for argument in values {
+                capacity += argument.text.map_or(0, str::len);
+                if let Some(value) = argument.value {
+                    capacity += match value {
+                        Value::String(text) => text.len(),
+                        Value::Port(_) => 10,
+                    };
+                }
+                capacity += 1;
+            }
+            let mut line = Table::new(capacity);
             line.reserve()?;
             for &byte in command.path.as_bytes() {
                 line.push(byte);
             }
             line.push(0);
-            let values = &self.arguments.items()[command.arguments.clone()];
             // Each argument's offset in the line, the path's first, with room
             // for GNU Mach's null end.
             let mut arguments = Table::new(values.len() + 2);
             arguments.reserve()?;
             arguments.push(0);
-            for value in values {
-                let Value::Port(port) = *value else {
-                    panic!("boot_script_exec: a string argument, not yet");
-                };
-                // SAFETY: the slots the script's ports come from keep their
-                // references for good, which the handle borrows and never drops.
-                let port = ManuallyDrop::new(unsafe { Reference::from_raw(port) });
-                let name = bootstrap::insert_right(task, &port);
-                // Its name in decimal, written from the end.
-                let mut digits = [0; 10];
-                let (mut start, mut rest) = (digits.len(), u32::from(name));
-                loop {
-                    start -= 1;
-                    digits[start] = b'0' + u8::try_from(rest % 10).unwrap();
-                    rest /= 10;
-                    if rest == 0 {
-                        break;
+            for argument in values {
+                arguments.push(line.len);
+                if let Some(text) = argument.text {
+                    for &byte in text.as_bytes() {
+                        line.push(byte);
                     }
                 }
-                let digits = &digits[start..];
-                // Room for the digits and a NUL.
-                assert!(
-                    line.capacity - line.len > digits.len(),
-                    "CHECK_CMDLINE_LEN: a longer command line, not yet"
-                );
-                arguments.push(line.len);
-                for &digit in digits {
-                    line.push(digit);
+                if let Some(value) = argument.value {
+                    match value {
+                        Value::String(text) => {
+                            for &byte in text.as_bytes() {
+                                line.push(byte);
+                            }
+                        }
+                        Value::Port(port) => {
+                            // SAFETY: the slots the script's ports come from keep their
+                            // references for good, which the handle borrows and never drops.
+                            let port = ManuallyDrop::new(unsafe { Reference::from_raw(port) });
+                            let name = bootstrap::insert_right(task, &port);
+                            // Its name in decimal, written from the end.
+                            let mut digits = [0; 10];
+                            let (mut start, mut rest) = (digits.len(), u32::from(name));
+                            loop {
+                                start -= 1;
+                                digits[start] = b'0' + u8::try_from(rest % 10).unwrap();
+                                rest /= 10;
+                                if rest == 0 {
+                                    break;
+                                }
+                            }
+                            for &digit in &digits[start..] {
+                                line.push(digit);
+                            }
+                        }
+                    }
                 }
                 line.push(0);
             }
