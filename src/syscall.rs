@@ -39,16 +39,12 @@ impl MachTrap {
     }
 
     /// Runs it with `arguments`, giving its result for the caller's rax, if
-    /// any.
-    ///
-    /// # Panics
-    ///
-    /// If it is not written yet.
+    /// any; what is not written yet gets `KERN_INVALID_ARGUMENT`.
     pub fn call(&self, arguments: &[usize; 7]) -> Option<u32> {
         match self {
             Self::Written(function, _) => Some(function(arguments)),
             Self::SetsRegisters(function, _) => function(arguments),
-            Self::NotYet(name) => panic!("{name}: not yet"),
+            Self::NotYet(_name) => Some(Error::InvalidArgument.into()),
         }
     }
 }
@@ -60,10 +56,10 @@ const COUNT: usize = 130;
 /// the numbers Mach leaves unused.
 pub static MACH_TRAPS: [MachTrap; COUNT] = {
     let mut traps = [const { MachTrap::Written(invalid, 0) }; COUNT];
-    traps[10] = MachTrap::NotYet("null_port");
-    traps[11] = MachTrap::NotYet("null_port");
-    traps[12] = MachTrap::NotYet("null_port");
-    traps[13] = MachTrap::NotYet("null_port");
+    traps[10] = MachTrap::Written(null_port, 0);
+    traps[11] = MachTrap::Written(null_port, 0);
+    traps[12] = MachTrap::Written(null_port, 0);
+    traps[13] = MachTrap::Written(null_port, 0);
     traps[17] = MachTrap::NotYet("evc_wait");
     traps[18] = MachTrap::NotYet("evc_wait_clear");
     traps[25] = MachTrap::Written(message, 7);
@@ -74,8 +70,8 @@ pub static MACH_TRAPS: [MachTrap; COUNT] = {
     traps[30] = MachTrap::Written(print, 1);
     traps[39] = MachTrap::NotYet("syscall_device_writev_request");
     traps[40] = MachTrap::NotYet("syscall_device_write_request");
-    traps[55] = MachTrap::NotYet("null_port");
-    traps[56] = MachTrap::NotYet("null_port");
+    traps[55] = MachTrap::Written(null_port, 0);
+    traps[56] = MachTrap::Written(null_port, 0);
     traps[59] = MachTrap::NotYet("swtch_pri");
     traps[60] = MachTrap::NotYet("swtch");
     traps[61] = MachTrap::NotYet("thread_switch");
@@ -98,6 +94,11 @@ pub static MACH_TRAPS: [MachTrap; COUNT] = {
 /// A number Mach leaves unused.
 fn invalid(_: &[usize; 7]) -> u32 {
     Error::InvalidArgument.into()
+}
+
+/// A trap Mach gives a null port, as `null_port`: what it gives.
+const fn null_port(_: &[usize; 7]) -> u32 {
+    0
 }
 
 /// Sends a message and receives one, as `mach_msg_trap`: from the
