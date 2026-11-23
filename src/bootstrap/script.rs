@@ -16,19 +16,22 @@ use crate::reference::Reference;
 use crate::task::task::Task;
 use crate::{bootstrap, kalloc};
 
-/// A variable's value; only the kinds the bootstrap sets.
+/// A variable's value; only the kinds the bootstrap sets and the script
+/// gives.
 #[derive(Clone, Copy)]
 pub enum Value {
     /// A string.
     String(&'static str),
     /// A port, of which each task the script names it to gets a send right.
     Port(NonNull<Port>),
+    /// A symbol whose value is resolved when the script runs.
+    Symbol(usize),
 }
 
-/// A variable, by name.
+/// A variable, by name, and its value once assigned.
 struct Symbol {
     name: &'static str,
-    value: Value,
+    value: Option<Value>,
 }
 
 /// The builtin functions' names.
@@ -112,6 +115,12 @@ impl<T> Table<T> {
         // laid out as a `T`.
         unsafe { slice::from_raw_parts(self.room.as_ptr().cast(), self.len) }
     }
+
+    /// The item added at `index`, mutably.
+    fn get_mut(&mut self, index: usize) -> &mut T {
+        // SAFETY: the first `len` are written, and `index` is below `len`.
+        unsafe { &mut *self.room.as_mut_ptr().cast::<T>().add(index) }
+    }
 }
 
 impl<T> Drop for Table<T> {
@@ -154,7 +163,8 @@ impl fmt::Display for Error {
 impl Script {
     /// An empty script, with room for `variables` variables and for what
     /// the command lines of `modules` may give: a command each, an argument
-    /// for each word, a function for each `$(`.
+    /// for each word, a variable for each `${` or `$(`, a function for each
+    /// `$(`.
     pub fn new(variables: usize, modules: &[BootModule]) -> Self {
         let arguments = modules
             .iter()
@@ -176,23 +186,46 @@ impl Script {
                 })
                 .sum::<usize>()
         };
+        let symbols = variables + count(b"${") + count(b"$(");
         Self {
-            symbols: Table::new(variables),
+            symbols: Table::new(symbols),
             commands: Table::new(modules.len()),
             arguments: Table::new(arguments),
             functions: Table::new(count(b"$(")),
         }
     }
 
-    /// Adds the variable `name`, of `value`, after any of that name.
+    /// Sets the variable `name` to `value`, adding it if no line named it
+    /// yet, as `boot_script_set_variable` does.
     ///
     /// # Errors
     ///
     /// `NoMemory` if the symbol table can't be allocated.
     pub fn set(&mut self, name: &'static str, value: Value) -> Result<(), Error> {
-        self.symbols.reserve()?;
-        self.symbols.push(Symbol { name, value });
+        let index = self.symbol(name)?;
+        self.symbols.get_mut(index).value = Some(value);
         Ok(())
+    }
+
+    /// The index of the variable `name`, adding it unset if no line named
+    /// it yet, as `sym_enter` does.
+    ///
+    /// # Errors
+    ///
+    /// `NoMemory` if the symbol table can't be allocated.
+    fn symbol(&mut self, name: &'static str) -> Result<usize, Error> {
+        if let Some(index) = self
+            .symbols
+            .items()
+            .iter()
+            .position(|symbol| symbol.name == name)
+        {
+            return Ok(index);
+        }
+        self.symbols.reserve()?;
+        let index = self.symbols.len;
+        self.symbols.push(Symbol { name, value: None });
+        Ok(index)
     }
 
     /// Parses `line`, the command line of `module`: a program's path, then
@@ -242,7 +275,7 @@ impl Script {
             }
             // `${...}` names a value, `$(...)` a function.
             if rest.starts_with("${") || rest.starts_with("$(") {
-                let (argument, following) = self.parse_expression(rest, &mut command);
+                let (argument, following) = self.parse_expression(rest, &mut command)?;
                 if let Some(argument) = argument {
                     self.arguments.push(argument);
                 }
@@ -252,7 +285,7 @@ impl Script {
             // Text, up to a space or a `${...}` in the same argument.
             let stop = rest.find([' ', '\t', '\n']).unwrap_or(rest.len());
             if let Some(start) = rest[..stop].find("${") {
-                let (value, following) = self.parse_value(&rest[start..]);
+                let (value, following) = self.parse_value(&rest[start..])?;
                 self.arguments.push(Argument {
                     text: Some(&rest[..start]),
                     value: Some(value),
@@ -271,24 +304,28 @@ impl Script {
     /// Parses the `${...}` or `$(...)` `rest` starts with: gives the
     /// argument it makes, if any, and what follows.
     ///
+    /// # Errors
+    ///
+    /// `NoMemory` if a variable's room can't be allocated.
+    ///
     /// # Panics
     ///
-    /// On a syntax error, a variable not set, a builtin in `${...}`, an
-    /// assignment, a value in `$(...)`, or prompt-task-resume: not yet.
+    /// On a syntax error, a builtin in `${...}`, an assignment, a value in
+    /// `$(...)`, or prompt-task-resume: not yet.
     fn parse_expression(
         &mut self,
         rest: &'static str,
         command: &mut Command,
-    ) -> (Option<Argument>, &'static str) {
+    ) -> Result<(Option<Argument>, &'static str), Error> {
         if rest.starts_with("${") {
-            let (value, rest) = self.parse_value(rest);
-            return (
+            let (value, rest) = self.parse_value(rest)?;
+            return Ok((
                 Some(Argument {
                     text: None,
                     value: Some(value),
                 }),
                 rest,
-            );
+            ));
         }
         let end = rest
             .find(')')
@@ -306,17 +343,20 @@ impl Script {
                 panic!("boot_script_parse_line: a value in $(...), not yet")
             }
         }
-        (None, &rest[end + 1..])
+        Ok((None, &rest[end + 1..]))
     }
 
     /// Parses the `${...}` `rest` starts with: gives its value and what
-    /// follows.
+    /// follows, adding the variable if no line named it yet.
+    ///
+    /// # Errors
+    ///
+    /// `NoMemory` if the symbol table can't be allocated.
     ///
     /// # Panics
     ///
-    /// On a syntax error, a builtin in `${...}`, or a variable not set:
-    /// not yet.
-    fn parse_value(&self, rest: &'static str) -> (Value, &'static str) {
+    /// On a syntax error, or a builtin in `${...}`.
+    fn parse_value(&mut self, rest: &'static str) -> Result<(Value, &'static str), Error> {
         let end = rest
             .find('}')
             .unwrap_or_else(|| panic!("boot_script_parse_line: syntax error"));
@@ -325,13 +365,8 @@ impl Script {
             !name.is_empty() && !name.contains('=') && !BUILTINS.contains(&name),
             "boot_script_parse_line: invalid variable in expression"
         );
-        let symbol = self
-            .symbols
-            .items()
-            .iter()
-            .find(|symbol| symbol.name == name)
-            .unwrap_or_else(|| panic!("sym_enter: not yet"));
-        (symbol.value, &rest[end + 1..])
+        let symbol = self.symbol(name)?;
+        Ok((Value::Symbol(symbol), &rest[end + 1..]))
     }
 
     /// Runs the commands: builds each one's command line and arguments from
@@ -346,9 +381,9 @@ impl Script {
     ///
     /// # Panics
     ///
-    /// On a command with no task: not yet. As `bootstrap::run_command`, if
-    /// a command's thread can't be created or resumed, and
-    /// `bootstrap::resume_task`, if its task can't be resumed.
+    /// On a command with no task, or a variable never assigned. As
+    /// `bootstrap::run_command`, if a command's thread can't be created or
+    /// resumed, and `bootstrap::resume_task`, if its task can't be resumed.
     pub fn run(self) -> Result<(), Error> {
         for command in self.commands.items() {
             let task = command
@@ -360,10 +395,7 @@ impl Script {
             for argument in values {
                 capacity += argument.text.map_or(0, str::len);
                 if let Some(value) = argument.value {
-                    capacity += match value {
-                        Value::String(text) => text.len(),
-                        Value::Port(_) => 10,
-                    };
+                    capacity += value_length(&self.symbols, value);
                 }
                 capacity += 1;
             }
@@ -386,7 +418,7 @@ impl Script {
                     }
                 }
                 if let Some(value) = argument.value {
-                    match value {
+                    match resolve(&self.symbols, value) {
                         Value::String(text) => {
                             for &byte in text.as_bytes() {
                                 line.push(byte);
@@ -412,6 +444,7 @@ impl Script {
                                 line.push(digit);
                             }
                         }
+                        Value::Symbol(_) => unreachable!(),
                     }
                 }
                 line.push(0);
@@ -435,6 +468,32 @@ impl Script {
             }
         }
         Ok(())
+    }
+}
+
+/// Resolves `value` through the variables it names, as `boot_script_exec`
+/// does.
+///
+/// # Panics
+///
+/// If a variable is never assigned.
+fn resolve(symbols: &Table<Symbol>, value: Value) -> Value {
+    let mut value = value;
+    while let Value::Symbol(index) = value {
+        let symbol = &symbols.items()[index];
+        value = symbol
+            .value
+            .unwrap_or_else(|| panic!("boot_script_exec: undefined symbol {}", symbol.name));
+    }
+    value
+}
+
+/// How many bytes `value` takes in a command line, once resolved.
+fn value_length(symbols: &Table<Symbol>, value: Value) -> usize {
+    match resolve(symbols, value) {
+        Value::String(text) => text.len(),
+        Value::Port(_) => 10,
+        Value::Symbol(_) => unreachable!(),
     }
 }
 
