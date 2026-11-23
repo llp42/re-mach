@@ -15,7 +15,7 @@ use crate::ipc::port::port::Port;
 use crate::ipc::port::port_name::PortName;
 use crate::reference::Reference;
 use crate::thread::machine::MachineThread as _;
-use crate::{print, smp};
+use crate::{print, sched, smp};
 
 /// A Mach trap, as the table holds it.
 pub enum MachTrap {
@@ -72,9 +72,9 @@ pub static MACH_TRAPS: [MachTrap; COUNT] = {
     traps[40] = MachTrap::NotYet("syscall_device_write_request");
     traps[55] = MachTrap::Written(null_port, 0);
     traps[56] = MachTrap::Written(null_port, 0);
-    traps[59] = MachTrap::NotYet("swtch_pri");
-    traps[60] = MachTrap::NotYet("swtch");
-    traps[61] = MachTrap::NotYet("thread_switch");
+    traps[59] = MachTrap::Written(swtch_pri, 1);
+    traps[60] = MachTrap::Written(swtch, 0);
+    traps[61] = MachTrap::Written(thread_switch, 3);
     traps[64] = MachTrap::NotYet("syscall_vm_map");
     traps[65] = MachTrap::NotYet("syscall_vm_allocate");
     traps[66] = MachTrap::NotYet("syscall_vm_deallocate");
@@ -266,6 +266,45 @@ fn set_self_state(arguments: &[usize; 7]) -> Option<u32> {
     // Set, no result: back to user mode with the state, as
     // thread_exception_return.
     result.err().map(u32::from)
+}
+
+/// Gives the CPU up to another runnable thread, as `swtch`: whether one
+/// is.
+fn swtch(_: &[usize; 7]) -> u32 {
+    u32::from(sched::switch::swtch())
+}
+
+/// The same, as `swtch_pri`; its priority depression is not written yet.
+fn swtch_pri(_: &[usize; 7]) -> u32 {
+    u32::from(sched::switch::swtch())
+}
+
+/// Gives the CPU up to another thread, as `thread_switch`: the option from
+/// its second argument's low half, the timeout from its third's. A thread
+/// hint is not honored, and priority depression is not written yet: both
+/// fall back to a plain switch. Gives `KERN_SUCCESS`, or
+/// `KERN_INVALID_ARGUMENT` for an option not Mach's.
+fn thread_switch(arguments: &[usize; 7]) -> u32 {
+    let option = i32::from_le_bytes(
+        u32::try_from(arguments[1] & 0xffff_ffff)
+            .unwrap()
+            .to_le_bytes(),
+    );
+    let time = u32::try_from(arguments[2] & 0xffff_ffff).unwrap();
+    match option {
+        // SWITCH_OPTION_NONE, and SWITCH_OPTION_DEPRESS without its
+        // depression.
+        0 | 1 => {
+            let _ = sched::switch::swtch();
+        }
+        // SWITCH_OPTION_WAIT.
+        2 => {
+            sched::wait::will_wait_with_timeout(time);
+            sched::switch::block();
+        }
+        _ => return Error::InvalidArgument.into(),
+    }
+    0
 }
 
 /// How many bytes `print` copies in at a time, at most.
