@@ -48,7 +48,7 @@ pub struct ObjectState {
     /// has a pager.
     pub(super) pager_request: Option<Reference<Port>>,
     /// How its data is copied.
-    pub(super) copy_strategy: CopyStrategy,
+    pub(crate) copy_strategy: CopyStrategy,
 }
 
 /// What serves an object's pages; only the kinds used here.
@@ -59,9 +59,39 @@ pub(in crate::vm) enum Kind {
 
 /// How an object's data is copied, as Mach's
 /// `memory_object_copy_strategy_t` names it; only the values used here.
+#[derive(Clone, Copy)]
 pub enum CopyStrategy {
     /// `MEMORY_OBJECT_COPY_NONE`: by reading it all, with no help.
     None,
+    /// `MEMORY_OBJECT_COPY_CALL`: the kernel asks the pager each time.
+    Call,
+    /// `MEMORY_OBJECT_COPY_DELAY`: copied only when written.
+    Delay,
+    /// `MEMORY_OBJECT_COPY_TEMPORARY`: copied as a temporary object.
+    Temporary,
+}
+
+impl CopyStrategy {
+    /// Its number, Mach's `memory_object_copy_strategy_t`.
+    pub const fn number(self) -> i32 {
+        match self {
+            Self::None => 0,
+            Self::Call => 1,
+            Self::Delay => 2,
+            Self::Temporary => 3,
+        }
+    }
+
+    /// The strategy Mach's number `number` names, if it is one used here.
+    pub const fn from_number(number: i32) -> Option<Self> {
+        match number {
+            0 => Some(Self::None),
+            1 => Some(Self::Call),
+            2 => Some(Self::Delay),
+            3 => Some(Self::Temporary),
+            _ => None,
+        }
+    }
 }
 
 /// An object's resident pages.

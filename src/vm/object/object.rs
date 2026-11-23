@@ -79,6 +79,17 @@ impl Object {
         self.state.lock()
     }
 
+    /// Whether its pager is ready, whether it may cache, and its copy
+    /// strategy's number, as `memory_object_get_attributes` gives them.
+    pub fn attributes(&self) -> (bool, bool, i32) {
+        let state = self.lock();
+        (
+            state.flags.contains(Flags::PAGER_READY),
+            state.flags.contains(Flags::CAN_PERSIST),
+            state.copy_strategy.number(),
+        )
+    }
+
     /// A send right for its pager's port, if it has one, as
     /// `vm_region_create_proxy` copies one.
     pub fn pager_port(&self) -> Option<Reference<Port>> {

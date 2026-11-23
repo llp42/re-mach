@@ -24,7 +24,9 @@ use crate::thread::machine::MachineThread as _;
 use crate::thread::thread::Thread;
 use crate::vm::map::change::{Change, Placement, Source};
 use crate::vm::map::map::Map;
+use crate::vm::object::object::Object;
 use crate::vm::object::offset::Offset;
+use crate::vm::object::state::{CopyStrategy, Flags};
 use crate::vm::user::Mapping;
 use crate::vm::{self, Inheritance, Protection, VirtualAddress};
 
@@ -84,8 +86,11 @@ mig::subsystem! {
         offset: usize
     );
     30 vm_statistics(target_task = Port::task_map) -> (vm_stats: [i32; 13]);
+    40 memory_object_get_attributes(control = Port::to_vm_object)
+        -> (object_ready: Boolean, may_cache: Boolean, copy_strategy: i32);
     41 vm_set_default_memory_manager(host = Port::as_privileged_host, default_manager: SendRight)
         -> (default_manager: PortMaybe);
+    94 memory_object_ready(control = Port::to_vm_object, may_cache: Boolean, copy_strategy: i32);
     56 task_suspend(target_task = Port::to_task);
     57 task_resume(target_task = Port::to_task);
     59 task_set_special_port(task = Port::to_task, which_port: i32, special_port: SendRight);
@@ -361,6 +366,60 @@ fn vm_protect(
         change,
         Protection::from_bits_retain(protection),
     )
+}
+
+/// Serves `memory_object_get_attributes`: whether the object whose control
+/// port it is has a ready pager, whether it may cache, and its copy
+/// strategy.
+///
+/// # Errors
+///
+/// `InvalidArgument` if the port is no object's control port.
+fn memory_object_get_attributes(
+    object: Option<&Reference<Object>>,
+) -> Result<(Boolean, Boolean, i32), Error> {
+    let Some(object) = object else {
+        return Err(Error::InvalidArgument);
+    };
+    let (ready, may_cache, copy_strategy) = object.attributes();
+    Ok((
+        Boolean::from(ready),
+        Boolean::from(may_cache),
+        copy_strategy,
+    ))
+}
+
+/// Serves `memory_object_ready`: the object whose control port it is has a
+/// ready pager, may cache as `may_cache` says, and copies as
+/// `copy_strategy` says.
+///
+/// # Errors
+///
+/// `InvalidArgument` if the port is no object's control port, or the
+/// strategy is not one Mach names.
+fn memory_object_ready(
+    object: Option<&Reference<Object>>,
+    may_cache: Boolean,
+    copy_strategy: i32,
+) -> Result<(), Error> {
+    let Some(object) = object else {
+        return Err(Error::InvalidArgument);
+    };
+    let Some(copy_strategy) = CopyStrategy::from_number(copy_strategy) else {
+        return Err(Error::InvalidArgument);
+    };
+    let mut state = object.lock();
+    // As memory_object_set_attributes_common.
+    if bool::from(may_cache) {
+        state.flags.insert(Flags::CAN_PERSIST);
+    } else {
+        state.flags.remove(Flags::CAN_PERSIST);
+    }
+    state.flags.insert(Flags::PAGER_READY);
+    state.copy_strategy = copy_strategy;
+    // Nothing waits for it to be ready yet, so none is woken.
+    drop(state);
+    Ok(())
 }
 
 /// Serves `vm_set_default_memory_manager`: `default_manager`, which it

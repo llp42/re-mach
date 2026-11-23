@@ -66,7 +66,7 @@ pub fn enter(pager: &Reference<Port>, size: usize) -> Option<Reference<Object>> 
     request.set_kernel_object(KernelObject::PagingRequest(Reference::as_ptr(&object)));
     let mut state = object.lock();
     state.flags.insert(Flags::PAGER_CREATED);
-    state.pager = Some(pager);
+    state.pager = Some(Reference::clone(&pager));
     state.pager_request = Some(request);
     // External, not temporary, and not ready until its pager says so.
     state.flags.remove(Flags::INTERNAL | Flags::TEMPORARY);
@@ -84,9 +84,17 @@ pub fn enter(pager: &Reference<Port>, size: usize) -> Option<Reference<Object>> 
         Reference::from_raw(NonNull::new(object.pager_name.load(Ordering::Acquire)).unwrap())
     });
     let name_send = Port::make_send(&name);
-    let record = record.unwrap_or_else(|| panic!("memory_object_init: a user pager, not yet"));
-    // SAFETY: as for its kind above.
-    pager::init_pager(unsafe { record.as_ref() }, request_send, name_send);
+    match record {
+        // SAFETY: as for its kind above.
+        Some(record) => pager::init_pager(unsafe { record.as_ref() }, request_send, name_send),
+        // A user pager: memory_object_init tells it of its object.
+        None => super::super::pager::memory_object_init(
+            Port::copy_send(&pager),
+            request_send,
+            name_send,
+            crate::arch::PAGE_SIZE,
+        ),
+    }
     object.lock().flags.insert(Flags::PAGER_INITIALIZED);
     // Nothing waits for it to be initialized yet, so none is woken.
     Some(object)
