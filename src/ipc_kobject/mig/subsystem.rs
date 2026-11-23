@@ -131,6 +131,15 @@ macro_rules! subsystem {
             [$($outs)* ($out count $element, $max)] [] []
         );
     };
+    // An inline out-array of at most `max`, whose count the routine gives.
+    (
+        @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*] []
+        [$out:ident: [$element:ty; ..$max:literal], CountOut]
+    ) => {
+        $crate::ipc_kobject::mig::subsystem!(
+            @sort $name $head [$($ins)*] [$($outs)* ($out count_out $element, $max)] [] []
+        );
+    };
     // An out-of-line out-array.
     (
         @sort $name:ident $head:tt [$($ins:tt)*] [$($outs:tt)*] []
@@ -368,6 +377,9 @@ macro_rules! subsystem {
     (@field request array $element:ty, $max:literal) => { mig::argument::Argument<[$element; 0]> };
     (@field reply inline $type:ty) => { mig::argument::Argument<$type> };
     (@field reply count $element:ty, $max:literal) => { mig::argument::Argument<[$element; $max]> };
+    (@field reply count_out $element:ty, $max:literal) => {
+        mig::argument::Argument<[$element; $max]>
+    };
     (@field reply out_of_line $element:ty) => { mig::argument::Argument<usize> };
     (@field reply send_right) => { mig::argument::Argument<usize> };
     (@field reply send_once) => { mig::argument::Argument<usize> };
@@ -427,6 +439,7 @@ macro_rules! subsystem {
     // rights, its memory; for a send right, its port's reference.
     (@value inline $type:ty) => { $type };
     (@value count $element:ty, $max:literal) => { usize };
+    (@value count_out $element:ty, $max:literal) => { (usize, [$element; $max]) };
     (@value out_of_line $element:ty) => { mig::argument::OutOfLine<$element> };
     (@value send_right) => { $crate::reference::Reference<$crate::ipc::port::port::Port> };
     (@value send_once) => {
@@ -444,17 +457,17 @@ macro_rules! subsystem {
     (@reply $reply:ident $result:ident) => {
         $reply.head.return_code.data = $result.map_or_else(u32::from, |()| 0);
     };
-    // With outs: a failure's code; else 0, the size, then each out.
+    // With outs: a failure's code; else 0, each out, then the size.
     (@reply $reply:ident $result:ident $(($out:ident $kind:ident $($parameter:tt)*))+) => {
         match $result {
             Err(error) => $reply.head.return_code.data = u32::from(error),
             Ok(mig::subsystem!(@pattern $($out),+)) => {
                 $reply.head.return_code.data = 0;
+                $(mig::subsystem! { @pack $reply $out $kind $($parameter)* })+
                 $reply.head.header.size = u32::try_from(mig::subsystem!(
-                    @last_size $(($out $kind $($parameter)*))+
+                    @last_size $reply $(($out $kind $($parameter)*))+
                 ))
                 .unwrap();
-                $(mig::subsystem! { @pack $reply $out $kind $($parameter)* })+
             }
         }
     };
@@ -462,10 +475,12 @@ macro_rules! subsystem {
     (@pattern $out:ident) => { $out };
     (@pattern $($out:ident),+) => { ($($out),+) };
     // The reply's size: its last out's.
-    (@last_size ($out:ident $kind:ident $($parameter:tt)*)) => {
-        mig::subsystem!(@size $out $kind $($parameter)*)
+    (@last_size $reply:ident ($out:ident $kind:ident $($parameter:tt)*)) => {
+        mig::subsystem!(@size $reply $out $kind $($parameter)*)
     };
-    (@last_size $first:tt $($rest:tt)+) => { mig::subsystem!(@last_size $($rest)+) };
+    (@last_size $reply:ident $first:tt $($rest:tt)+) => {
+        mig::subsystem!(@last_size $reply $($rest)+)
+    };
     // Packing an out: the word, then the data.
     (@pack $reply:ident $out:ident inline $type:ty) => {
         $reply.$out.word = <$type as mig::argument::Inline>::WORD;
@@ -474,6 +489,12 @@ macro_rules! subsystem {
     // A count array's word.
     (@pack $reply:ident $out:ident count $element:ty, $max:literal) => {
         $reply.$out.word = <$element as mig::argument::Element>::word(u32::try_from($out).unwrap());
+    };
+    // A count out-array's count, then its data.
+    (@pack $reply:ident $out:ident count_out $element:ty, $max:literal) => {
+        let (count, data) = $out;
+        $reply.$out.word = <$element as mig::argument::Element>::word(u32::try_from(count).unwrap());
+        $reply.$out.data = data;
     };
     // An out-of-line array makes the reply complex; its word, then the copy.
     (@pack $reply:ident $out:ident out_of_line $element:ty) => {
@@ -520,14 +541,19 @@ macro_rules! subsystem {
             .expose_provenance();
     };
     // The reply's size: whole; with a count array, the elements used, padded to 8 bytes.
-    (@size $out:ident inline $type:ty) => { size_of::<Reply>() };
-    (@size $out:ident out_of_line $element:ty) => { size_of::<Reply>() };
-    (@size $out:ident send_right) => { size_of::<Reply>() };
-    (@size $out:ident send_once) => { size_of::<Reply>() };
-    (@size $out:ident maybe_send) => { size_of::<Reply>() };
-    (@size $out:ident port_array) => { size_of::<Reply>() };
-    (@size $out:ident count $element:ty, $max:literal) => {
+    (@size $reply:ident $out:ident inline $type:ty) => { size_of::<Reply>() };
+    (@size $reply:ident $out:ident out_of_line $element:ty) => { size_of::<Reply>() };
+    (@size $reply:ident $out:ident send_right) => { size_of::<Reply>() };
+    (@size $reply:ident $out:ident send_once) => { size_of::<Reply>() };
+    (@size $reply:ident $out:ident maybe_send) => { size_of::<Reply>() };
+    (@size $reply:ident $out:ident port_array) => { size_of::<Reply>() };
+    (@size $reply:ident $out:ident count $element:ty, $max:literal) => {
         core::mem::offset_of!(Reply, $out.data) + (size_of::<$element>() * $out).next_multiple_of(8)
+    };
+    (@size $reply:ident $out:ident count_out $element:ty, $max:literal) => {
+        core::mem::offset_of!(Reply, $out.data)
+            + (size_of::<$element>() * usize::try_from($reply.$out.word >> 32).unwrap())
+                .next_multiple_of(8)
     };
 }
 

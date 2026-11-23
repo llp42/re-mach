@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
-//! Devices; so far only the master device port, device lookup, opening
-//! and mapping, the device pager, terminals' input settings, the
-//! interrupt thread and the `time` device.
+//! Devices; so far only the master device port, device lookup, opening,
+//! reading, writing and mapping, the device pager, terminals' input
+//! settings, the interrupt thread and the `time`, `console`, `mbinfo` and
+//! `irq` devices.
 
 pub mod interrupt;
 pub mod lookup;
@@ -16,6 +17,8 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink};
 
+use crate::arch::{self, Machine as _};
+use crate::error::Error;
 use crate::ipc::port::kernel_object::KernelObject;
 use crate::ipc::port::port::Port;
 use crate::reference::{Count, Counted, Reference};
@@ -88,35 +91,55 @@ enum State {
     Closing,
 }
 
-/// A kind of device the kernel serves; only `time` so far.
+/// A kind of device the kernel serves.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     /// `time`, the mapped time.
     Time,
+    /// `console`, the serial console.
+    Console,
+    /// `mbinfo`, the multiboot information, so far zeroed: nothing was
+    /// registered.
+    MbInfo,
+    /// `irq`, user interrupt handlers.
+    Irq,
 }
 
 impl Kind {
     /// Every kind, in the name table's order.
-    const ALL: [Self; 1] = [Self::Time];
+    const ALL: [Self; 4] = [Self::Time, Self::Console, Self::MbInfo, Self::Irq];
 
     /// Its name, which its devices are opened by.
     const fn name(self) -> &'static [u8] {
         match self {
             Self::Time => b"time",
+            Self::Console => b"console",
+            Self::MbInfo => b"mbinfo",
+            Self::Irq => b"irq",
         }
     }
 }
 
+/// What `mbinfo` reads: no information was registered, as GNU Mach's
+/// buffer starts zeroed.
+static MBINFO: [u8; 16] = [0; 16];
+
 /// Opens the device `name` names, as `device_open` does: found or made,
 /// given a port, opened by its kind, then open once; gives a send right
-/// for its port. `time`'s open neither fails nor queues.
+/// for its port. The kinds' opens neither fail nor queue.
+///
+/// # Errors
+///
+/// `NoSuchDevice` if no kind has its name.
 ///
 /// # Panics
 ///
 /// If the device is being opened or is open, or no port can be allocated:
 /// not yet. As `lookup::find`.
-pub fn open(name: &[u8]) -> Reference<Port> {
-    let device = lookup::find(name);
+pub fn open(name: &[u8]) -> Result<Reference<Port>, Error> {
+    let Some(device) = lookup::find(name) else {
+        return Err(Error::NoSuchDevice);
+    };
     let mut state = device.state.lock();
     assert!(
         state.state != State::Opening,
@@ -139,10 +162,7 @@ pub fn open(name: &[u8]) -> Reference<Port> {
     // dev_port_enter: the port takes a reference to the device.
     port.set_kernel_object(KernelObject::Device(Reference::into_raw(device.clone())));
     device.state.lock().port = Some(port);
-    // The kind's open: `time`'s does nothing (timeopen).
-    match device.kind {
-        Kind::Time => {}
-    }
+    // The kinds' opens do nothing.
     // ds_open_done's success, then mach_convert_device_to_port's send right.
     let mut state = device.state.lock();
     state.state = State::Open;
@@ -151,7 +171,7 @@ pub fn open(name: &[u8]) -> Reference<Port> {
     drop(state);
     // The lookup's reference goes, as mach_device_deallocate.
     drop(device);
-    send
+    Ok(send)
 }
 
 /// Closes `device`, as `device_close` does: its last open takes its port
@@ -189,10 +209,7 @@ pub fn close(device: &Reference<Device>) {
     }
     port.deallocate_kernel();
     drop(port);
-    // The kind's close: `time`'s does nothing.
-    match device.kind {
-        Kind::Time => {}
-    }
+    // The kinds' closes do nothing.
     // Closed: someone opening it may proceed.
     device.state.lock().state = State::Init;
 }
@@ -212,6 +229,98 @@ pub fn map(device: &Reference<Device>, protection: u32, offset: Offset) -> Refer
         "device_map: D_NO_SUCH_DEVICE, not yet"
     );
     pager::setup(device, protection, offset)
+}
+
+/// Writes `data` to `device`, as `ds_device_write` does; gives how many
+/// bytes it took.
+///
+/// # Errors
+///
+/// `InvalidOperation` if its kind does not write.
+///
+/// # Panics
+///
+/// If it is not open: not yet.
+pub fn write(device: &Reference<Device>, data: &[u8]) -> Result<usize, Error> {
+    assert!(
+        device.state.lock().state == State::Open,
+        "device_write: D_NO_SUCH_DEVICE, not yet"
+    );
+    match device.kind {
+        // The console writes the serial line.
+        Kind::Console => {
+            arch::Current::write_console(core::str::from_utf8(data).unwrap_or(""));
+            Ok(data.len())
+        }
+        _ => Err(Error::InvalidOperation),
+    }
+}
+
+/// Reads up to `wanted` bytes from `device`, as `ds_device_read` does.
+///
+/// # Errors
+///
+/// `InvalidOperation` if its kind does not read.
+///
+/// # Panics
+///
+/// If it is not open: not yet.
+pub fn read(device: &Reference<Device>, wanted: usize) -> Result<&'static [u8], Error> {
+    assert!(
+        device.state.lock().state == State::Open,
+        "device_read: D_NO_SUCH_DEVICE, not yet"
+    );
+    match device.kind {
+        Kind::MbInfo => Ok(&MBINFO[..wanted.min(MBINFO.len())]),
+        _ => Err(Error::InvalidOperation),
+    }
+}
+
+/// Nothing the kernel serves has statuses, as `ds_device_get_status` and
+/// `ds_device_set_status` find no handler on them.
+///
+/// # Errors
+///
+/// `InvalidOperation`, always.
+pub const fn status() -> Result<(), Error> {
+    Err(Error::InvalidOperation)
+}
+
+/// Registers `device`'s interrupt `id`, as `ds_device_intr_register` does;
+/// so far `irq`'s table is not there.
+///
+/// # Errors
+///
+/// `InvalidOperation` on any device but `irq`, on flags, or on an `id` we
+/// lack.
+///
+/// # Panics
+///
+/// For `irq`: not yet.
+pub fn intr_register(device: &Reference<Device>, id: i32, flags: i32) -> Result<(), Error> {
+    assert!(
+        device.state.lock().state == State::Open,
+        "device_intr_register: D_NO_SUCH_DEVICE, not yet"
+    );
+    if device.kind != Kind::Irq || flags != 0 || !(0..32).contains(&id) {
+        return Err(Error::InvalidOperation);
+    }
+    panic!("device_intr_register: the irq table, not yet");
+}
+
+/// Acknowledges `device`'s interrupt for the port `receive_port`, as
+/// `ds_device_intr_ack` does; no handler is registered, so no port is
+/// known.
+///
+/// # Errors
+///
+/// `InvalidOperation` on any device but `irq`, else `InvalidArgument` for
+/// the unknown port.
+pub fn intr_ack(device: &Reference<Device>) -> Result<(), Error> {
+    match device.kind {
+        Kind::Irq => Err(Error::InvalidArgument),
+        _ => Err(Error::InvalidOperation),
+    }
 }
 
 // SAFETY: its count is its own, and every device is a box of its lookup's

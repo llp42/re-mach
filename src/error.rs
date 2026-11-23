@@ -39,6 +39,8 @@ pub enum Error {
     UrefsOverflow,
     /// The device is not there, or not open.
     NoSuchDevice,
+    /// The device does not do the operation asked of it.
+    InvalidOperation,
     /// The wait's time ran out.
     TimedOut,
 }
@@ -62,6 +64,7 @@ impl From<Error> for u32 {
             Error::InvalidValue => 18,
             Error::UrefsOverflow => 19,
             Error::NoSuchDevice => 2502,
+            Error::InvalidOperation => 2505,
             Error::TimedOut => 27,
         }
     }

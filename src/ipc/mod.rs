@@ -29,6 +29,8 @@ pub enum MessageType {
     Integer16,
     /// `MACH_MSG_TYPE_BYTE`: bytes.
     Byte,
+    /// `MACH_MSG_TYPE_CHAR`: characters, as devices carry them in band.
+    Char,
     /// `MACH_MSG_TYPE_INTEGER_32`: 32-bit integers.
     Integer32,
     /// `MACH_MSG_TYPE_INTEGER_64`: 64-bit integers.
@@ -60,6 +62,7 @@ impl MessageType {
             Self::Boolean => 0,
             Self::Integer16 => 1,
             Self::Byte => 9,
+            Self::Char => 8,
             Self::Integer32 => 2,
             Self::Integer64 => 11,
             Self::StringC => 12,
@@ -83,6 +86,7 @@ impl TryFrom<u8> for MessageType {
             1 => Ok(Self::Integer16),
             2 => Ok(Self::Integer32),
             11 => Ok(Self::Integer64),
+            8 => Ok(Self::Char),
             12 => Ok(Self::StringC),
             16 => Ok(Self::PortReceive),
             17 => Ok(Self::PortSend),

@@ -155,6 +155,7 @@ pub fn map_page(pager: &Pager, offset: Offset) -> Option<PhysAddr> {
     let offset = pager.offset + usize::from(offset);
     match pager.device.kind {
         Kind::Time => time::map(offset, pager.protection),
+        _ => None,
     }
 }
 

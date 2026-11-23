@@ -434,7 +434,7 @@ impl MapCopy {
     ///
     /// If it holds an object or pages, the range runs past its entries, an
     /// entry is a submap, or a page it needs is not resident: not yet.
-    pub(in crate::vm) fn read_pages(&self, offset: usize, destination: &mut [u8]) {
+    pub(crate) fn read_pages(&self, offset: usize, destination: &mut [u8]) {
         assert!(
             matches!(self.kind, CopyKind::Entries),
             "vm_map_copy_read: not an entry list, not yet"

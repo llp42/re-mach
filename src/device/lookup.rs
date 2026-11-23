@@ -35,13 +35,13 @@ pub(super) fn init() {
 }
 
 /// The device `name` names, with a reference, made if there is none yet,
-/// as `device_lookup` does.
+/// as `device_lookup` does; none if no kind has its name.
 ///
 /// # Panics
 ///
-/// If no device can be allocated. As `by_name`.
-pub(super) fn find(name: &[u8]) -> Reference<Device> {
-    let (kind, unit) = by_name(name);
+/// If no device can be allocated.
+pub(super) fn find(name: &[u8]) -> Option<Reference<Device>> {
+    let (kind, unit) = by_name(name)?;
     let mut new = None;
     loop {
         let mut list = LOOKUP.lock();
@@ -61,7 +61,7 @@ pub(super) fn find(name: &[u8]) -> Reference<Device> {
             drop(list);
             // One made meanwhile goes back to the cache.
             drop(new);
-            return device;
+            return Some(device);
         }
         if let Some(new) = new.take() {
             let device = CacheBox::into_raw(new);
@@ -69,7 +69,7 @@ pub(super) fn find(name: &[u8]) -> Reference<Device> {
             list.push_back(unsafe { UnsafeRef::from_raw(device.as_ptr()) });
             drop(list);
             // SAFETY: the box's one reference, given up above.
-            return unsafe { Reference::from_raw(device) };
+            return Some(unsafe { Reference::from_raw(device) });
         }
         drop(list);
         new = Some(
@@ -110,12 +110,8 @@ pub(super) unsafe fn free(device: NonNull<Device>) {
 }
 
 /// The kind and unit `name` names, as `dev_name_lookup` does: the kind's
-/// name, then the unit's digits.
-///
-/// # Panics
-///
-/// If no kind has that name: not yet.
-fn by_name(name: &[u8]) -> (Kind, u32) {
+/// name, then the unit's digits; none if no kind has that name.
+fn by_name(name: &[u8]) -> Option<(Kind, u32)> {
     let digits = name
         .iter()
         .position(u8::is_ascii_digit)
@@ -127,9 +123,6 @@ fn by_name(name: &[u8]) -> (Kind, u32) {
         .fold(0_u32, |unit, digit| {
             unit.wrapping_mul(10).wrapping_add(u32::from(digit - b'0'))
         });
-    let kind = Kind::ALL
-        .into_iter()
-        .find(|kind| kind.name() == prefix)
-        .unwrap_or_else(|| panic!("dev_name_lookup: dev_indirect_search, not yet"));
-    (kind, unit)
+    let kind = Kind::ALL.into_iter().find(|kind| kind.name() == prefix)?;
+    Some((kind, unit))
 }

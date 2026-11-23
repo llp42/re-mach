@@ -213,6 +213,36 @@ unsafe impl Element for u8 {
     const SIZE: u16 = 8;
 }
 
+/// A character, as devices carry them in band, `MACH_MSG_TYPE_CHAR`.
+#[repr(transparent)]
+#[derive(Clone, Copy, Default)]
+pub struct Char(u8);
+
+impl Char {
+    /// `byte` as a character.
+    pub(in crate::ipc_kobject) const fn new(byte: u8) -> Self {
+        Self(byte)
+    }
+
+    /// The bytes of `chars`, which are bytes.
+    pub(in crate::ipc_kobject) const fn bytes(chars: &[Self]) -> &[u8] {
+        // SAFETY: `Char` is `repr(transparent)` over `u8`.
+        unsafe { core::slice::from_raw_parts(chars.as_ptr().cast(), chars.len()) }
+    }
+}
+
+// SAFETY: `repr(transparent)` over a `u8`.
+unsafe impl Element for Char {
+    const NAME: MessageType = MessageType::Char;
+    const SIZE: u16 = 8;
+}
+
+// SAFETY: a primitive.
+unsafe impl Element for u16 {
+    const NAME: MessageType = MessageType::Integer16;
+    const SIZE: Self = 16;
+}
+
 // SAFETY: a primitive.
 unsafe impl Element for i32 {
     const NAME: MessageType = MessageType::Integer32;
