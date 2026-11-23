@@ -5,6 +5,7 @@
 use core::mem;
 use core::ptr;
 
+use crate::error::Error;
 use crate::ipc::port::port::Port;
 use crate::ipc::port::send_right::SendRight;
 use crate::reference::Reference;
@@ -111,6 +112,53 @@ impl Task {
         let send = Port::copy_send(port);
         drop(ports);
         send
+    }
+
+    /// A copy of the send right for its special port `which`, as
+    /// `task_get_special_port` gives it; none for a null or dead port.
+    ///
+    /// # Errors
+    ///
+    /// `Failure` if it has no port.
+    ///
+    /// # Panics
+    ///
+    /// If it hands out another port for its kernel port, or its port is
+    /// dead: not yet. As `Port::copy_send`.
+    pub(crate) fn get_special_port(
+        &self,
+        which: SpecialPort,
+    ) -> Result<Option<Reference<Port>>, Error> {
+        let ports = self.ports.lock();
+        if ports.self_port.is_none() {
+            return Err(Error::Failure);
+        }
+        let port = match which {
+            SpecialPort::Kernel => {
+                let port = ports
+                    .self_port
+                    .as_ref()
+                    .expect("task_get_special_port: no task port");
+                assert!(
+                    ports
+                        .self_send
+                        .as_deref()
+                        .is_some_and(|send| ptr::eq(send, ptr::from_ref::<Port>(port))),
+                    "task_get_special_port: an interposed port, not yet"
+                );
+                Some(Port::copy_send(port))
+            }
+            SpecialPort::Exception => ports
+                .exception
+                .as_ref()
+                .and_then(|right| Port::try_copy_send(right.as_ref())),
+            SpecialPort::Bootstrap => ports
+                .bootstrap
+                .as_ref()
+                .and_then(|right| Port::try_copy_send(right.as_ref())),
+        };
+        drop(ports);
+        Ok(port)
     }
 
     /// Sets its special port `which` to `port`, as `task_set_special_port`

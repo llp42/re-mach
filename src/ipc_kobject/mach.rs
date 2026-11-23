@@ -127,6 +127,7 @@ mig::subsystem! {
     );
     56 task_suspend(target_task = Port::to_task);
     57 task_resume(target_task = Port::to_task);
+    58 task_get_special_port(task = Port::to_task, which_port: i32) -> (special_port: PortMaybe);
     59 task_set_special_port(task = Port::to_task, which_port: i32, special_port: SendRight);
     61 thread_create(parent_task = Port::to_task) -> (child_thread: Port);
     62 thread_suspend(target_thread = Port::to_thread);
@@ -819,6 +820,29 @@ fn task_resume(task: Option<&Reference<Task>>) -> Result<(), Error> {
         return Err(Error::InvalidArgument);
     };
     task.resume()
+}
+
+/// Serves `task_get_special_port`: a copy of the send right for `task`'s
+/// special port numbered `which_port`, or none for a null port.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no task or no special port with that number.
+/// `Failure` if the task has no port.
+///
+/// # Panics
+///
+/// If it hands out another port for its kernel port, or its port is dead:
+/// not yet. As `Task::get_special_port`.
+fn task_get_special_port(
+    task: Option<&Reference<Task>>,
+    which_port: i32,
+) -> Result<Option<Reference<Port>>, Error> {
+    let Some(task) = task else {
+        return Err(Error::InvalidArgument);
+    };
+    let which = SpecialPort::try_from(which_port).map_err(|_| Error::InvalidArgument)?;
+    task.get_special_port(which)
 }
 
 /// Serves `task_set_special_port`: `task`'s special port numbered
