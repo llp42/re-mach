@@ -221,7 +221,7 @@ pub(in crate::vm) fn copy_call(
         let state = object.lock();
         (
             Port::copy_send(state.pager.as_ref().expect("vm_object_copy_call: no pager")),
-            Port::copy_send(
+            Port::make_send(
                 state
                     .pager_request
                     .as_ref()

@@ -885,7 +885,7 @@ pub fn data_supply(
         }
     }
     state.end_paging();
-    let request = state.pager_request.as_ref().map(Port::copy_send);
+    let request = state.pager_request.as_ref().map(Port::make_send);
     drop(state);
     // SAFETY: from `kalloc::allocate`, `count` bytes, not used again.
     unsafe { kalloc::free(buffer, count) };
@@ -969,7 +969,7 @@ pub fn lock_request(
         }
     }
     state.end_paging();
-    let request = state.pager_request.as_ref().map(Port::copy_send);
+    let request = state.pager_request.as_ref().map(Port::make_send);
     drop(state);
     // The faults held off by the locks, and those whose unlock was asked
     // for, go on.
@@ -980,7 +980,7 @@ pub fn lock_request(
         };
         let request = request
             .as_ref()
-            .map(Port::copy_send)
+            .map(Port::make_send)
             .expect("memory_object_lock_request: no request port");
         let pager = object
             .pager_port()

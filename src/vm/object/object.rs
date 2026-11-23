@@ -291,7 +291,7 @@ unsafe fn terminate(object: NonNull<Object>, mut state: TokenGuard<'_, ObjectSta
             drop(state);
             crate::vm::pager::data_return(
                 Port::copy_send(&pager),
-                Port::copy_send(request),
+                Port::make_send(request),
                 offset,
                 copy,
                 count,

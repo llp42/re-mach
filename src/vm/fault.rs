@@ -478,7 +478,7 @@ fn pager_ports(state: &ObjectState) -> (Reference<Port>, Reference<Port>) {
         .pager_request
         .as_ref()
         .expect("vm_fault_page: no pager request port");
-    (Port::copy_send(pager), Port::copy_send(request))
+    (Port::copy_send(pager), Port::make_send(request))
 }
 
 /// Finds the page at `offset` in `object`, whose `state` is locked and
