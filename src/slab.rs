@@ -4,7 +4,7 @@
 //! The slab allocator: caches of objects of one size.
 
 use core::marker::PhantomData;
-use core::mem::ManuallyDrop;
+use core::mem::{ManuallyDrop, size_of};
 use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -21,8 +21,43 @@ use crate::vm::page::{self, page::Page, page::PageQueueAdapter};
 /// the next.
 pub const MIN_ALIGN: usize = 8;
 
+/// A cache's information, as GNU Mach's `cache_info_t` carries it to
+/// `host_slab_info`: fifteen 64-bit words, the last thirty-two bytes its
+/// name.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CacheInfo {
+    /// Its flags.
+    flags: i32,
+    /// Padding to 8 bytes.
+    padding: [u8; 4],
+    /// Each CPU's pool of them.
+    cpu_pool_size: u64,
+    /// The size its users ask for.
+    obj_size: u64,
+    /// Each object's alignment.
+    align: u64,
+    /// The space each object takes in a slab.
+    buf_size: u64,
+    /// The size of its slabs.
+    slab_size: u64,
+    /// How many objects a slab holds.
+    bufs_per_slab: u64,
+    /// How many objects it handed out.
+    nr_objs: u64,
+    /// How many buffers its slabs hold.
+    nr_bufs: u64,
+    /// How many slabs it has.
+    nr_slabs: u64,
+    /// How many of them are free.
+    nr_free_slabs: u64,
+    /// Its name, NUL-terminated.
+    name: [u8; 32],
+}
+
+const _: () = assert!(size_of::<CacheInfo>() == 15 * 8);
+
 /// A cache's untyped state.
-#[expect(dead_code, reason = "host_slab_info reads them")]
 pub struct RawCache {
     /// Its place in the list of caches.
     list_link: LinkedListAtomicLink,
@@ -38,6 +73,10 @@ pub struct RawCache {
     slab_size: usize,
     /// How many objects a slab holds.
     buffers_per_slab: usize,
+    /// How many objects it handed out, less those freed.
+    nr_objs: AtomicU64,
+    /// How many slabs it made.
+    nr_slabs: AtomicU64,
     /// Each CPU's slabs.
     cpus: CpuLocal<CpuSlabs>,
     /// The slabs no CPU hands objects out from.
@@ -65,6 +104,8 @@ impl RawCache {
             buffer_size,
             slab_size,
             buffers_per_slab: slab_size / buffer_size,
+            nr_objs: AtomicU64::new(0),
+            nr_slabs: AtomicU64::new(0),
             cpus: CpuLocal::new(CpuSlabs {
                 active: None,
                 carved: 0,
@@ -83,6 +124,35 @@ impl RawCache {
     /// Adds the cache to the list of caches.
     pub fn register(&'static self) {
         CACHES.lock().push_back(self);
+    }
+
+    /// Its information, as `host_slab_info` reports it.
+    fn info(&self) -> CacheInfo {
+        let nr_free_slabs = {
+            let lists = self.lists.lock();
+            u64::try_from(lists.free.iter().count()).unwrap()
+        };
+        let nr_slabs = self.nr_slabs.load(Ordering::Relaxed);
+        let bufs_per_slab = u64::try_from(self.buffers_per_slab).unwrap();
+        let mut name = [0; 32];
+        let bytes = self.name.as_bytes();
+        let len = bytes.len().min(name.len() - 1);
+        name[..len].copy_from_slice(&bytes[..len]);
+        CacheInfo {
+            flags: 0,
+            padding: [0; 4],
+            cpu_pool_size: 0,
+            obj_size: u64::try_from(self.object_size).unwrap(),
+            align: u64::try_from(self.align).unwrap(),
+            buf_size: u64::try_from(self.buffer_size).unwrap(),
+            slab_size: u64::try_from(self.slab_size).unwrap(),
+            bufs_per_slab,
+            nr_objs: self.nr_objs.load(Ordering::Relaxed),
+            nr_bufs: nr_slabs * bufs_per_slab,
+            nr_slabs,
+            nr_free_slabs,
+            name,
+        }
     }
 
     /// Hands out a buffer from this CPU's slab: the next of those it took
@@ -162,6 +232,7 @@ impl RawCache {
                     let page = self.grow()?;
                     let mut cpu = self.cpus.lock();
                     cpu.slabs += 1;
+                    self.nr_slabs.fetch_add(1, Ordering::Relaxed);
                     self.lists.lock().free.push_back(page);
                     drop(cpu);
                     continue;
@@ -172,12 +243,14 @@ impl RawCache {
                     // A new slab has nothing freed to it.
                     page.slab.free.take();
                     cpu.slabs += 1;
+                    self.nr_slabs.fetch_add(1, Ordering::Relaxed);
                     cpu.active = Some(page);
                     cpu.carved = 1;
                     (page, 0)
                 }
             };
             cpu.objects += 1;
+            self.nr_objs.fetch_add(1, Ordering::Relaxed);
             drop(cpu);
             return Ok(NonNull::new(self.buffer(page, offset)).expect("slab: buffer at null"));
         }
@@ -253,6 +326,7 @@ impl RawCache {
         // `offset`.
         unsafe { page.slab.free.push(buffer, offset) };
         self.cpus.lock().objects -= 1;
+        self.nr_objs.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -469,3 +543,25 @@ impl<T> DerefMut for CacheBox<T> {
 /// Every cache, for `host_slab_info` and reclaiming memory.
 static CACHES: Spinlock<LinkedList<CacheAdapter>> =
     Spinlock::new(LinkedList::new(CacheAdapter::NEW));
+
+/// How many caches are registered.
+pub fn cache_count() -> usize {
+    CACHES.lock().iter().count()
+}
+
+/// Fills `buffer` with the caches' information, as `host_slab_info` gives it;
+/// gives how many it wrote and how many caches there are.
+pub fn cache_info(buffer: &mut [CacheInfo]) -> (usize, usize) {
+    let caches = CACHES.lock();
+    let total = caches.iter().count();
+    let mut written = 0;
+    for cache in caches.iter() {
+        if written == buffer.len() {
+            break;
+        }
+        buffer[written] = cache.info();
+        written += 1;
+    }
+    drop(caches);
+    (written, total)
+}

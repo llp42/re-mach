@@ -88,7 +88,7 @@ impl TryFrom<u8> for MessageType {
 
 /// The kernel's map for IPC buffers, such as out-of-line data in its
 /// replies.
-static KERNEL_MAP: OnceLock<Map> = OnceLock::new();
+pub static KERNEL_MAP: OnceLock<Map> = OnceLock::new();
 
 /// The least size of `KERNEL_MAP`.
 const MIN_KERNEL_MAP_SIZE: usize = 8 << 20;

@@ -6,6 +6,7 @@
 mod device;
 mod gnumach;
 mod mach;
+mod mach_debug;
 mod mach_host;
 mod mach_port;
 pub mod mig;
@@ -58,6 +59,7 @@ pub fn server(mut request: KernelMessage) -> Option<KernelMessage> {
     let routine = mach::routine(header.id)
         .or_else(|| mach_port::routine(header.id))
         .or_else(|| mach_host::routine(header.id))
+        .or_else(|| mach_debug::routine(header.id))
         .or_else(|| device::routine(header.id))
         .or_else(|| gnumach::routine(header.id))
         .or_else(|| arch::Current::server_routine(header.id))

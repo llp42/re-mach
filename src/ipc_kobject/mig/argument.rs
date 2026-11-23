@@ -29,7 +29,12 @@ pub(in crate::ipc_kobject) const fn type_word(name: MessageType, size: u16, numb
 
 /// MIG's type word for `number` items of type `name`, `size` bits each,
 /// with `flags` from bit 24.
-pub(super) const fn word(name: MessageType, size: u16, flags: u8, number: u32) -> u64 {
+pub(in crate::ipc_kobject) const fn word(
+    name: MessageType,
+    size: u16,
+    flags: u8,
+    number: u32,
+) -> u64 {
     let [size_low, size_high] = size.to_le_bytes();
     let [number_0, number_1, number_2, number_3] = number.to_le_bytes();
     // The name, the size, then the flags; the number above.
