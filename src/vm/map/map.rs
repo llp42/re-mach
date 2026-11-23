@@ -66,6 +66,12 @@ impl Map {
     pub fn size(&self) -> usize {
         self.contents.read().size
     }
+
+    /// How many bytes are wired, as `vm_map`'s `size_wired`.
+    pub fn size_wired(&self) -> usize {
+        self.contents.read().size_wired
+    }
+
     /// A new empty map of `bounds` over `phys_map`, a user task's, with one
     /// reference, its size limited to the memory's.
     ///

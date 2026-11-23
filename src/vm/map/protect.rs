@@ -234,9 +234,9 @@ impl Map {
     ///
     /// # Panics
     ///
-    /// If the range starts inside an entry, an entry there is in transition,
-    /// a wired entry allows nothing, or an entry to wire is a submap or needs
-    /// a copy and allows writing: not yet. As `Contents::clip_end`,
+    /// If an entry there is in transition, a wired entry allows nothing, or
+    /// an entry to wire is a submap or needs a copy and allows writing: not
+    /// yet. As `Contents::clip_start`, `Contents::clip_end`,
     /// `object::allocate`, `fault::unwire` and `fault::wire`.
     #[expect(
         clippy::too_many_lines,
@@ -253,13 +253,18 @@ impl Map {
         let contents = &mut *guard;
         let end = range.end.min(self.bounds.end);
         let start = range.start.max(self.bounds.start).min(end);
-        let Some(first) = contents.find(start).map(Entry::start) else {
+        let Some(first) = contents
+            .entries
+            .upper_bound(Bound::Included(&start))
+            .clone_pointer()
+            .filter(|entry| start < entry.end())
+        else {
             return Err((guard, Error::NoSpace));
         };
-        assert!(
-            first == start,
-            "vm_map_clip_start: splitting an entry, not yet"
-        );
+        // The entry is split at the range's start.
+        if start > first.start() {
+            contents.clip_start(&first, start, reservation);
+        }
         // Pass 1: the last entry is split at the end; if checked, no hole,
         // and every entry allows `access`.
         let mut address = start;

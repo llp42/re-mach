@@ -2,12 +2,15 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 
-use core::ptr;
+use core::ptr::{self, NonNull};
+use core::sync::atomic::Ordering;
 
 use crate::ast::Ast;
 use crate::error::Error;
 use crate::ipc::port::kernel_object::KernelObject;
 use crate::ipc::port::port::Port;
+use crate::processor::set::ProcessorSet;
+use crate::reference::Reference;
 use crate::sched::priority::{BasePriority, Priority};
 use crate::smp;
 use crate::sync::CriticalSection;
@@ -135,6 +138,53 @@ impl Task {
                 thread.override_max_priority(max_priority, base);
             }
         }
+        drop(members);
+        Ok(())
+    }
+
+    /// Moves it to `set`, which the task keeps a reference to, and with
+    /// `threads` its threads too, as `task_assign` does.
+    ///
+    /// # Errors
+    ///
+    /// `Failure` if it is not alive.
+    ///
+    /// # Panics
+    ///
+    /// If it may not be assigned, or `threads` asks for its threads: not
+    /// yet.
+    pub(crate) fn assign(
+        &self,
+        set: Reference<ProcessorSet>,
+        threads: Threads,
+    ) -> Result<(), Error> {
+        let members = self.members.lock();
+        if !members.active {
+            return Err(Error::Failure);
+        }
+        let old = NonNull::new(self.set.load(Ordering::Acquire)).expect("task_assign: no set");
+        // SAFETY: under the task's token its reference keeps the set alive.
+        let old = unsafe { old.as_ref() };
+        if ptr::eq(old, &raw const *set) {
+            return Ok(());
+        }
+        assert!(self.may_assign, "task_assign: task_freeze, not yet");
+        assert!(
+            matches!(threads, Threads::Kept),
+            "task_assign: assigning its threads, not yet"
+        );
+        // SAFETY: the set is a box that lives while it has the task, which
+        // the new reference keeps it for; the task lives while it is on a
+        // set, which the move keeps until its free takes it off first.
+        let new = unsafe { &*ptr::from_ref(&*set) };
+        // SAFETY: as for `new`.
+        let this = unsafe { &*ptr::from_ref(self) };
+        ProcessorSet::move_task(old, new, this);
+        // The task's old set's reference goes; the new one it keeps.
+        // SAFETY: the task's reference, given up by `create` and
+        // `into_raw`.
+        drop(unsafe { Reference::from_raw(NonNull::from(old)) });
+        Reference::into_raw(set);
         drop(members);
         Ok(())
     }

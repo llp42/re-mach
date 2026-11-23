@@ -79,6 +79,16 @@ impl Host {
             ManuallyDrop::new(unsafe { Reference::from_raw(NonNull::new(pointer).unwrap()) });
         Some(Reference::clone(&port))
     }
+
+    /// A send right for its port, as `convert_host_to_port` gives it.
+    pub(crate) fn port(&self) -> Reference<Port> {
+        let pointer = self.port.load(Ordering::Acquire);
+        // SAFETY: the slot keeps its port's reference for good; this handle
+        // borrows it and never drops it.
+        let port =
+            ManuallyDrop::new(unsafe { Reference::from_raw(NonNull::new(pointer).unwrap()) });
+        Port::make_send(&port)
+    }
 }
 
 /// Writes the kernel's version for `host` into `version`, as

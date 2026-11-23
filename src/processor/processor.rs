@@ -96,6 +96,18 @@ impl Processor {
         self.state.store(state.number(), Ordering::Release);
     }
 
+    /// Whether it is running, not offline, as `processor_info` reports it.
+    pub fn is_running(&self) -> bool {
+        !matches!(self.state(), State::Offline)
+    }
+
+    /// Its slot number: the CPU whose processor it is.
+    pub fn slot(&self) -> usize {
+        (0..crate::config::MAX_CPUS)
+            .find(|&cpu| ptr::eq(smp::of(cpu).processor(), self))
+            .expect("processor: a processor in no CPU's data")
+    }
+
     /// How many threads wait on its run queues; changed under their lock.
     pub(crate) fn queued(&self) -> u32 {
         self.queued.load(Ordering::Relaxed)

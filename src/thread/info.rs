@@ -290,10 +290,9 @@ impl Thread {
             matches!(self.policy, Policy::Timeshare),
             "thread_info: POLICY_FIXEDPRI, not yet"
         );
-        assert!(
-            self.last_processor().is_none(),
-            "thread_info: last_processor's slot_num, not yet"
-        );
+        let last_processor = self
+            .last_processor()
+            .map_or(0, |processor| i32::try_from(processor.slot()).unwrap());
         let depressed_from = self.depressed_from.load(Ordering::Relaxed);
         *sched = [
             i32::try_from(Policies::TIMESHARE.bits()).unwrap(),
@@ -304,8 +303,7 @@ impl Thread {
             i32::try_from(self.sched_pri.load(Ordering::Relaxed)).unwrap(),
             i32::from(depressed_from >= 0),
             depressed_from,
-            // Never run, so on no processor yet.
-            0,
+            last_processor,
         ];
         Ok(sched.len())
     }

@@ -250,13 +250,70 @@ impl Thread {
             "thread_priority: a depressed thread, not yet"
         );
         self.priority.store(u32::from(priority), Ordering::Relaxed);
-        self.compute_priority();
+        if self.state().contains(ThreadState::RUN) {
+            // A running one takes it the next time it is queued.
+            self.compute_my_priority();
+        } else {
+            self.compute_priority();
+        }
         Ok(())
     }
 
     /// Sets its base priority, while it runs.
     pub(crate) fn set_priority(&self, priority: Priority) {
         self.priority.store(u32::from(priority), Ordering::Relaxed);
+    }
+
+    /// Sets its base priority to `priority`, and with `set_max` its cap to
+    /// it too, as `thread_priority` does.
+    ///
+    /// # Errors
+    ///
+    /// `Failure` if `priority` outranks its cap.
+    ///
+    /// # Panics
+    ///
+    /// If it is depressed: not yet; as `try_set_priority`.
+    pub(crate) fn set_priority_and_max(
+        &self,
+        priority: Priority,
+        set_max: bool,
+    ) -> Result<(), Error> {
+        self.try_set_priority(priority)?;
+        if set_max {
+            self.max_priority
+                .store(u32::from(priority), Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
+    /// Sets its cap to `max_priority`, its base priority raised to it if
+    /// that outranks it, as `thread_max_priority` does.
+    ///
+    /// # Panics
+    ///
+    /// If it is depressed and the cap doesn't lower its base priority: not
+    /// yet.
+    pub(crate) fn set_max_priority(&self, max_priority: Priority) {
+        let _section = CriticalSection::enter();
+        self.max_priority
+            .store(u32::from(max_priority), Ordering::Relaxed);
+        let priority = Priority::try_from(self.priority.load(Ordering::Relaxed)).unwrap();
+        if priority.outranks(max_priority) {
+            self.priority
+                .store(u32::from(max_priority), Ordering::Relaxed);
+            if self.state().contains(ThreadState::RUN) {
+                // A running one takes it the next time it is queued.
+                self.compute_my_priority();
+            } else {
+                self.compute_priority();
+            }
+        } else {
+            assert!(
+                self.depressed_from.load(Ordering::Relaxed) < 0,
+                "thread_max_priority: a depressed thread, not yet"
+            );
+        }
     }
 
     /// The priority it is scheduled at.

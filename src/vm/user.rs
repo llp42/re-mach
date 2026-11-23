@@ -17,6 +17,9 @@ use crate::ipc::port::port::Port;
 use crate::reference::Reference;
 use crate::slab::CacheBox;
 
+/// The most an unprivileged host may wire, as GNU Mach caps it.
+const WIRE_LIMIT: usize = 8 << 20;
+
 /// What `map` maps of a memory object.
 pub enum Mapping {
     /// The object itself.
@@ -287,6 +290,45 @@ pub fn allocate_contiguous(
         page.unwire();
     }
     Ok((range.start, pages[0].address().0))
+}
+
+/// Wires `size` bytes of `map` from `address` for `access`, or unwires them
+/// for none, as `vm_wire` does; an unprivileged `host` may wire at most 8MB.
+///
+/// # Errors
+///
+/// `InvalidHost` unless `host` is a host's port, alive, `InvalidTask` for
+/// no map, `InvalidArgument` for access past reading, writing and running,
+/// `NoAccess` if `host` is unprivileged and the map would hold more than
+/// 8MB wired, and as `Map::pageable`.
+///
+/// # Panics
+///
+/// As `Map::pageable`.
+pub fn wire(
+    host: &Port,
+    map: Option<&Map>,
+    address: VirtualAddress,
+    size: usize,
+    access: u32,
+) -> Result<(), Error> {
+    let privileged = match host.kernel_object() {
+        Some(KernelObject::Host(_)) => false,
+        Some(KernelObject::HostPrivileged(_)) => true,
+        _ => return Err(Error::InvalidHost),
+    };
+    let Some(map) = map else {
+        return Err(Error::InvalidTask);
+    };
+    let access = Protection::from_bits(access).ok_or(Error::InvalidArgument)?;
+    if !privileged && !access.is_empty() && map.size_wired().saturating_add(size) > WIRE_LIMIT {
+        return Err(Error::NoAccess);
+    }
+    // As trunc_page and round_page.
+    let start = address.align_down(PAGE_SIZE);
+    let end =
+        VirtualAddress::from(usize::from(address).wrapping_add(size)).next_multiple_of(PAGE_SIZE);
+    map.pageable(start..end, access, RangeCheck::Checked)
 }
 
 /// Maps `size` bytes of `object` from `offset`, or with nothing behind them

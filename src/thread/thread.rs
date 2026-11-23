@@ -238,6 +238,12 @@ impl Thread {
         ptr::eq(self.set.load(Ordering::Acquire), set)
     }
 
+    /// The set it runs on, if any.
+    pub(crate) fn processor_set(&self) -> Option<&'static ProcessorSet> {
+        // SAFETY: a set lives while it has threads.
+        unsafe { self.set.load(Ordering::Acquire).as_ref() }
+    }
+
     /// Sets the set it runs on, or none, under that set's token.
     pub(crate) fn set_processor_set(&self, set: Option<&ProcessorSet>) {
         self.set.store(

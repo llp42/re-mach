@@ -2,8 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 
-use core::mem::ManuallyDrop;
+use core::mem::{ManuallyDrop, MaybeUninit};
 use core::ptr::{self, NonNull};
+use core::slice;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
@@ -12,6 +13,7 @@ use crate::config::MAX_CPUS;
 use crate::error::Error;
 use crate::ipc::port::port::Port;
 use crate::ipc_host;
+use crate::kalloc;
 use crate::reference::{Count, Counted, Reference};
 use crate::sched::policy::{MIN_QUANTUM, Policies, SCHEDULER_SCALE};
 use crate::sched::priority::{Priority, SYSTEM_PRIORITY};
@@ -186,7 +188,6 @@ impl ProcessorSet {
     /// # Panics
     ///
     /// If it is out of use: not yet.
-    #[expect(dead_code, reason = "the Phase 1 processor-set RPCs use it")]
     pub fn port(set: Reference<Self>) -> Reference<Port> {
         let members = set.members.lock();
         assert!(
@@ -210,7 +211,6 @@ impl ProcessorSet {
     /// # Panics
     ///
     /// If it is out of use: not yet.
-    #[expect(dead_code, reason = "the Phase 1 processor-set RPCs use it")]
     pub fn name_port(set: Reference<Self>) -> Reference<Port> {
         let members = set.members.lock();
         assert!(
@@ -226,6 +226,125 @@ impl ProcessorSet {
         drop(members);
         drop(set);
         send
+    }
+
+    /// The set it stands for in `name_port`, as `convert_pset_name_to_port`
+    /// gives it.
+    /// Send rights for every set's name port, as `host_processor_sets`
+    /// lists them: each holding its right's reference, and how many.
+    ///
+    /// # Errors
+    ///
+    /// As `kalloc::allocate`.
+    ///
+    /// # Panics
+    ///
+    /// If a set in the list is no longer in use: not yet.
+    pub(crate) fn name_ports() -> Result<Option<NonNull<[usize]>>, Error> {
+        let all = ALL_SETS.lock();
+        let count = usize::try_from(all.count).unwrap();
+        if count == 0 {
+            drop(all);
+            return Ok(None);
+        }
+        let memory = kalloc::allocate(count * size_of::<usize>())?;
+        // SAFETY: the array's slots, ours alone.
+        let slots = unsafe { slice::from_raw_parts_mut(memory.cast::<usize>().as_ptr(), count) };
+        for (slot, set) in slots.iter_mut().zip(&all.list) {
+            // SAFETY: a set in the list is in use, and its own reference
+            // keeps it while the list's token is held.
+            let set = unsafe { Reference::upgrade(NonNull::from(set)) }
+                .expect("host_processor_sets: a set freed while listed");
+            let send = Self::name_port(set);
+            *slot = Reference::into_raw(send).as_ptr().expose_provenance();
+        }
+        drop(all);
+        Ok(Some(NonNull::slice_from_raw_parts(memory.cast(), count)))
+    }
+
+    /// Send rights for the ports of its tasks, as `processor_set_tasks`
+    /// lists them: each holding its right's reference, and how many; none
+    /// for no tasks.
+    ///
+    /// # Errors
+    ///
+    /// As `kalloc::allocate`.
+    ///
+    /// # Panics
+    ///
+    /// If a task is being freed or tasks left while the array was
+    /// allocated: not yet. As `Task::convert_to_port`.
+    pub(crate) fn task_ports(&self) -> Result<Option<NonNull<[usize]>>, Error> {
+        let mut array: Option<NonNull<[usize]>> = None;
+        // Allocated with the token released, until it holds every task.
+        let members = loop {
+            let members = self.members.lock();
+            let count = usize::try_from(members.task_count).unwrap();
+            if count <= array.map_or(0, NonNull::len) {
+                break members;
+            }
+            drop(members);
+            if let Some(array) = array {
+                // SAFETY: from `kalloc::allocate` of its size, below; not
+                // used again.
+                unsafe { kalloc::free(array.cast(), array.len() * size_of::<usize>()) };
+            }
+            let memory = kalloc::allocate(count * size_of::<usize>())?;
+            array = Some(NonNull::slice_from_raw_parts(memory.cast(), count));
+        };
+        let Some(array) = array else {
+            drop(members);
+            return Ok(None);
+        };
+        assert!(
+            usize::try_from(members.task_count) == Ok(array.len()),
+            "processor_set_tasks: fewer tasks than the array holds, not yet"
+        );
+        // SAFETY: the array's slots, ours alone.
+        let slots = unsafe {
+            slice::from_raw_parts_mut(array.cast::<MaybeUninit<usize>>().as_ptr(), array.len())
+        };
+        // A reference to each task, for its port.
+        for (slot, task) in slots.iter_mut().zip(&members.tasks) {
+            // SAFETY: a task leaves its set before it is freed.
+            let task = unsafe { Reference::upgrade(NonNull::from(task)) }
+                .expect("processor_set_tasks: a task being freed, not yet");
+            let send = Task::convert_to_port(task);
+            slot.write(Reference::into_raw(send).as_ptr().expose_provenance());
+        }
+        drop(members);
+        Ok(Some(NonNull::slice_from_raw_parts(
+            array.cast(),
+            array.len(),
+        )))
+    }
+
+    /// Moves `task` from it to `new`, as `pset_remove_task` and
+    /// `pset_add_task` do for `task_assign`, both sets' tokens held in
+    /// address order.
+    pub(crate) fn move_task(&self, new: &'static Self, task: &'static Task) {
+        let (first, second) = if ptr::from_ref(self) < ptr::from_ref(new) {
+            (self, new)
+        } else {
+            (new, self)
+        };
+        let mut first_members = first.members.lock();
+        let mut second_members = second.members.lock();
+        let (old_members, new_members) = if ptr::eq(first, self) {
+            (&mut *first_members, &mut *second_members)
+        } else {
+            (&mut *second_members, &mut *first_members)
+        };
+        // SAFETY: the task is on this set's list, which it joined in
+        // `add_task`, and both tokens keep it there.
+        unsafe { old_members.tasks.cursor_mut_from_ptr(task) }.remove();
+        old_members.task_count -= 1;
+        new_members.tasks.push_back(task);
+        new_members.task_count += 1;
+        task.set
+            .store(ptr::from_ref(new).cast_mut(), Ordering::Release);
+        drop(second_members);
+        drop(first_members);
     }
 
     /// A new set, in use, in the list of all sets, with its ports and

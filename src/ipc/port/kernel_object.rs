@@ -40,21 +40,15 @@ pub enum KernelObject {
     /// The host's privileged port.
     HostPrivileged(&'static Host),
     /// A processor set's port.
-    ProcessorSet(
-        #[expect(dead_code, reason = "the Phase 1 processor-set RPCs read it")]
-        NonNull<ProcessorSet>,
-    ),
+    ProcessorSet(NonNull<ProcessorSet>),
     /// A processor set's name port.
-    ProcessorSetName(
-        #[expect(dead_code, reason = "the Phase 1 processor-set RPCs read it")]
-        NonNull<ProcessorSet>,
-    ),
+    ProcessorSetName(NonNull<ProcessorSet>),
     /// A processor's port.
     Processor(
         #[expect(dead_code, reason = "convert_port_to_processor reads it")] &'static Processor,
     ),
     /// A processor's name port.
-    ProcessorName(#[expect(dead_code, reason = "processor_info reads it")] &'static Processor),
+    ProcessorName(&'static Processor),
     /// A task's port.
     Task(NonNull<Task>),
     /// A thread's port.
@@ -155,7 +149,6 @@ impl Port {
     /// The set it stands for, if it is a set's port, not its name port,
     /// with a reference to it taken under the port's lock, as
     /// `convert_port_to_pset` gives it.
-    #[expect(dead_code, reason = "the Phase 1 processor-set RPCs use it")]
     pub fn to_processor_set(&self) -> Option<Reference<ProcessorSet>> {
         self.with_kernel_object(|object| match object {
             Some(KernelObject::ProcessorSet(set)) => {
@@ -171,7 +164,6 @@ impl Port {
     /// The set it stands for, if it is a set's port or name port, with a
     /// reference to it taken under the port's lock, as
     /// `convert_port_to_pset_name` gives it.
-    #[expect(dead_code, reason = "the Phase 1 processor-set RPCs use it")]
     pub fn to_processor_set_name(&self) -> Option<Reference<ProcessorSet>> {
         self.with_kernel_object(|object| match object {
             Some(KernelObject::ProcessorSet(set) | KernelObject::ProcessorSetName(set)) => {
@@ -180,6 +172,15 @@ impl Port {
                 let set = ManuallyDrop::new(unsafe { Reference::from_raw(*set) });
                 Some(Reference::clone(&set))
             }
+            _ => None,
+        })
+    }
+
+    /// The processor it stands for, if it is a processor's name port, as
+    /// `convert_port_to_processor_name` finds it.
+    pub fn to_processor_name(&self) -> Option<&'static Processor> {
+        self.with_kernel_object(|object| match object {
+            Some(KernelObject::ProcessorName(processor)) => Some(*processor),
             _ => None,
         })
     }
