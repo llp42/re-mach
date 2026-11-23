@@ -4,7 +4,7 @@
 
 use core::mem::ManuallyDrop;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use intrusive_collections::{LinkedList, LinkedListAtomicLink};
 
@@ -28,6 +28,7 @@ use crate::vm::map::map::Map;
 use crate::vm::phys_map::MachinePhysMap as _;
 
 use super::members::TaskMembers;
+use super::notify;
 use super::ports::{Memory, TaskPorts};
 use super::task::Task;
 
@@ -84,7 +85,14 @@ impl Task {
             panic!("task_create_kernel: {error:?}, vm_map_deallocate not yet")
         });
         // SAFETY: the caller's reference, which the handle takes.
-        Ok(unsafe { Reference::from_raw(NonNull::from(task)) })
+        let task = unsafe { Reference::from_raw(NonNull::from(task)) };
+        if let Some(parent) = parent {
+            // SAFETY: the caller's reference keeps the parent alive.
+            if let Some(parent) = unsafe { Reference::upgrade(NonNull::from(parent)) } {
+                notify::new_task(Reference::clone(&task), parent);
+            }
+        }
+        Ok(task)
     }
 }
 
@@ -140,6 +148,7 @@ fn create_with_map(map: &'static Map, parent: Option<&Task>) -> Result<&'static 
             registered,
         }),
         may_assign: true,
+        essential: AtomicBool::new(false),
         creation_time: clock::time::stamp().into(),
         total_user_time: AtomicU64::new(0),
         total_system_time: AtomicU64::new(0),

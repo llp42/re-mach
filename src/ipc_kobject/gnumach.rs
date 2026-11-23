@@ -4,11 +4,16 @@
 //! GNU Mach's own calls' server routines, as MIG makes them from
 //! `gnumach`'s definitions; only those written so far.
 
+use core::sync::atomic::Ordering;
+
 use super::mig;
+use super::mig::boolean::Boolean;
 use super::mig::string_char::StringChar;
 use crate::error::Error;
 use crate::gsync::{self, Flags};
+use crate::host::Host;
 use crate::ipc::port::port::Port;
+use crate::ipc::port::send_right::SendRight;
 use crate::reference::Reference;
 use crate::task::task::Task;
 use crate::vm::map::map::Map;
@@ -17,6 +22,7 @@ use crate::vm::{self, VirtualAddress};
 mig::subsystem! {
     base 4200;
     2 task_set_name(task = Port::to_task, name: [StringChar; ..64]);
+    3 register_new_task_notification(host = Port::as_privileged_host, notification: SendRight);
     4 gsync_wait(
         task = Port::to_task,
         address: VirtualAddress,
@@ -27,6 +33,7 @@ mig::subsystem! {
     );
     5 gsync_wake(task = Port::to_task, address: VirtualAddress, value: u32, flags: i32);
     7 vm_wire_all(host: Port, task = Port::task_map, flags: u32);
+    11 task_set_essential(task = Port::to_task, essential: Boolean);
     15 vm_set_size_limit(host_port: Port, map = Port::task_map, current_limit: usize, max_limit: usize);
     16 vm_get_size_limit(map = Port::task_map) -> (current_limit: usize, max_limit: usize);
 }
@@ -41,6 +48,37 @@ fn task_set_name(task: Option<&Reference<Task>>, name: &[StringChar]) -> Result<
         return Err(Error::InvalidArgument);
     };
     task.set_name(name.iter().map(|&character| u8::from(character)));
+    Ok(())
+}
+
+/// Serves `register_new_task_notification`: `notification` gets a message
+/// for every new task, once per boot.
+///
+/// # Errors
+///
+/// `InvalidHost` for no privileged host, `NoAccess` if one is registered.
+fn register_new_task_notification(
+    host: Option<&&Host>,
+    notification: Option<SendRight>,
+) -> Result<(), Error> {
+    let Some(host) = host else {
+        return Err(Error::InvalidHost);
+    };
+    host.register_new_task_notification(notification)
+}
+
+/// Serves `task_set_essential`: `task` is essential, or no longer, as
+/// `essential` says.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no task.
+fn task_set_essential(task: Option<&Reference<Task>>, essential: Boolean) -> Result<(), Error> {
+    let Some(task) = task else {
+        return Err(Error::InvalidArgument);
+    };
+    task.essential
+        .store(bool::from(essential), Ordering::Relaxed);
     Ok(())
 }
 

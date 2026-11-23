@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use intrusive_collections::{LinkedListAtomicLink, intrusive_adapter};
 
@@ -32,6 +32,8 @@ pub struct Task {
     pub(crate) ports: Spinlock<TaskPorts>,
     /// Whether it may be moved to another processor set.
     pub(super) may_assign: bool,
+    /// Whether it is essential: the system might crash if it does.
+    pub(crate) essential: AtomicBool,
     /// When it was created.
     pub(crate) creation_time: AtomicTimeValue,
     /// The time its ended threads ran in user mode, in microseconds.

@@ -22,7 +22,7 @@ pub struct Argument<T> {
 
 /// MIG's type word, Mach's `mach_msg_type_t`, for `number` inline items of
 /// type `name`, `size` bits each.
-pub(in crate::ipc_kobject) const fn type_word(name: MessageType, size: u16, number: u32) -> u64 {
+pub const fn type_word(name: MessageType, size: u16, number: u32) -> u64 {
     // The inline bit, bit 29.
     word(name, size, 1 << 5, number)
 }

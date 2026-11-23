@@ -3,12 +3,15 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Host information.
 
-use core::ptr;
+use core::mem::ManuallyDrop;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::config::MAX_CPUS;
 use crate::error::Error;
 use crate::ipc::port::port::Port;
+use crate::ipc::port::send_right::SendRight;
+use crate::reference::Reference;
 use crate::{VERSION, clock, machine, sched};
 
 /// The host: the machine as a whole; so far only its ports.
@@ -17,13 +20,66 @@ pub struct Host {
     pub(super) port: AtomicPtr<Port>,
     /// Its privileged port, for controlling it.
     pub(super) privileged_port: AtomicPtr<Port>,
+    /// Where new-task notifications go, once registered.
+    new_task_notification: AtomicPtr<Port>,
 }
 
 /// The host, whose ports `ipc_host::init` makes.
 pub static HOST: Host = Host {
     port: AtomicPtr::new(ptr::null_mut()),
     privileged_port: AtomicPtr::new(ptr::null_mut()),
+    new_task_notification: AtomicPtr::new(ptr::null_mut()),
 };
+
+impl Host {
+    /// Registers `notification` for new-task notifications, as
+    /// `register_new_task_notification` does: one registration per boot.
+    ///
+    /// # Errors
+    ///
+    /// `NoAccess` if one is registered already.
+    pub(crate) fn register_new_task_notification(
+        &self,
+        notification: Option<SendRight>,
+    ) -> Result<(), Error> {
+        let Some(notification) = notification else {
+            return Ok(());
+        };
+        // The registration keeps the right the request brought, not a copy:
+        // a copy would leave the port's send-right count with the handler.
+        let reference = notification.into_reference();
+        let pointer = Reference::into_raw(reference);
+        if self
+            .new_task_notification
+            .compare_exchange(
+                ptr::null_mut(),
+                pointer.as_ptr(),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            // SAFETY: the reference this call took, which did not go in.
+            drop(unsafe { Reference::from_raw(pointer) });
+            return Err(Error::NoAccess);
+        }
+        Ok(())
+    }
+
+    /// The port new-task notifications go to, referenced, if one is
+    /// registered.
+    pub(crate) fn new_task_notification(&self) -> Option<Reference<Port>> {
+        let pointer = self.new_task_notification.load(Ordering::Acquire);
+        if pointer.is_null() {
+            return None;
+        }
+        // SAFETY: the slot keeps its port's reference for good; this handle
+        // borrows it and never drops it.
+        let port =
+            ManuallyDrop::new(unsafe { Reference::from_raw(NonNull::new(pointer).unwrap()) });
+        Some(Reference::clone(&port))
+    }
+}
 
 /// Writes the kernel's version for `host` into `version`, as
 /// `host_get_kernel_version` does: `VERSION`, then NULs to the end.

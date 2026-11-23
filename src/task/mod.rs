@@ -8,6 +8,7 @@ pub mod create;
 pub mod halt;
 pub mod info;
 pub mod members;
+pub mod notify;
 pub mod ports;
 #[expect(clippy::module_inception, reason = "the file is named for its type")]
 pub mod task;
