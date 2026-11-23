@@ -7,6 +7,7 @@ use super::map::change::{Change, Placement};
 use super::map::copy::MapCopy;
 use super::map::map::Map;
 use super::object::{self, object::Object, offset::Offset};
+use super::proxy::Proxy;
 use super::{Inheritance, Protection, VirtualAddress, Wire};
 use crate::arch::PAGE_SIZE;
 use crate::error::Error;
@@ -65,12 +66,14 @@ pub fn allocate(map: &Map, placement: Placement, size: usize) -> Result<VirtualA
 ///
 /// `InvalidArgument` if a protection holds more than reading, writing and
 /// running, or `size` is 0 or rounds up past the last address, `NoSpace`
-/// if the start has a bit of `mask` set, and as `Map::enter`.
+/// if the start has a bit of `mask` set, `ProtectionFailure` for a copy a
+/// proxy doesn't allow reading, `InvalidArgument` for a range past a
+/// proxy's, and as `Map::enter`.
 ///
 /// # Panics
 ///
-/// If `memory_object` stands for no memory object, or for `Mapping::Copy`
-/// of one: not yet. As `object::enter` and `enter`.
+/// If `memory_object` stands for no memory object or proxy, or for
+/// `Mapping::Copy` of one: not yet. As `object::enter` and `enter`.
 #[expect(clippy::too_many_arguments, reason = "vm_map's parameters")]
 pub fn map(
     map: &Map,
@@ -94,14 +97,52 @@ pub fn map(
     // Past the top, GNU Mach's rounding wraps to 0, which Map::enter refuses.
     let size = size.checked_next_multiple_of(PAGE_SIZE).unwrap_or(0);
     // IP_NULL: no object, so no offset or copy.
-    let (object, offset, mapping) = memory_object.map_or_else(
-        || (None, Offset::from(0), Mapping::Object),
-        |port| {
-            let object = object::external::enter(port, size)
-                .unwrap_or_else(|| panic!("vm_map: memory_object_proxy_lookup, not yet"));
-            (Some(object), offset, mapping)
-        },
-    );
+    let (object, offset, mapping, protection, max_protection) = if let Some(port) = memory_object {
+        if let Some(object) = object::external::enter(port, size) {
+            (Some(object), offset, mapping, protection, max_protection)
+        } else {
+            let Some(proxy) = port.to_proxy() else {
+                panic!("vm_map: memory_object_proxy_lookup, not yet");
+            };
+            // As memory_object_proxy_lookup and vm_map's use of it: the
+            // proxy's protection and range, for its object.
+            let allowed = proxy.max_protection();
+            let range = proxy.range();
+            let (protection, max_protection) = if matches!(mapping, Mapping::Copy) {
+                if !allowed.contains(Protection::READ) {
+                    return Err(Error::ProtectionFailure);
+                }
+                (protection, max_protection)
+            } else {
+                (protection & allowed, max_protection & allowed)
+            };
+            let end = range
+                .start
+                .checked_add(usize::from(offset))
+                .and_then(|value| value.checked_add(size));
+            if end.is_none_or(|end| end > range.end) {
+                return Err(Error::InvalidArgument);
+            }
+            let Some(object) = object::external::enter(proxy.object(), size) else {
+                return Err(Error::InvalidArgument);
+            };
+            (
+                Some(object),
+                offset + range.start,
+                mapping,
+                protection,
+                max_protection,
+            )
+        }
+    } else {
+        (
+            None,
+            Offset::from(0),
+            Mapping::Object,
+            protection,
+            max_protection,
+        )
+    };
     assert!(
         matches!(mapping, Mapping::Object),
         "vm_map: vm_object_copy_strategically, not yet"
@@ -118,6 +159,37 @@ pub fn map(
         max_protection,
         inheritance,
     )
+}
+
+/// Makes a proxy for the region `address` is in of `map`, as
+/// `vm_region_create_proxy` does: `len` bytes from the region's start in
+/// its object, allowing at most `max_protection` and the region's.
+///
+/// # Errors
+///
+/// `NoSpace` if no entry holds `address`, `InvalidArgument` if `len` is
+/// past the region's end or the range's end overflows, and as
+/// `proxy::create`.
+///
+/// # Panics
+///
+/// If the region's object has no pager: not yet. As `Map::region`.
+pub fn region_create_proxy(
+    map: &Map,
+    address: VirtualAddress,
+    max_protection: Protection,
+    len: usize,
+) -> Result<Reference<Port>, Error> {
+    let region = map.region(address)?;
+    if len > region.end - region.start {
+        return Err(Error::InvalidArgument);
+    }
+    let Some(pager) = region.pager else {
+        panic!("vm_object_pager_create: not yet");
+    };
+    let start = (address - region.start) + usize::from(region.offset);
+    let end = start.checked_add(len).ok_or(Error::InvalidArgument)?;
+    Proxy::create(pager, max_protection & region.max_protection, start..end)
 }
 
 /// Maps `size` bytes of `object` from `offset`, or with nothing behind them

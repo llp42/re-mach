@@ -91,6 +91,24 @@ pub(super) fn find(name: &[u8]) -> Reference<Device> {
     }
 }
 
+/// Frees `device`, as `mach_device_deallocate` does at zero: it leaves the
+/// list, then goes back to its cache.
+///
+/// # Safety
+///
+/// Nothing uses it after.
+pub(super) unsafe fn free(device: NonNull<Device>) {
+    {
+        let mut list = LOOKUP.lock();
+        // SAFETY: a device at its last reference was listed, and its link
+        // still points into the list.
+        unsafe { list.cursor_mut_from_ptr(device.as_ptr()) }.remove();
+    }
+    // SAFETY: every device is a `CACHE` box, given up by
+    // `CacheBox::into_raw`; nothing uses this one after.
+    drop(unsafe { CacheBox::from_raw(&CACHE, device) });
+}
+
 /// The kind and unit `name` names, as `dev_name_lookup` does: the kind's
 /// name, then the unit's digits.
 ///

@@ -6,6 +6,7 @@
 mod device;
 mod gnumach;
 mod mach;
+mod mach4;
 mod mach_debug;
 mod mach_host;
 mod mach_port;
@@ -58,6 +59,7 @@ pub fn server(mut request: KernelMessage) -> Option<KernelMessage> {
     reply_header.return_code.word = <i32 as mig::argument::Inline>::WORD;
     let routine = mach::routine(header.id)
         .or_else(|| mach_port::routine(header.id))
+        .or_else(|| mach4::routine(header.id))
         .or_else(|| mach_host::routine(header.id))
         .or_else(|| mach_debug::routine(header.id))
         .or_else(|| device::routine(header.id))

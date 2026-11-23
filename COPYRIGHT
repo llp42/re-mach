@@ -62,6 +62,13 @@ SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
 SPDX-FileContributor: David B. Golub
 SPDX-License-Identifier: CMU-Mach
 
+SPDX-FileName: device/ds_routines.c
+SPDX-FileCopyrightText: 1993, 1991, 1990, 1989 Carnegie Mellon University
+SPDX-FileCopyrightText: 1996 The University of Utah and the Computer Systems Laboratory (CSL)
+SPDX-FileContributor: David B. Golub
+SPDX-FileContributor: Shantanu Goel
+SPDX-License-Identifier: LicenseRef-CMU-CSL
+
 SPDX-FileName: i386/i386/apic.c
 SPDX-FileCopyrightText: 2020 Free Software Foundation, Inc.
 SPDX-FileContributor: Almudena Garcia Jurado-Centurion
@@ -220,6 +227,10 @@ SPDX-FileName: include/mach/mach.defs
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988 Carnegie Mellon University
 SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
 SPDX-License-Identifier: LicenseRef-CMU-CSL
+
+SPDX-FileName: include/mach/mach4.defs
+SPDX-FileCopyrightText: 1994, 1993, 1992 Carnegie Mellon University
+SPDX-License-Identifier: CMU-Mach
 
 SPDX-FileName: include/mach/mach_host.defs
 SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University

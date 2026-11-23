@@ -16,3 +16,4 @@ pub mod map;
 
 pub mod lookup;
 pub mod protect;
+pub mod region;

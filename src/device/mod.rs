@@ -84,6 +84,8 @@ enum State {
     Opening,
     /// Open.
     Open,
+    /// Being closed.
+    Closing,
 }
 
 /// A kind of device the kernel serves; only `time` so far.
@@ -121,6 +123,10 @@ pub fn open(name: &[u8]) -> Reference<Port> {
         "device_open: thread_sleep on an opening device, not yet"
     );
     assert!(
+        state.state != State::Closing,
+        "device_open: thread_sleep on a closing device, not yet"
+    );
+    assert!(
         state.state != State::Open,
         "device_open: an open device, not yet"
     );
@@ -148,6 +154,49 @@ pub fn open(name: &[u8]) -> Reference<Port> {
     send
 }
 
+/// Closes `device`, as `device_close` does: its last open takes its port
+/// away and its kind's close runs, then it can be opened again.
+///
+/// # Panics
+///
+/// If it is not open, or its port is not there: not yet. As
+/// `Port::deallocate_kernel`.
+pub fn close(device: &Reference<Device>) {
+    let port = {
+        let mut state = device.state.lock();
+        if state.open_count > 1 {
+            state.open_count -= 1;
+            return;
+        }
+        assert!(
+            state.state == State::Open,
+            "ds_device_close: D_NO_SUCH_DEVICE, not yet"
+        );
+        // Mark it closing, to prevent new IO.
+        state.state = State::Closing;
+        state.open_count = 0;
+        state.port.take()
+    };
+    let Some(port) = port else {
+        panic!("device_close: a device with no port");
+    };
+    // As dev_port_remove: the port no longer stands for the device, and
+    // its reference to it goes.
+    if let Some(KernelObject::Device(pointer)) = port.replace_kernel_object(None) {
+        // SAFETY: the port's kobject held a reference to the device, given
+        // up by `into_raw`, which this takes.
+        drop(unsafe { Reference::from_raw(pointer) });
+    }
+    port.deallocate_kernel();
+    drop(port);
+    // The kind's close: `time`'s does nothing.
+    match device.kind {
+        Kind::Time => {}
+    }
+    // Closed: someone opening it may proceed.
+    device.state.lock().state = State::Init;
+}
+
 /// Maps `device`'s memory from `offset`, allowing `protection`, as
 /// `device_map` does; gives a send right for its pager's port.
 ///
@@ -165,19 +214,17 @@ pub fn map(device: &Reference<Device>, protection: u32, offset: Offset) -> Refer
     pager::setup(device, protection, offset)
 }
 
-// SAFETY: its count is its own, and `free` frees nothing yet.
+// SAFETY: its count is its own, and every device is a box of its lookup's
+// cache, which `free` takes back.
 unsafe impl Counted for Device {
     fn references(&self) -> &Count {
         &self.references
     }
 
-    /// Frees `device`, as `mach_device_deallocate` does at zero; `find`
-    /// must then re-check its count under `LOOKUP`.
-    ///
-    /// # Panics
-    ///
-    /// Always: not yet.
-    unsafe fn free(_device: NonNull<Self>) {
-        panic!("mach_device_deallocate: the last reference, not yet");
+    /// Frees `device`, as `mach_device_deallocate` does at zero: it leaves
+    /// the lookup list, then goes back to its cache.
+    unsafe fn free(device: NonNull<Self>) {
+        // SAFETY: the caller's contract.
+        unsafe { lookup::free(device) };
     }
 }

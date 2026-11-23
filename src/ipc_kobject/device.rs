@@ -18,6 +18,7 @@ use crate::vm::object::offset::Offset;
 mig::subsystem! {
     base 2800;
     0 device_open(master: Port, mode: u32, name: DeviceName) -> (device: Port);
+    1 device_close(device = Port::to_device);
     9 device_map(
         device = Port::to_device,
         protection: u32,
@@ -41,6 +42,19 @@ fn device_open(master: &Port, _mode: u32, name: DeviceName) -> Result<Reference<
         "ds_device_open: D_INVALID_OPERATION, not yet"
     );
     Ok(device::open(name.as_bytes()))
+}
+
+/// Serves `device_close`: `device` closed, once its last open does.
+///
+/// # Errors
+///
+/// `NoSuchDevice` for no device.
+fn device_close(device: Option<&Reference<Device>>) -> Result<(), Error> {
+    let Some(device) = device else {
+        return Err(Error::NoSuchDevice);
+    };
+    device::close(device);
+    Ok(())
 }
 
 /// Serves `device_map`: `device`'s memory from `offset`, allowing

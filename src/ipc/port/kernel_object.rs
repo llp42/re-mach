@@ -17,6 +17,7 @@ use crate::task::task::Task;
 use crate::thread::thread::Thread;
 use crate::vm::map::map::Map;
 use crate::vm::object::{object::Object, state::Flags};
+use crate::vm::proxy::Proxy;
 /// What a port the kernel receives on stands for; only the kinds used here.
 #[derive(Clone, Copy)]
 pub enum KernelObject {
@@ -31,6 +32,8 @@ pub enum KernelObject {
     PagingRequest(NonNull<Object>),
     /// A memory object's name port, which names it to `vm_region`.
     PagerName(#[expect(dead_code, reason = "vm_object_lookup_name reads it")] NonNull<Object>),
+    /// A proxy memory object's port, which maps part of another object.
+    PagerProxy(NonNull<Proxy>),
     /// The host's port.
     Host(&'static Host),
     /// The host's privileged port.
@@ -200,6 +203,17 @@ impl Port {
                 let held = ManuallyDrop::new(unsafe { Reference::from_raw(device) });
                 Some(Reference::clone(&held))
             }
+            _ => None,
+        })
+    }
+
+    /// The proxy it stands for, if it is one, as
+    /// `memory_object_proxy_lookup` finds it.
+    pub fn to_proxy(&self) -> Option<&Proxy> {
+        self.with_kernel_object(|object| match object {
+            // SAFETY: the port keeps the proxy for as long as it stands for
+            // it, and proxies are never freed yet.
+            Some(KernelObject::PagerProxy(proxy)) => Some(unsafe { proxy.as_ref() }),
             _ => None,
         })
     }

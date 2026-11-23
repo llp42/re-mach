@@ -77,6 +77,12 @@ impl Object {
     pub fn lock(&self) -> TokenGuard<'_, ObjectState> {
         self.state.lock()
     }
+
+    /// A send right for its pager's port, if it has one, as
+    /// `vm_region_create_proxy` copies one.
+    pub fn pager_port(&self) -> Option<Reference<Port>> {
+        self.lock().pager.as_ref().map(Port::copy_send)
+    }
 }
 
 // SAFETY: its count is its own, and every object but the kernel object,
