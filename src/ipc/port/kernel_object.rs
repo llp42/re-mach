@@ -28,7 +28,7 @@ pub enum KernelObject {
     /// an object is made for it.
     DevicePager(NonNull<Pager>),
     /// A memory object's port, once the kernel made an object for it.
-    Pager(#[expect(dead_code, reason = "vm_object_enter's hit reads it")] NonNull<Object>),
+    Pager(NonNull<Object>),
     /// A memory object's request port, which its pager calls the kernel on.
     PagingRequest(NonNull<Object>),
     /// A memory object's name port, which names it to `vm_region`.

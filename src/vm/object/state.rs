@@ -43,10 +43,10 @@ pub struct ObjectState {
     /// What serves its pages; none until a pager is entered for it.
     pub(in crate::vm) kind: Option<Kind>,
     /// A send right for its pager, the memory object; none until it has one.
-    pub(super) pager: Option<Reference<Port>>,
+    pub(in crate::vm) pager: Option<Reference<Port>>,
     /// Its request port, which its pager calls the kernel on; none until it
     /// has a pager.
-    pub(super) pager_request: Option<Reference<Port>>,
+    pub(in crate::vm) pager_request: Option<Reference<Port>>,
     /// How its data is copied.
     pub(crate) copy_strategy: CopyStrategy,
 }

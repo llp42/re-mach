@@ -131,6 +131,7 @@ impl Port {
         );
         // Its receiver goes; `destroy` marks it dead.
         state.receiver_name = PortName::NULL;
+        self.leave_set(&mut state);
         state.clear_receiver();
         self.destroy(state);
     }

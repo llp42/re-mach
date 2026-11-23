@@ -4,6 +4,7 @@
 
 use core::ptr::NonNull;
 
+use crate::error::Error;
 use crate::ipc::entry::Rights;
 use crate::ipc::notify;
 use crate::ipc::object::Object;
@@ -34,8 +35,9 @@ impl SpaceState {
     )]
     pub(in crate::ipc) fn release_user_reference(
         mut state: SleepLockWriteGuard<'_, Self>,
+        space: &Space,
         name: PortName,
-    ) {
+    ) -> Result<(), Error> {
         assert!(state.active, "ipc_right_dealloc: a dead space");
         let entry = state
             .map
@@ -66,8 +68,7 @@ impl SpaceState {
             let Some(mut port_state) = state.live_port(entry) else {
                 state.make_dead_name(name);
                 // As GNU Mach's goto: the dead name's arm.
-                Self::release_user_reference(state, name);
-                return;
+                return Self::release_user_reference(state, space, name);
             };
             if entry.bits.user_references > 1 {
                 assert!(
@@ -83,7 +84,7 @@ impl SpaceState {
                     .bits
                     .user_references -= 1;
                 drop(state);
-                return;
+                return Ok(());
             }
             port_state.send_rights = port_state
                 .send_rights
@@ -118,6 +119,11 @@ impl SpaceState {
                 // As ipc_notify_no_senders.
                 notify::no_senders(request, mscount);
             }
+        } else if rights == Rights::RECEIVE.bits() {
+            // As ipc_right_dealloc: a receive right has no user references
+            // to release.
+            drop(state);
+            return Err(Error::InvalidRight);
         } else if rights == (Rights::SEND | Rights::RECEIVE).bits() {
             assert!(
                 entry.bits.user_references > 0,
@@ -131,6 +137,11 @@ impl SpaceState {
             assert!(
                 port_state.active,
                 "ipc_right_dealloc: a dead port's send and receive right"
+            );
+            assert!(
+                port_state.receiver == Receiver::Space(NonNull::from(space))
+                    && port_state.receiver_name == name,
+                "ipc_right_dealloc: another space's or name's receive right"
             );
             assert!(
                 port_state.send_rights > 0,
@@ -166,6 +177,7 @@ impl SpaceState {
         } else {
             panic!("ipc_right_dealloc: KERN_INVALID_RIGHT, not yet");
         }
+        Ok(())
     }
 
     /// Destroys the receive right of `name`'s send and receive entry in the

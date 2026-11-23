@@ -219,12 +219,17 @@ impl Space {
     /// Releases a user reference of `name`'s right in it, as
     /// `mach_port_deallocate` does.
     ///
+    /// # Errors
+    ///
+    /// `InvalidRight` if the entry holds a receive right, which has no user
+    /// references to release.
+    ///
     /// # Panics
     ///
     /// As `Space::lookup_write` and `SpaceState::release_user_reference`.
-    pub fn release_user_reference(&self, name: PortName) {
+    pub fn release_user_reference(&self, name: PortName) -> Result<(), Error> {
         let state = self.lookup_write(name);
-        SpaceState::release_user_reference(state, name);
+        SpaceState::release_user_reference(state, self, name)
     }
 
     /// Puts a new right of the kind numbered `right` in it under a free

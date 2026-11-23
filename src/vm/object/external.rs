@@ -10,6 +10,7 @@ use intrusive_collections::UnsafeRef;
 
 use super::init::allocate;
 use super::object::Object;
+use super::offset::Offset;
 use super::state::{CopyStrategy, Flags, Kind};
 use crate::device::pager;
 use crate::ipc::port::kernel_object::KernelObject;
@@ -38,11 +39,26 @@ pub(in crate::vm) fn external_count() -> u32 {
 /// is a user's: not yet. If no request port can be allocated. As
 /// `allocate` and `pager::init_pager`.
 pub fn enter(pager: &Reference<Port>, size: usize) -> Option<Reference<Object>> {
+    let kernel_object = pager.kernel_object();
+    // Already entered: the object it stands for, with a reference of the
+    // caller's, as vm_object_lookup gives one.
+    if let Some(KernelObject::Pager(pointer)) = kernel_object {
+        // SAFETY: the port stands for its object until `terminate` clears
+        // it, under the port's lock, before freeing the object.
+        let object = unsafe { Reference::upgrade(pointer) }
+            .expect("vm_object_enter: an object being freed, not yet");
+        // Its reference keeps `terminate` off.
+        assert!(
+            object.lock().flags.contains(Flags::ALIVE),
+            "vm_object_lookup: a dead object"
+        );
+        STATISTICS.lookups.fetch_add(1, Ordering::Relaxed);
+        return Some(object);
+    }
     // A device pager's record, or none for a user's pager.
-    let record = match pager.kernel_object() {
+    let record = match kernel_object {
         Some(KernelObject::DevicePager(record)) => Some(record),
         None => None,
-        Some(KernelObject::Pager(_)) => panic!("vm_object_enter: an existing object, not yet"),
         Some(_) => {
             STATISTICS.lookups.fetch_add(1, Ordering::Relaxed);
             return None;
@@ -171,4 +187,77 @@ pub fn ready(request: &Port, copy_strategy: CopyStrategy) {
     drop(state);
     // vm_object_deallocate.
     drop(object);
+}
+
+/// A new object, with `size` bytes, for the memory `object` holds from
+/// `offset`, as `vm_object_copy_call` makes one: a new memory object port
+/// whose object the pager is told of, shadowing `object`, whose pages in
+/// the range stop allowing writes.
+///
+/// # Panics
+///
+/// If `object` has no ready pager that copies by call, a port can't be
+/// allocated, or its object can't be entered: not yet. As `enter`.
+pub(in crate::vm) fn copy_call(
+    object: &Reference<Object>,
+    offset: Offset,
+    size: usize,
+) -> Reference<Object> {
+    {
+        let state = object.lock();
+        assert!(
+            state.flags.contains(Flags::PAGER_READY)
+                && matches!(state.copy_strategy, CopyStrategy::Call),
+            "vm_object_copy_strategically: not a copy call, not yet"
+        );
+        drop(state);
+    }
+    let port = Reference::from(
+        Port::allocate_kernel()
+            .unwrap_or_else(|error| panic!("vm_object_copy_call: port alloc: {error:?}")),
+    );
+    let mapped = Port::make_send(&port);
+    let (pager, request) = {
+        let state = object.lock();
+        (
+            Port::copy_send(state.pager.as_ref().expect("vm_object_copy_call: no pager")),
+            Port::copy_send(
+                state
+                    .pager_request
+                    .as_ref()
+                    .expect("vm_object_copy_call: no request port"),
+            ),
+        )
+    };
+    // The pager gets the new object's receive right.
+    port.clear_receiver_limbo();
+    super::super::pager::memory_object_copy(pager, request, usize::from(offset), size, port);
+    // The new object, which the pager is told of, and the pager's send
+    // right, given up as vm_object_copy_call does.
+    let new = enter(&mapped, size).expect("vm_object_copy_call: no object");
+    Port::release_send(mapped);
+    let mut state = new.lock();
+    // Writes reach it only once a page is copied up.
+    state.shadow = Some(Reference::clone(object));
+    state.shadow_offset = offset;
+    drop(state);
+    // The old pages stop allowing writes.
+    let end = usize::from(offset) + size;
+    let mut state = object.lock();
+    {
+        let state = &mut *state;
+        let mut cursor = state
+            .pages
+            .tree
+            .lower_bound_mut(intrusive_collections::Bound::Included(&usize::from(offset)));
+        while let Some(page) = cursor.get() {
+            if page.offset() >= end {
+                break;
+            }
+            page.set_page_lock(page.page_lock() | super::super::Protection::WRITE);
+            cursor.move_next();
+        }
+    }
+    drop(state);
+    new
 }

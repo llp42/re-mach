@@ -149,10 +149,15 @@ pub fn map(
             max_protection,
         )
     };
-    assert!(
-        matches!(mapping, Mapping::Object),
-        "vm_map: vm_object_copy_strategically, not yet"
-    );
+    // As vm_map's vm_object_copy_strategically: a copy of a user pager's
+    // memory is a new object, which shadows the old one.
+    let (object, offset) = match (&object, mapping) {
+        (Some(object), Mapping::Copy) => (
+            Some(object::external::copy_call(object, offset, size)),
+            Offset::from(0),
+        ),
+        _ => (object, offset),
+    };
     // A failure drops the object's reference, as vm_object_deallocate.
     enter(
         map,

@@ -126,7 +126,7 @@ unsafe impl Counted for Object {
     unsafe fn free(object: NonNull<Self>) {
         // SAFETY: nothing else uses it, and it stays allocated until
         // `terminate` frees it.
-        let state = unsafe { object.as_ref() }.lock();
+        let mut state = unsafe { object.as_ref() }.lock();
         assert!(
             !state.flags.contains(Flags::CAN_PERSIST) || state.pages.count == 0,
             "vm_object_deallocate: vm_object_cache_add, not yet"
@@ -136,8 +136,22 @@ unsafe impl Counted for Object {
                 || state.flags.contains(Flags::PAGER_INITIALIZED),
             "vm_object_deallocate: waiting for its pager's initialization, not yet"
         );
+        // Its shadow's reference leaves with it, as vm_object_deallocate
+        // takes it before terminate; the shadow's copy, if this object, is
+        // detached.
+        let shadow = state.shadow.take();
+        if let Some(shadow) = &shadow {
+            let mut backing = shadow.lock();
+            if backing.copy.as_ref().map(Reference::as_ptr) == Some(object) {
+                backing.copy = None;
+            }
+            drop(backing);
+        }
         // SAFETY: the caller's contract, and `state` is its state.
         unsafe { terminate(object, state) };
+        // The shadow's reference goes, freeing it in turn if it was its
+        // last, as vm_object_deallocate's loop does.
+        drop(shadow);
     }
 }
 
@@ -163,6 +177,10 @@ pub(super) static CACHE: Cache<Object> = Cache::new("vm_object");
 /// If it is dead, or one of its ports stands for something else. If it has
 /// a shadow, paging under way or pages, or a user's pager: not yet. As
 /// `pager::terminate` and `Port::deallocate_kernel`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "vm_object_terminate's steps, in GNU Mach's order"
+)]
 unsafe fn terminate(object: NonNull<Object>, mut state: TokenGuard<'_, ObjectState>) {
     assert!(
         state.flags.contains(Flags::ALIVE),
@@ -210,10 +228,34 @@ unsafe fn terminate(object: NonNull<Object>, mut state: TokenGuard<'_, ObjectSta
         state.paging_in_progress == 0,
         "vm_object_terminate: vm_object_paging_wait, not yet"
     );
-    assert!(
-        state.pages.count == 0,
-        "vm_object_terminate: freeing its pages, not yet"
-    );
+    // Its pages are cleaned or freed now: a temporary object's, or one with
+    // no pager, all; another's dirty or precious ones, given back first,
+    // and the rest.
+    let mut flush = [0; 32];
+    let mut flushing = 0;
+    if state.flags.contains(Flags::TEMPORARY) || state.pager.is_none() {
+        let size = state.size;
+        state.remove_pages(0..size);
+    } else {
+        let state = &mut *state;
+        let mut cursor = state.pages.tree.front_mut();
+        while let Some(page) = cursor.get() {
+            if page.is_dirty() || page.is_precious() {
+                assert!(
+                    flushing != flush.len(),
+                    "vm_object_terminate: more than 32 pages, not yet"
+                );
+                flush[flushing] = page.offset();
+                flushing += 1;
+                cursor.move_next();
+            } else {
+                let page = cursor.remove().unwrap();
+                state.pages.count -= 1;
+                page.remove_from_queue();
+                super::super::page::alloc::free(page);
+            }
+        }
+    }
     if !state.flags.contains(Flags::INTERNAL) {
         EXTERNAL_COUNT.fetch_sub(1, Ordering::Relaxed);
     }
@@ -236,22 +278,57 @@ unsafe fn terminate(object: NonNull<Object>, mut state: TokenGuard<'_, ObjectSta
         drop(unsafe { CacheBox::from_raw(&CACHE, object) });
         return;
     };
-    let Some(Kind::Device(record)) = kind else {
-        panic!("memory_object_terminate: a user pager, not yet");
-    };
-    // memory_object_release: memory_object_terminate, served by the kernel's
-    // own pager, called directly; nothing waits for the pager's port.
-    // SAFETY: the object served by the record is terminating.
-    unsafe {
-        pager::terminate(
-            record,
-            &pager,
-            request.expect("device_pager_terminate: no request port"),
-            name.expect("device_pager_terminate: no name port"),
-        );
+    // The pages given back first, as vm_pageout_page flushes them.
+    if let Some(request) = &request {
+        for &offset in &flush[..flushing] {
+            // SAFETY: the caller's contract, and the object is not freed
+            // yet.
+            let state = unsafe { object.as_ref() }.lock();
+            let Some(page) = state.lookup(offset) else {
+                continue;
+            };
+            let (copy, count) = crate::vm::pager::page_copy(page);
+            drop(state);
+            crate::vm::pager::data_return(
+                Port::copy_send(&pager),
+                Port::copy_send(request),
+                offset,
+                copy,
+                count,
+                true,
+                true,
+            );
+        }
     }
-    // The request's destination right, as ipc_kobject_server releases it.
-    Port::release_send(pager);
+    match kind {
+        Some(Kind::Device(record)) => {
+            // memory_object_release: memory_object_terminate, served by the
+            // kernel's own pager, called directly; nothing waits for the
+            // pager's port.
+            // SAFETY: the object served by the record is terminating.
+            unsafe {
+                pager::terminate(
+                    record,
+                    &pager,
+                    request.expect("device_pager_terminate: no request port"),
+                    name.expect("device_pager_terminate: no name port"),
+                );
+            }
+            // The request's destination right, as ipc_kobject_server
+            // releases it.
+            Port::release_send(pager);
+        }
+        None => {
+            // A user pager's: memory_object_release, with the kernel's send
+            // right for its port and the receive rights of the request and
+            // name ports.
+            crate::vm::pager::memory_object_terminate(
+                pager,
+                request.expect("memory_object_terminate: no request port"),
+                name.expect("memory_object_terminate: no name port"),
+            );
+        }
+    }
     // SAFETY: the caller's contract.
     drop(unsafe { CacheBox::from_raw(&CACHE, object) });
 }

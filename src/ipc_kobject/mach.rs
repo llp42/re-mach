@@ -14,7 +14,7 @@ use crate::arch;
 use crate::error::Error;
 use crate::host::Host;
 use crate::ipc::port::port::Port;
-use crate::ipc::port::send_right::SendRight;
+use crate::ipc::port::send_right::{SendOnceRight, SendRight};
 use crate::reference::Reference;
 use crate::smp;
 use crate::task::ports::{Memory, SpecialPort};
@@ -86,11 +86,45 @@ mig::subsystem! {
         offset: usize
     );
     30 vm_statistics(target_task = Port::task_map) -> (vm_stats: [i32; 13]);
+    39 memory_object_data_unavailable(
+        control = Port::to_vm_object,
+        offset: Offset,
+        size: usize
+    );
     40 memory_object_get_attributes(control = Port::to_vm_object)
         -> (object_ready: Boolean, may_cache: Boolean, copy_strategy: i32);
     41 vm_set_default_memory_manager(host = Port::as_privileged_host, default_manager: SendRight)
         -> (default_manager: PortMaybe);
+    44 memory_object_lock_request(
+        control = Port::to_vm_object,
+        offset: Offset,
+        size: usize,
+        should_return: i32,
+        should_flush: Boolean,
+        lock_value: i32,
+        reply_to: SendOnceRight
+    );
+    90 memory_object_data_error(
+        control = Port::to_vm_object,
+        offset: Offset,
+        size: usize,
+        error_value: i32
+    );
+    93 memory_object_data_supply(
+        control = Port::to_vm_object,
+        offset: Offset,
+        data: OutOfLine<u8>,
+        lock_value: u32,
+        precious: Boolean,
+        reply_to: SendOnceRight
+    );
     94 memory_object_ready(control = Port::to_vm_object, may_cache: Boolean, copy_strategy: i32);
+    95 memory_object_change_attributes(
+        control = Port::to_vm_object,
+        may_cache: Boolean,
+        copy_strategy: i32,
+        reply_to: SendOnceRight
+    );
     56 task_suspend(target_task = Port::to_task);
     57 task_resume(target_task = Port::to_task);
     59 task_set_special_port(task = Port::to_task, which_port: i32, special_port: SendRight);
@@ -417,8 +451,166 @@ fn memory_object_ready(
     }
     state.flags.insert(Flags::PAGER_READY);
     state.copy_strategy = copy_strategy;
-    // Nothing waits for it to be ready yet, so none is woken.
     drop(state);
+    // A fault waiting for it to be ready goes on.
+    crate::sched::wait::wakeup(crate::sched::event::Event::of(&**object));
+    Ok(())
+}
+
+/// Serves `memory_object_data_unavailable`: the pages of the object whose
+/// control port it is, `size` bytes from `offset`, have no data, so they
+/// are filled with zeros at their faults.
+///
+/// # Errors
+///
+/// `InvalidArgument` if the port is no object's control port, or `size` is
+/// not a whole number of pages.
+///
+/// # Panics
+///
+/// As `pager::data_unavailable`.
+fn memory_object_data_unavailable(
+    object: Option<&Reference<Object>>,
+    offset: Offset,
+    size: usize,
+) -> Result<(), Error> {
+    let Some(object) = object else {
+        return Err(Error::InvalidArgument);
+    };
+    vm::pager::data_unavailable(object, usize::from(offset), size)
+}
+
+/// Serves `memory_object_data_error`: the pages of the object whose control
+/// port it is, `size` bytes from `offset`, are in `error_value`'s error, so
+/// faults on them fail.
+///
+/// # Errors
+///
+/// `InvalidArgument` if the port is no object's control port, or `size` is
+/// not a whole number of pages.
+///
+/// # Panics
+///
+/// As `pager::data_error`.
+fn memory_object_data_error(
+    object: Option<&Reference<Object>>,
+    offset: Offset,
+    size: usize,
+    _error_value: i32,
+) -> Result<(), Error> {
+    let Some(object) = object else {
+        return Err(Error::InvalidArgument);
+    };
+    vm::pager::data_error(object, usize::from(offset), size)
+}
+
+/// Serves `memory_object_data_supply`: `data`, `count` bytes, is the data
+/// of the pages of the object whose control port it is from `offset`, held
+/// from the accesses in `lock_value` and `precious` to its pager; tells
+/// `reply_to`, a send-once right, how it went.
+///
+/// # Errors
+///
+/// `InvalidArgument` if the port is no object's control port, `lock_value`
+/// names accesses Mach lacks, or the data is not a whole number of pages.
+///
+/// # Panics
+///
+/// As `pager::data_supply`.
+fn memory_object_data_supply(
+    object: Option<&Reference<Object>>,
+    offset: Offset,
+    data: Option<OutOfLine<u8>>,
+    lock_value: u32,
+    precious: Boolean,
+    reply_to: Option<SendOnceRight>,
+) -> Result<(), Error> {
+    let Some(object) = object else {
+        return Err(Error::InvalidArgument);
+    };
+    let Some(data) = data else {
+        return Err(Error::InvalidArgument);
+    };
+    let count = data.count();
+    let data = data.into_copy();
+    vm::pager::data_supply(
+        object,
+        usize::from(offset),
+        &data,
+        count,
+        lock_value,
+        bool::from(precious),
+        reply_to.map(SendOnceRight::into_reference),
+    )
+}
+
+/// Serves `memory_object_lock_request`: the pages of the object whose
+/// control port it is, `size` bytes from `offset`, are held from
+/// `lock_value`'s accesses, those among them `should_return` wants are
+/// given back to its pager, those `should_flush` says are dropped, and
+/// `reply_to`, a send-once right, hears that it is done.
+///
+/// # Errors
+///
+/// `InvalidArgument` if the port is no object's control port, or
+/// `lock_value` names accesses Mach lacks.
+///
+/// # Panics
+///
+/// As `pager::lock_request`.
+fn memory_object_lock_request(
+    object: Option<&Reference<Object>>,
+    offset: Offset,
+    size: usize,
+    should_return: i32,
+    should_flush: Boolean,
+    lock_value: i32,
+    reply_to: Option<SendOnceRight>,
+) -> Result<(), Error> {
+    let Some(object) = object else {
+        return Err(Error::InvalidArgument);
+    };
+    vm::pager::lock_request(
+        object,
+        usize::from(offset),
+        size,
+        should_return,
+        bool::from(should_flush),
+        lock_value,
+        reply_to.map(SendOnceRight::into_reference),
+    )
+}
+
+/// Serves `memory_object_change_attributes`: the object whose control port
+/// it is may cache as `may_cache` says and copies as `copy_strategy` says;
+/// `reply_to`, a send-once right, hears it.
+///
+/// # Errors
+///
+/// `InvalidArgument` if the port is no object's control port, or the
+/// strategy is not one Mach names.
+///
+/// # Panics
+///
+/// As `pager::change_attributes`.
+fn memory_object_change_attributes(
+    object: Option<&Reference<Object>>,
+    may_cache: Boolean,
+    copy_strategy: i32,
+    reply_to: Option<SendOnceRight>,
+) -> Result<(), Error> {
+    let Some(object) = object else {
+        return Err(Error::InvalidArgument);
+    };
+    let Some(copy_strategy) = CopyStrategy::from_number(copy_strategy) else {
+        return Err(Error::InvalidArgument);
+    };
+    vm::pager::change_attributes(
+        object,
+        bool::from(may_cache),
+        copy_strategy,
+        reply_to.map(SendOnceRight::into_reference),
+    );
     Ok(())
 }
 

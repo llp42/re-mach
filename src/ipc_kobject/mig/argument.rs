@@ -27,6 +27,12 @@ pub const fn type_word(name: MessageType, size: u16, number: u32) -> u64 {
     word(name, size, 1 << 5, number)
 }
 
+/// MIG's type word for `number` items of type `name`, `size` bits each, out
+/// of line: the long-form bit, bit 30.
+pub const fn out_of_line_word(name: MessageType, size: u16, number: u32) -> u64 {
+    word(name, size, 1 << 6, number)
+}
+
 /// MIG's type word for `number` items of type `name`, `size` bits each,
 /// with `flags` from bit 24.
 pub(in crate::ipc_kobject) const fn word(
@@ -119,6 +125,11 @@ impl<T: Element> OutOfLine<T> {
             count: 0,
             element: PhantomData,
         }
+    }
+
+    /// How many elements it holds.
+    pub(in crate::ipc_kobject) const fn count(&self) -> usize {
+        self.count
     }
 
     /// Its type word, and the copy's address, which the reply takes.

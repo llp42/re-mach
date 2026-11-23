@@ -45,6 +45,27 @@ pub(in crate::ipc) fn timestamp() -> Timestamp {
 }
 
 impl Port {
+    /// Takes it out of its port set, if it is in one, with `state` locked,
+    /// as `ipc_pset_remove` does: its queued messages go back to it, and the
+    /// set's reference goes.
+    pub(in crate::ipc) fn leave_set(&self, state: &mut PortState) {
+        let Some(pointer) = state.set.take() else {
+            return;
+        };
+        // SAFETY: this port's reference keeps its set alive until the
+        // release below.
+        let set = unsafe { pointer.as_ref() };
+        set.return_port_messages(self, state);
+        let active = set.active();
+        let last = set.release();
+        if last {
+            // SAFETY: the last reference was this port's, and the set's box
+            // came from its cache; nothing uses it after.
+            drop(unsafe { CacheBox::from_raw(&crate::ipc::port_set::CACHE, NonNull::from(set)) });
+        }
+        assert!(active, "ipc_port_clear_receiver: a dead port set");
+    }
+
     /// Destroys the port, alive, cleared of its receiver and of locked state
     /// `state`, as `ipc_port_destroy` does: it is dead and unlocked, and its
     /// queued messages are destroyed. The caller then drops the reference
@@ -58,6 +79,8 @@ impl Port {
     /// `KernelMessage::destroy`.
     pub(in crate::ipc) fn destroy(&self, mut state: SpinlockGuard<'_, PortState>) {
         assert!(state.active, "ipc_port_destroy: a dead port");
+        // Out of its set, if it is in one, as ipc_port_clear_receiver does.
+        self.leave_set(&mut state);
         assert!(
             state.set.is_none() && state.make_send_count == 0 && state.sequence_number == 0,
             "ipc_port_destroy: a receiver not cleared"

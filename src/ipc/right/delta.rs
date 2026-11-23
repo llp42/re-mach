@@ -159,7 +159,7 @@ impl Space {
                         .expect("ipc_right_delta: no entry")
                         .bits
                         .user_references = 1;
-                    SpaceState::release_user_reference(state, name);
+                    SpaceState::release_user_reference(state, self, name)
                 } else {
                     let count = u16::try_from(count).map_err(|_| Error::UrefsOverflow)?;
                     let mut state = state;
@@ -170,8 +170,8 @@ impl Space {
                         .bits
                         .user_references = count;
                     drop(state);
+                    Ok(())
                 }
-                Ok(())
             }
         }
     }

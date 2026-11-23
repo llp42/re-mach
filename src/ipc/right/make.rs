@@ -107,6 +107,11 @@ impl SpaceState {
                         && port_state.sequence_number == 0,
                     "ipc_right_copyout: a receive right not in limbo, not yet"
                 );
+                // Its receiver is this space, under its name, and no
+                // payload, as ipc_right_copyout does before a merge.
+                port_state.receiver = Receiver::Space(NonNull::from(space));
+                port_state.receiver_name = name;
+                port_state.protected_payload = None;
                 let takes = if entry.bits.rights.contains(Rights::SEND) {
                     assert!(
                         entry.bits.user_references > 0,
@@ -122,8 +127,6 @@ impl SpaceState {
                         !entry.in_use(),
                         "ipc_right_copyout: a receive right into an entry in use, not yet"
                     );
-                    port_state.receiver = Receiver::Space(NonNull::from(space));
-                    port_state.receiver_name = name;
                     drop(port_state);
                     true
                 };

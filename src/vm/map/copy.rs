@@ -425,12 +425,73 @@ pub struct MapCopy {
     entries: RBTree<EntryAdapter>,
 }
 
-impl Drop for MapCopy {
-    fn drop(&mut self) {
+impl MapCopy {
+    /// Copies `count` bytes of its memory from `offset` bytes in into
+    /// `destination`, as `memory_object_data_supply` reads the memory it is
+    /// given.
+    ///
+    /// # Panics
+    ///
+    /// If it holds an object or pages, the range runs past its entries, an
+    /// entry is a submap, or a page it needs is not resident: not yet.
+    pub(in crate::vm) fn read_pages(&self, offset: usize, destination: &mut [u8]) {
         assert!(
-            self.entries.is_empty(),
-            "vm_map_copy_discard: a copy holding entries, not yet"
+            matches!(self.kind, CopyKind::Entries),
+            "vm_map_copy_read: not an entry list, not yet"
         );
+        let mut address = self.offset + offset;
+        let mut destination = &mut destination[..];
+        while !destination.is_empty() {
+            let entry = self
+                .entries
+                .upper_bound(Bound::Included(&address))
+                .clone_pointer()
+                .filter(|entry| address < entry.end())
+                .unwrap_or_else(|| panic!("vm_map_copy_read: past its entries, not yet"));
+            let Backing::Object { object, offset } = &entry.backing else {
+                panic!("vm_map_copy_read: a submap, not yet");
+            };
+            let object_offset = offset.load(Ordering::Relaxed) + (address - entry.start());
+            let page_offset = object_offset / PAGE_SIZE * PAGE_SIZE;
+            // SAFETY: the entry holds a reference on its object, which this
+            // handle borrows and never drops.
+            let object = ManuallyDrop::new(unsafe {
+                Reference::from_raw(
+                    NonNull::new(object.load(Ordering::Relaxed))
+                        .expect("vm_map_copy_read: a page not resident, not yet"),
+                )
+            });
+            let state = object.lock();
+            let page = state
+                .lookup(page_offset)
+                .unwrap_or_else(|| panic!("vm_map_copy_read: a page not resident, not yet"));
+            let within = object_offset % PAGE_SIZE;
+            // SAFETY: the page is in its object, and the direct map reaches
+            // all of it; the object is locked.
+            let bytes =
+                unsafe { core::slice::from_raw_parts(page.address().direct_map_ptr(), PAGE_SIZE) };
+            let length = destination
+                .len()
+                .min(PAGE_SIZE - within)
+                .min(entry.end() - address);
+            destination[..length].copy_from_slice(&bytes[within..within + length]);
+            drop(state);
+            destination = &mut destination[length..];
+            address = address + length;
+        }
+    }
+}
+
+impl Drop for MapCopy {
+    /// Discards `self`, freeing its entries, as `vm_map_copy_discard` does.
+    fn drop(&mut self) {
+        while let Some(entry) = self.entries.front_mut().remove() {
+            let entry = NonNull::new(UnsafeRef::into_raw(entry)).unwrap();
+            // SAFETY: a copy's entries come from `CacheBox::into_raw` of
+            // `ENTRY_CACHE`'s boxes (`Map::copy_in`), and its tree held the
+            // only pointer to each; out of the tree, it is the box's alone.
+            drop(unsafe { CacheBox::from_raw(&ENTRY_CACHE, entry) });
+        }
     }
 }
 

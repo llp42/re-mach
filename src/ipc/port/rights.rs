@@ -15,7 +15,10 @@ impl Port {
     ///
     /// As `PortState::clear_receiver_limbo`.
     pub fn clear_receiver_limbo(&self) {
-        self.state.lock().clear_receiver_limbo();
+        let mut state = self.state.lock();
+        // Out of its set, if it is in one, as ipc_port_clear_receiver does.
+        self.leave_set(&mut state);
+        state.clear_receiver_limbo();
     }
 
     /// Makes a send right for `port` from its receive right, whose

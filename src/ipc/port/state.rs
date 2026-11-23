@@ -158,14 +158,9 @@ impl PortState {
     ///
     /// # Panics
     ///
-    /// If its port is dead. If it is in a set, or a thread waits to receive
-    /// from it: not yet.
+    /// If its port is dead. If a thread waits to receive from it: not yet.
     pub(in crate::ipc) fn clear_receiver(&mut self) {
         assert!(self.active, "ipc_port_clear_receiver: a dead port");
-        assert!(
-            self.set.is_none(),
-            "ipc_port_clear_receiver: ipc_pset_remove, not yet"
-        );
         // As ipc_mqueue_changed, under the queue's lock, the port's.
         assert!(
             self.receivers.is_empty(),

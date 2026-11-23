@@ -14,6 +14,7 @@ use super::queue::{QUEUES, color};
 use crate::arch::{PAGE_SIZE, PhysAddr};
 use crate::slab::{Cache, Slab};
 use crate::sync::Spinlock;
+use crate::vm::Protection;
 use crate::vm::object::object::Object;
 
 /// A physical page.
@@ -36,6 +37,12 @@ pub struct Page {
     pub(super) wire_count: AtomicU16,
     /// Its `Flags`; changed only behind its object's token.
     pub(super) flags: AtomicU8,
+    /// The accesses its pager holds off, as `vm_prot_t` bits; behind its
+    /// object's token.
+    lock: AtomicU8,
+    /// The accesses already asked of its pager to be unlocked; behind its
+    /// object's token.
+    unlock_request: AtomicU8,
     /// Its lock while it is a user page table, over its entries.
     pub table_lock: Spinlock<()>,
     /// Its state while it is a slab.
@@ -53,6 +60,8 @@ impl Page {
             busy: AtomicU32::new(0),
             wire_count: AtomicU16::new(0),
             flags: AtomicU8::new(0),
+            lock: AtomicU8::new(0),
+            unlock_request: AtomicU8::new(0),
             table_lock: Spinlock::new(()),
             slab: Slab::new(),
         }
@@ -86,6 +95,101 @@ impl Page {
     pub(in crate::vm) fn clear_busy(&self) {
         // Nothing waits on a busy page yet, so none is woken.
         self.busy.fetch_and(!HARD_BUSY, Ordering::Relaxed);
+    }
+
+    /// Whether it holds no data, its pager's not in yet, behind its object's
+    /// token.
+    pub(in crate::vm) fn is_absent(&self) -> bool {
+        self.states().contains(Flags::ABSENT)
+    }
+
+    /// Notes that its pager's data is not in, behind its object's token.
+    pub(in crate::vm) fn set_absent(&self) {
+        self.set(Flags::ABSENT);
+    }
+
+    /// Notes that it holds data, behind its object's token.
+    pub(in crate::vm) fn clear_absent(&self) {
+        self.unset(Flags::ABSENT);
+    }
+
+    /// Whether its pager said its data is in error, behind its object's
+    /// token.
+    pub(in crate::vm) fn has_error(&self) -> bool {
+        self.states().contains(Flags::ERROR)
+    }
+
+    /// Notes that its pager said its data is in error, behind its object's
+    /// token.
+    pub(in crate::vm) fn set_error(&self) {
+        self.set(Flags::ERROR);
+    }
+
+    /// Whether it may have been written since it came from its pager, behind
+    /// its object's token.
+    pub(in crate::vm) fn is_dirty(&self) -> bool {
+        self.states().contains(Flags::DIRTY)
+    }
+
+    /// Notes that it may have been written, behind its object's token.
+    pub(in crate::vm) fn set_dirty(&self) {
+        self.set(Flags::DIRTY);
+    }
+
+    /// Notes that it was cleaned, behind its object's token.
+    pub(in crate::vm) fn clear_dirty(&self) {
+        self.unset(Flags::DIRTY);
+    }
+
+    /// Whether its pager wants it back even when clean, behind its object's
+    /// token.
+    pub(in crate::vm) fn is_precious(&self) -> bool {
+        self.states().contains(Flags::PRECIOUS)
+    }
+
+    /// Notes that its pager wants it back even when clean, behind its
+    /// object's token.
+    pub(in crate::vm) fn set_precious(&self) {
+        self.set(Flags::PRECIOUS);
+    }
+
+    /// The accesses its pager holds off, behind its object's token.
+    pub(in crate::vm) fn page_lock(&self) -> Protection {
+        Protection::from_bits_retain(u32::from(self.lock.load(Ordering::Relaxed)))
+    }
+
+    /// Holds off `protection`'s accesses, behind its object's token.
+    pub(in crate::vm) fn set_page_lock(&self, protection: Protection) {
+        self.lock
+            .store(u8::try_from(protection.bits()).unwrap(), Ordering::Relaxed);
+    }
+
+    /// The accesses already asked of its pager to be unlocked, behind its
+    /// object's token.
+    pub(in crate::vm) fn unlock_request(&self) -> Protection {
+        Protection::from_bits_retain(u32::from(self.unlock_request.load(Ordering::Relaxed)))
+    }
+
+    /// Notes the accesses asked of its pager to be unlocked, behind its
+    /// object's token.
+    pub(in crate::vm) fn set_unlock_request(&self, protection: Protection) {
+        self.unlock_request
+            .store(u8::try_from(protection.bits()).unwrap(), Ordering::Relaxed);
+    }
+
+    /// Its `Flags`, behind its object's token.
+    fn states(&self) -> Flags {
+        Flags::from_bits_retain(self.flags.load(Ordering::Relaxed))
+    }
+
+    /// Sets `flag`, behind its object's token.
+    fn set(&self, flag: Flags) {
+        self.flags.fetch_or(flag.bits(), Ordering::Relaxed);
+    }
+
+    /// Clears `flag`, behind its object's token.
+    fn unset(&self, flag: Flags) {
+        self.flags.fetch_and(!flag.bits(), Ordering::Relaxed);
     }
 
     /// Whether it is on the active or the inactive queue, behind its
@@ -252,7 +356,8 @@ impl Page {
 const HARD_BUSY: u32 = 1 << 31;
 
 bitflags::bitflags! {
-    /// A page's paging queue, and whether it was used.
+    /// A page's paging queue, its data's state, and whether it was used.
+    #[derive(Clone, Copy)]
     pub(super) struct Flags: u8 {
         /// On its colour's active queue.
         const ACTIVE = 1;
@@ -260,6 +365,14 @@ bitflags::bitflags! {
         const INACTIVE = 1 << 1;
         /// Used since it was last deactivated.
         const REFERENCED = 1 << 2;
+        /// Its pager's data is not in.
+        const ABSENT = 1 << 3;
+        /// Its pager said its data is in error.
+        const ERROR = 1 << 4;
+        /// It may have been written since it came from its pager.
+        const DIRTY = 1 << 5;
+        /// Its pager wants it back even when clean.
+        const PRECIOUS = 1 << 6;
     }
 }
 

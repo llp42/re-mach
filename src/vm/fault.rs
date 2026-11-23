@@ -20,7 +20,10 @@ use super::{Protection, STATISTICS, VirtualAddress};
 use crate::arch::PAGE_SIZE;
 use crate::device::pager::{self, Pager};
 use crate::error::Error;
+use crate::ipc::port::port::Port;
 use crate::reference::Reference;
+use crate::sched;
+use crate::sched::event::Event;
 use crate::smp;
 use crate::sync::TokenGuard;
 
@@ -54,6 +57,7 @@ pub enum Purpose {
     reason = "the lookups' and vm_fault_page's guards are moved out and dropped first"
 )]
 pub fn fault(map: &Map, address: usize, access: Protection, purpose: Purpose) -> Result<(), Error> {
+    let requested = access;
     let mut lookup = map.lookup(VirtualAddress::from(address), access)?;
     // A wired page is faulted in for all its entry allows.
     let access = if lookup.wired {
@@ -72,15 +76,33 @@ pub fn fault(map: &Map, address: usize, access: Protection, purpose: Purpose) ->
         device(map, address, access, lookup, &pager);
         return Ok(());
     }
-    let found = fault_page(
-        &lookup.object,
-        lookup.state,
-        usize::from(lookup.offset),
-        access,
-        Residency::Optional,
+    // A pager's page: asked for if missing, waited for, unlocked.
+    let found = if lookup.state.flags.contains(Flags::PAGER_CREATED) {
+        let object = Reference::clone(&lookup.object);
+        let offset = usize::from(lookup.offset);
+        let Some(state) = pager_page(&object, lookup.state, offset, access) else {
+            drop(object);
+            drop(lookup.object);
+            return fault(map, address, requested, purpose);
+        };
+        drop(object);
+        fault_page(&lookup.object, state, offset, access, Residency::Optional)
+    } else {
+        fault_page(
+            &lookup.object,
+            lookup.state,
+            usize::from(lookup.offset),
+            access,
+            Residency::Optional,
+        )
+    };
+    // The page's lock keeps its access off the mapping, as `PMAP_ENTER`
+    // does.
+    let (mut protection, mut wired, mut version) = (
+        lookup.protection - found.page.page_lock(),
+        lookup.wired,
+        lookup.version,
     );
-    let (mut protection, mut wired, mut version) =
-        (lookup.protection, lookup.wired, lookup.version);
     // The page's object is the lookup's: a read through a shadow is not yet.
     let old_copy = found.state.copy.as_ref().map(Reference::as_ptr);
     drop(found.state);
@@ -133,6 +155,10 @@ pub fn fault(map: &Map, address: usize, access: Protection, purpose: Purpose) ->
                 found.page.activate();
             }
             found.page.set_referenced();
+            // As vm_fault_page: one that can be written will be.
+            if protection.contains(Protection::WRITE) {
+                found.page.set_dirty();
+            }
         }
     }
     drop(verified);
@@ -336,6 +362,125 @@ enum Residency {
     Optional,
 }
 
+/// Waits for `object`, whose page at `offset` is to be faulted for
+/// `access`, to have it: its pager is asked for a missing page, an unlock
+/// the page's lock holds off is asked for, and the fault sleeps on the
+/// object until its page data or an unlock comes, as `vm_fault_page`'s
+/// `look_for_page` does. Gives `state`, still locked, with the call's
+/// paging operation, once the page is resident and open to `access`, or
+/// absent and unavailable, which `fault_page` fills with zeros; `None`
+/// once it waited, so the fault looks again.
+///
+/// # Panics
+///
+/// If its data is in error, the object has no pager or request port, or no
+/// page can be allocated: not yet.
+fn pager_page(
+    object: &Reference<Object>,
+    mut state: TokenGuard<'static, ObjectState>,
+    offset: usize,
+    access: Protection,
+) -> Option<TokenGuard<'static, ObjectState>> {
+    let event = Event::of(&**object);
+    loop {
+        // Its pager said it is ready before its data is asked for.
+        if state.flags.contains(Flags::PAGER_READY) {
+            match state.lookup(offset) {
+                // Its data is in error: no page comes.
+                Some(page) if page.has_error() => {
+                    state.end_paging();
+                    drop(state);
+                    panic!("vm_fault_page: VM_FAULT_MEMORY_ERROR, not yet");
+                }
+                // Resident, unless its lock holds the access off.
+                Some(page) if !page.is_absent() && !page.is_busy() => {
+                    let lock = page.page_lock();
+                    if !access.intersects(lock) {
+                        return Some(state);
+                    }
+                    let asked = page.unlock_request();
+                    if !asked.contains(access) {
+                        // Asked for at once, then looped to wait for it.
+                        let unlock = asked | access;
+                        page.set_unlock_request(unlock);
+                        let (pager, request) = pager_ports(&state);
+                        state.end_paging();
+                        drop(state);
+                        super::pager::data_unlock(
+                            pager,
+                            request,
+                            offset,
+                            PAGE_SIZE,
+                            i32::try_from(unlock.bits()).unwrap(),
+                        );
+                        state = lock_object(object);
+                        continue;
+                    }
+                }
+                // Absent and not busy: its pager said it is unavailable, and
+                // `fault_page` fills it with zeros.
+                Some(page) if page.is_absent() && !page.is_busy() => return Some(state),
+                // Absent and busy, or busy: its data is on the way.
+                Some(_) => {}
+                // No page: a busy, absent placeholder waits for the data.
+                None => {
+                    let page = page::alloc::allocate(offset / PAGE_SIZE)
+                        .expect("vm_fault_page: VM_FAULT_MEMORY_SHORTAGE, not yet");
+                    page.set_absent();
+                    page.set_busy();
+                    state.insert(object, page, offset);
+                    let (pager, request) = pager_ports(&state);
+                    state.end_paging();
+                    drop(state);
+                    super::pager::data_request(
+                        pager,
+                        request,
+                        offset,
+                        PAGE_SIZE,
+                        i32::try_from(access.bits()).unwrap(),
+                    );
+                    state = lock_object(object);
+                    continue;
+                }
+            }
+        }
+        // Waits with the object locked, so that no data comes in before.
+        sched::wait::assert_wait(Some(event));
+        state.end_paging();
+        drop(state);
+        sched::switch::block();
+        state = lock_object(object);
+    }
+}
+
+/// The state of `object`, locked, with a paging operation begun.
+///
+/// # Safety
+///
+/// The caller's reference keeps `object`, and its state, alive.
+fn lock_object(object: &Reference<Object>) -> TokenGuard<'static, ObjectState> {
+    // SAFETY: as `Map::lookup`: the reference keeps the object, and so its
+    // state, while the guard lives.
+    let mut state = unsafe { Reference::as_ptr(object).as_ref() }.lock();
+    state.begin_paging();
+    state
+}
+
+/// The object's pager's send right, a copy of it, and its request port's,
+/// as a call to its pager takes them.
+///
+/// # Panics
+///
+/// If it has no pager or request port.
+fn pager_ports(state: &ObjectState) -> (Reference<Port>, Reference<Port>) {
+    let pager = state.pager.as_ref().expect("vm_fault_page: no pager");
+    let request = state
+        .pager_request
+        .as_ref()
+        .expect("vm_fault_page: no pager request port");
+    (Port::copy_send(pager), Port::copy_send(request))
+}
+
 /// Finds the page at `offset` in `object`, whose `state` is locked and
 /// holds a paging operation for the call, for `access`; so far one
 /// resident there, or, as `residency` allows, one `object` lacks, which it
@@ -366,6 +511,16 @@ fn fault_page(
         // With no pager, never absent, in error or locked; reference bits
         // are kept in software, so it stays on its paging queue.
         page.set_busy();
+        // Its pager said it is unavailable: filled with zeros, as GNU Mach
+        // does at the bottom of a shadow chain.
+        if page.is_absent() {
+            // SAFETY: the page is busy and nothing maps it, so it is ours
+            // alone.
+            unsafe { page.zero_fill() };
+            STATISTICS.zero_fill_count.fetch_add(1, Ordering::Relaxed);
+            task.zero_fills.fetch_add(1, Ordering::Relaxed);
+            page.clear_absent();
+        }
         assert!(
             state.copy.is_none(),
             "vm_fault_page: a copy object, not yet"

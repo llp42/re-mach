@@ -126,11 +126,9 @@ fn mach_port_destroy(space: Option<&Reference<Space>>, name: PortName) -> Result
 /// # Panics
 ///
 /// With no space: not yet. As `Space::release_user_reference`.
-#[expect(clippy::unnecessary_wraps, reason = "MIG's routines give a Result")]
 fn mach_port_deallocate(space: Option<&Reference<Space>>, name: PortName) -> Result<(), Error> {
     let space = space.unwrap_or_else(|| panic!("mach_port_deallocate: KERN_INVALID_TASK, not yet"));
-    space.release_user_reference(name);
-    Ok(())
+    space.release_user_reference(name)
 }
 
 /// Serves `mach_port_get_refs`: how many references `name` holds in

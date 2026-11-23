@@ -3,15 +3,13 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Copying a message in: from the user, then the sender's rights and memory.
 
-use core::{ptr, slice};
+use core::slice;
 
 use super::KernelMessage;
 use super::header::{Header, MessageBits};
 use crate::arch::{self, Machine as _};
 use crate::error::Error;
 use crate::ipc::MessageType;
-use crate::ipc::port::kernel_object::KernelObject;
-use crate::ipc::port::port::Port;
 use crate::ipc::port::port_name::PortName;
 use crate::ipc::space::Space;
 use crate::kalloc;
@@ -230,34 +228,22 @@ impl KernelMessage {
     /// message's right holds, a null name a null port; out of line, the names
     /// come into kalloc memory, 64 bits each, whose address replaces theirs,
     /// and the user's array is deallocated if asked; out-of-line memory is
-    /// copied in, its source kept, and the copy's exposed address replaces
-    /// its address, 0 for empty memory. With neither, the message becomes
-    /// simple.
+    /// copied in, its source kept or destroyed as it asks, and the copy's
+    /// exposed address replaces its address, 0 for empty memory. With
+    /// neither, the message becomes simple.
     ///
     /// # Panics
     ///
     /// If a type is invalid or the body too small, an out-of-line array holds
-    /// no ports or its names can't be copied in, out-of-line memory not empty
-    /// is to be deallocated or goes to a port that takes it as page lists, a
-    /// right is not a copied, made or moved send right, or a name is dead:
-    /// not yet. As `kalloc::allocate`, `vm::user::deallocate`,
-    /// `Space::copy_in` and `Map::copy_in`.
+    /// no ports or its names can't be copied in, a right is not a copied,
+    /// made or moved send right, or a name is dead: not yet. As
+    /// `kalloc::allocate`, `vm::user::deallocate`, `Space::copy_in` and
+    /// `Map::copy_in`.
     #[expect(
         clippy::too_many_lines,
         reason = "ipc_kmsg_copyin_body's steps, in GNU Mach's order"
     )]
     pub(in crate::ipc) fn copy_in_body(&mut self, space: &Space, map: &Map) {
-        // SAFETY: copied in, the destination is a port's exposed address, and
-        // the message holds a reference to it.
-        let destination =
-            unsafe { &*ptr::with_exposed_provenance::<Port>(self.header().remote_port) };
-        // ipc_kobject_vm_page_list: paging, device and user-device ports.
-        let page_lists = matches!(
-            destination.kernel_object(),
-            Some(
-                KernelObject::PagingRequest(_) | KernelObject::Device(_) | KernelObject::UserDevice
-            )
-        );
         let end = usize::try_from(self.header().size).unwrap();
         let message = self.message_mut();
         let mut offset = size_of::<Header>();
@@ -343,18 +329,14 @@ impl KernelMessage {
                     // No memory, no copy: its deallocate bit is ignored.
                     0
                 } else {
-                    assert!(
-                        !page_lists,
-                        "ipc_kmsg_copyin_body: vm_map_copyin_page_list, not yet"
-                    );
-                    assert!(
-                        !deallocate,
-                        "ipc_kmsg_copyin_body: vm_map_copyin destroying its source, not yet"
-                    );
                     let copy = map.copy_in(
                         VirtualAddress::from(address)
                             ..VirtualAddress::from(address.wrapping_add(length)),
-                        Source::Keep,
+                        if deallocate {
+                            Source::Destroy
+                        } else {
+                            Source::Keep
+                        },
                     );
                     CacheBox::into_raw(copy).as_ptr().expose_provenance()
                 };

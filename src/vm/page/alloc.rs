@@ -113,6 +113,8 @@ pub fn free(page: &'static Page) {
     page.object.store(ptr::null_mut(), Ordering::Relaxed);
     page.offset.store(0, Ordering::Relaxed);
     page.flags.store(Flags::empty().bits(), Ordering::Relaxed);
+    page.set_page_lock(crate::vm::Protection::empty());
+    page.set_unlock_request(crate::vm::Protection::empty());
     let frame = page.address().0 / PAGE_SIZE;
     if frame < reserve_end(pages().pages.len() * PAGE_SIZE) {
         let mut reserve = DMA_RESERVE.lock();
