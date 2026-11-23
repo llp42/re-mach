@@ -58,6 +58,18 @@ pub fn block() {
     invoke(thread, select(cpu.processor(), thread));
 }
 
+/// Gives the current CPU up to another runnable thread, as `swtch` does:
+/// gives whether one is, on the CPU or its set.
+pub fn swtch() -> bool {
+    let processor = smp::current().processor();
+    let runnable = || processor.queued() > 0 || processor.set().is_some_and(|set| set.queued() > 0);
+    if !runnable() {
+        return false;
+    }
+    block();
+    runnable()
+}
+
 /// The thread `processor`, the current CPU's, runs next after `current`,
 /// with the processor's quantum set for it: a thread bound to it, else
 /// another, else `current` if it may run on, else the processor's idle
