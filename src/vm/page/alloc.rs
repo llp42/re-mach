@@ -81,6 +81,24 @@ pub fn allocate(index: usize) -> Option<&'static Page> {
     allocate_reserved()
 }
 
+/// Takes `count` contiguous free pages whose frames lie in `first` up to
+/// `last`, from the DMA reserve, as `vm_page_grab_contig` does for its
+/// segment; none when there is no such run.
+///
+/// # Panics
+///
+/// If the page array is not set up.
+pub fn allocate_contiguous(count: usize, first: usize, last: usize) -> Option<&'static [Page]> {
+    let array = pages();
+    let base = array.start.0 / PAGE_SIZE;
+    let first = first.max(base);
+    let last = last
+        .min(base + array.pages.len())
+        .min(reserve_end(array.pages.len() * PAGE_SIZE));
+    let start = DMA_RESERVE.lock().take_contiguous(count, first, last)?;
+    Some(&array.pages[start - base..][..count])
+}
+
 /// Puts `page`, which `allocate` gave, back in its pool once it is in no
 /// object, on no paging queue and unused, as `vm_page_free` does: unwired,
 /// not busy and reset as new, it goes to the DMA reserve for a frame below

@@ -3,10 +3,11 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The virtual memory calls of Mach's interface.
 
-use super::map::change::{Change, Placement};
+use super::map::change::{Change, Placement, RangeCheck};
 use super::map::copy::MapCopy;
 use super::map::map::Map;
 use super::object::{self, object::Object, offset::Offset};
+use super::page;
 use super::proxy::Proxy;
 use super::{Inheritance, Protection, VirtualAddress, Wire};
 use crate::arch::PAGE_SIZE;
@@ -190,6 +191,102 @@ pub fn region_create_proxy(
     let start = (address - region.start) + usize::from(region.offset);
     let end = start.checked_add(len).ok_or(Error::InvalidArgument)?;
     Proxy::create(pager, max_protection & region.max_protection, start..end)
+}
+
+/// The page cache statistics `vm_cache_statistics` reports, as GNU Mach
+/// fills them: the external objects, and zero for the rest.
+pub fn cache_statistics() -> [i32; 11] {
+    let mut stats = [0; 11];
+    stats[0] = i32::try_from(object::external::external_count()).unwrap();
+    stats
+}
+
+/// Allocates `size` bytes of contiguous physical memory from `pmin` up to
+/// `pmax` and maps them into `map` for reading and writing, as
+/// `vm_allocate_contiguous` does; gives the address and the first page's
+/// physical address.
+///
+/// # Errors
+///
+/// `InvalidArgument` if `pmin` is not 0, `palign` is not a page, or `size`
+/// is 0 or rounds past the last address; `ResourceShortage` if no such
+/// memory is free; as `Map::enter` and `Map::pageable`.
+///
+/// # Panics
+///
+/// As `object::init::allocate`, `Map::enter` and `Map::pageable`.
+pub fn allocate_contiguous(
+    map: &Map,
+    size: usize,
+    pmin: usize,
+    pmax: usize,
+    palign: usize,
+) -> Result<(VirtualAddress, usize), Error> {
+    if pmin != 0 {
+        return Err(Error::InvalidArgument);
+    }
+    let palign = match palign {
+        0 => PAGE_SIZE,
+        palign if palign < PAGE_SIZE && PAGE_SIZE.is_multiple_of(palign) => PAGE_SIZE,
+        palign => palign,
+    };
+    if palign != PAGE_SIZE {
+        return Err(Error::InvalidArgument);
+    }
+    // vm_page_round.
+    let size = size
+        .checked_next_multiple_of(PAGE_SIZE)
+        .ok_or(Error::InvalidArgument)?;
+    if size == 0 {
+        return Err(Error::InvalidArgument);
+    }
+    // The pages that fit below `pmax` once `size` is mapped.
+    let first = pmin.div_ceil(PAGE_SIZE);
+    let last = pmax.saturating_sub(size) / PAGE_SIZE + 1;
+    let Some(pages) = page::alloc::allocate_contiguous(size / PAGE_SIZE, first, last) else {
+        return Err(Error::ResourceShortage);
+    };
+    let object = object::init::allocate(size);
+    let handle = Reference::clone(&object);
+    let range = match map.enter(
+        Placement::Anywhere,
+        size,
+        Some(object),
+        Offset::from(0),
+        Protection::READ | Protection::WRITE,
+        Protection::READ | Protection::WRITE,
+        Inheritance::Copy,
+    ) {
+        Ok(range) => range,
+        Err(error) => {
+            drop(handle);
+            for page in pages {
+                page::alloc::free(page);
+            }
+            return Err(error);
+        }
+    };
+    {
+        let mut state = handle.lock();
+        for (index, page) in pages.iter().enumerate() {
+            state.insert(&handle, page, index * PAGE_SIZE);
+            page.wire();
+        }
+        drop(state);
+    }
+    if let Err(error) = map.pageable(
+        range.clone(),
+        Protection::READ | Protection::WRITE,
+        RangeCheck::Checked,
+    ) {
+        drop(handle);
+        deallocate(map, range.start, size);
+        return Err(error);
+    }
+    for page in pages {
+        page.unwire();
+    }
+    Ok((range.start, pages[0].address().0))
 }
 
 /// Maps `size` bytes of `object` from `offset`, or with nothing behind them

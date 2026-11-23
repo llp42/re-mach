@@ -21,6 +21,12 @@ use crate::vm::STATISTICS;
 /// `vm_statistics` reports them.
 pub(super) static EXTERNAL_COUNT: AtomicU32 = AtomicU32::new(0);
 
+/// How many external objects there are, as `vm_object_external_count`
+/// gives it.
+pub(in crate::vm) fn external_count() -> u32 {
+    EXTERNAL_COUNT.load(Ordering::Relaxed)
+}
+
 /// The object of the memory object `pager`, of `size` bytes, made and set
 /// up with its pager, as `vm_object_enter` gives it for an object outside
 /// the kernel, with a reference for the caller; none if `pager` stands for

@@ -41,6 +41,47 @@ impl Reserve {
             self.free += 1;
         }
     }
+
+    /// Whether `frame` is free.
+    const fn get(&self, frame: usize) -> bool {
+        self.frames[frame / 64] & (1 << (frame % 64)) != 0
+    }
+
+    /// Frees `frame`.
+    const fn clear(&mut self, frame: usize) {
+        self.frames[frame / 64] &= !(1 << (frame % 64));
+    }
+
+    /// Takes `count` contiguous free frames from `first` up to `last`, as
+    /// `vm_page_grab_contig` does for the DMA segment; gives the first.
+    pub(super) fn take_contiguous(
+        &mut self,
+        count: usize,
+        first: usize,
+        last: usize,
+    ) -> Option<usize> {
+        let last = last.min(self.frames.len() * 64);
+        let mut run = 0;
+        let mut start = first;
+        for frame in first..last {
+            if !self.get(frame) {
+                run = 0;
+                continue;
+            }
+            if run == 0 {
+                start = frame;
+            }
+            run += 1;
+            if run == count {
+                for frame in start..start + count {
+                    self.clear(frame);
+                }
+                self.free -= count;
+                return Some(start);
+            }
+        }
+        None
+    }
 }
 
 /// Free frames kept for DMA, below `DMA_RESERVE_LIMIT`; allocations take

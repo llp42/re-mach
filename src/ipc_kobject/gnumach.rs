@@ -21,6 +21,7 @@ use crate::vm::{self, VirtualAddress};
 
 mig::subsystem! {
     base 4200;
+    0 vm_cache_statistics(target_task = Port::to_task) -> (vm_cache_stats: [i32; 11]);
     2 task_set_name(task = Port::to_task, name: [StringChar; ..64]);
     3 register_new_task_notification(host = Port::as_privileged_host, notification: SendRight);
     4 gsync_wait(
@@ -33,9 +34,30 @@ mig::subsystem! {
     );
     5 gsync_wake(task = Port::to_task, address: VirtualAddress, value: u32, flags: i32);
     7 vm_wire_all(host: Port, task = Port::task_map, flags: u32);
+    10 vm_allocate_contiguous(
+        host = Port::as_privileged_host,
+        target_task = Port::task_map,
+        size: usize,
+        pmin: usize,
+        pmax: usize,
+        palign: usize
+    ) -> (vaddr: usize, paddr: usize);
     11 task_set_essential(task = Port::to_task, essential: Boolean);
     15 vm_set_size_limit(host_port: Port, map = Port::task_map, current_limit: usize, max_limit: usize);
     16 vm_get_size_limit(map = Port::task_map) -> (current_limit: usize, max_limit: usize);
+}
+
+/// Serves `vm_cache_statistics`: the page cache statistics of the host
+/// `task` is on.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no task.
+fn vm_cache_statistics(task: Option<&Reference<Task>>) -> Result<[i32; 11], Error> {
+    if task.is_none() {
+        return Err(Error::InvalidArgument);
+    }
+    Ok(vm::user::cache_statistics())
 }
 
 /// Serves `task_set_name`: names `task` `name`.
@@ -143,6 +165,32 @@ fn gsync_wake(
 /// As `vm::user::wire_all`.
 fn vm_wire_all(host: &Port, map: Option<&Map>, flags: u32) -> Result<(), Error> {
     vm::user::wire_all(host, map, flags)
+}
+
+/// Serves `vm_allocate_contiguous`: `size` bytes of contiguous physical
+/// memory from `pmin` up to `pmax`, aligned to `palign`, mapped into
+/// `map` for reading and writing, for `host`.
+///
+/// # Errors
+///
+/// `InvalidHost` unless `host` is the privileged host, and `InvalidTask`
+/// for no map; as `vm::user::allocate_contiguous`.
+fn vm_allocate_contiguous(
+    host: Option<&&Host>,
+    map: Option<&Map>,
+    size: usize,
+    pmin: usize,
+    pmax: usize,
+    palign: usize,
+) -> Result<(usize, usize), Error> {
+    if host.is_none() {
+        return Err(Error::InvalidHost);
+    }
+    let Some(map) = map else {
+        return Err(Error::InvalidTask);
+    };
+    let (address, physical) = vm::user::allocate_contiguous(map, size, pmin, pmax, palign)?;
+    Ok((address.into(), physical))
 }
 
 /// Serves `vm_set_size_limit`: `map` limited to `current` bytes, at most

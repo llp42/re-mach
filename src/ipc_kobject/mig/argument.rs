@@ -146,6 +146,12 @@ unsafe impl Inline for u32 {
     const WORD: u64 = type_word(MessageType::Integer32, 32, 1);
 }
 
+/// `vm_cache_statistics`'s record: 11 integers.
+// SAFETY: an array of `i32`, aligned to 4 bytes, with no padding.
+unsafe impl Inline for [i32; 11] {
+    const WORD: u64 = type_word(MessageType::Integer32, 32, 11);
+}
+
 // SAFETY: a primitive.
 unsafe impl Inline for usize {
     const WORD: u64 = type_word(MessageType::Integer64, 64, 1);
