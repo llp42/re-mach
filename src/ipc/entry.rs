@@ -18,6 +18,8 @@ pub struct Entry {
     pub(super) object: Option<Object>,
     /// Its dead-name request; 0 for none.
     pub(super) request: u32,
+    /// The send-once right for its dead-name notification, if requested.
+    pub(super) dead_name: Option<crate::reference::Reference<crate::ipc::port::port::Port>>,
 }
 
 // SAFETY: an entry has no interior mutability, and its port set's pointer
@@ -36,6 +38,7 @@ impl Entry {
             },
             object: None,
             request: 0,
+            dead_name: None,
         }
     }
 

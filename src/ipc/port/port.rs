@@ -28,6 +28,8 @@ pub(in crate::ipc) struct Timestamp(u32);
 /// `ip_timestamp`); only the kinds used here.
 #[derive(Clone, Copy, PartialEq)]
 pub(in crate::ipc) enum Receiver {
+    /// No one, while the receive right is handed over.
+    None,
     /// A space.
     Space(NonNull<Space>),
     /// No one: the port died at that time, Mach's `ip_timestamp`.

@@ -8,6 +8,7 @@ pub mod entry;
 pub mod kernel_message;
 pub mod mach_msg;
 pub mod mach_port;
+pub mod notify;
 mod object;
 pub mod port;
 pub mod port_set;
@@ -34,6 +35,8 @@ pub enum MessageType {
     Integer64,
     /// `MACH_MSG_TYPE_STRING_C`: a NUL-terminated string.
     StringC,
+    /// `MACH_MSG_TYPE_PORT_RECEIVE`: a receive right.
+    PortReceive,
     /// `MACH_MSG_TYPE_PORT_NAME`: a port's name, no right.
     PortName,
     /// `MACH_MSG_TYPE_PORT_SEND`: a send right.
@@ -61,6 +64,7 @@ impl MessageType {
             Self::Integer64 => 11,
             Self::StringC => 12,
             Self::PortName => 15,
+            Self::PortReceive => 16,
             Self::PortSend => 17,
             Self::PortSendOnce => 18,
             Self::CopySend => 19,
@@ -80,6 +84,7 @@ impl TryFrom<u8> for MessageType {
             2 => Ok(Self::Integer32),
             11 => Ok(Self::Integer64),
             12 => Ok(Self::StringC),
+            16 => Ok(Self::PortReceive),
             17 => Ok(Self::PortSend),
             18 => Ok(Self::PortSendOnce),
             19 => Ok(Self::CopySend),

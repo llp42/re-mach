@@ -29,6 +29,7 @@ impl SpaceState {
     /// yet. For a type that is not a right.
     pub(in crate::ipc) fn put_right(
         &mut self,
+        space: &Space,
         name: PortName,
         message_type: MessageType,
         port: &Port,
@@ -88,6 +89,46 @@ impl SpaceState {
                 entry.bits.rights |= Rights::SEND_ONCE;
                 entry.bits.user_references = 1;
                 Some(entry)
+            }
+            MessageType::PortReceive => {
+                let Self {
+                    map, reverse_map, ..
+                } = self;
+                let entry = map
+                    .get_mut(name.key())
+                    .expect("ipc_right_copyout: no entry");
+                // The port must be in limbo: no receiver, no make-send count,
+                // no sequence number.
+                assert!(
+                    port_state.active
+                        && matches!(port_state.receiver, Receiver::None)
+                        && port_state.receiver_name == PortName::NULL
+                        && port_state.make_send_count == 0
+                        && port_state.sequence_number == 0,
+                    "ipc_right_copyout: a receive right not in limbo, not yet"
+                );
+                let takes = if entry.bits.rights.contains(Rights::SEND) {
+                    assert!(
+                        entry.bits.user_references > 0,
+                        "ipc_right_copyout: a send right with no user references"
+                    );
+                    // The entry keeps its own reference; a send right's
+                    // reverse entry goes.
+                    drop(port_state);
+                    reverse_map.remove(port.reverse_key());
+                    false
+                } else {
+                    assert!(
+                        !entry.in_use(),
+                        "ipc_right_copyout: a receive right into an entry in use, not yet"
+                    );
+                    port_state.receiver = Receiver::Space(NonNull::from(space));
+                    port_state.receiver_name = name;
+                    drop(port_state);
+                    true
+                };
+                entry.bits.rights |= Rights::RECEIVE;
+                takes.then_some(entry)
             }
             _ => panic!("ipc_right_copyout: strange rights"),
         }

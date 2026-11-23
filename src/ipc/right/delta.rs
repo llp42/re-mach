@@ -60,7 +60,15 @@ impl Space {
                     drop(state);
                     return Ok(());
                 }
-                if delta != -1 || rights.bits() != Rights::RECEIVE.bits() {
+                if delta != -1 {
+                    drop(state);
+                    return Err(Error::InvalidValue);
+                }
+                if rights.bits() == (Rights::SEND | Rights::RECEIVE).bits() {
+                    SpaceState::destroy_send_receive(state, self, name);
+                    return Ok(());
+                }
+                if rights.bits() != Rights::RECEIVE.bits() {
                     drop(state);
                     return Err(Error::InvalidValue);
                 }

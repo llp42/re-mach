@@ -40,6 +40,8 @@ impl Port {
                 receivers: LinkedList::new(IpcQueueAdapter::NEW),
                 protected_payload: None,
                 orphaned: false,
+                no_senders: None,
+                port_destroyed: None,
             }),
         }
     }

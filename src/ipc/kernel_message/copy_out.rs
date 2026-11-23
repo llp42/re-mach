@@ -87,7 +87,13 @@ impl KernelMessage {
             );
             // The entry takes the right's reference.
             let entry = state
-                .put_right(reply_name, MessageType::PortSendOnce, &reply, reply_state)
+                .put_right(
+                    space,
+                    reply_name,
+                    MessageType::PortSendOnce,
+                    &reply,
+                    reply_state,
+                )
                 .expect("ipc_kmsg_copyout_header: a send-once right merged");
             entry.object = Some(Object::Port(reply));
             // Locked before the space is unlocked, so its receive right can't
@@ -166,10 +172,12 @@ impl KernelMessage {
             let mut names = None;
             // MACH_MSG_TYPE_PORT_ANY: from MOVE_RECEIVE to MAKE_SEND_ONCE.
             if (16..=21).contains(&name) {
-                assert!(
-                    name == MessageType::PortSend.number(),
-                    "ipc_kmsg_copyout_object: type {name}, not yet"
-                );
+                let carried = match MessageType::try_from(name) {
+                    Ok(MessageType::PortReceive) => MessageType::PortReceive,
+                    Ok(MessageType::PortSend) => MessageType::PortSend,
+                    Ok(MessageType::PortSendOnce) => MessageType::PortSendOnce,
+                    _ => panic!("ipc_kmsg_copyout_object: type {name}, not yet"),
+                };
                 let slots = if inline {
                     message[offset..offset + length].as_chunks_mut::<8>().0
                 } else {
@@ -203,8 +211,13 @@ impl KernelMessage {
                 };
                 for slot in slots {
                     let address = usize::from_le_bytes(*slot);
+                    // MACH_PORT_NULL: no right to copy out.
+                    if address == 0 {
+                        *slot = 0usize.to_le_bytes();
+                        continue;
+                    }
                     assert!(
-                        !matches!(address, 0 | usize::MAX),
+                        address != usize::MAX,
                         "ipc_kmsg_copyout_object: invalid_port_to_name, not yet"
                     );
                     let port =
@@ -213,13 +226,9 @@ impl KernelMessage {
                     // to it given up by `into_raw`, which the handle takes, as the
                     // slot is overwritten below.
                     let port = unsafe { Reference::from_raw(port) };
-                    let port_name = space.copy_out(port, MessageType::PortSend).unwrap_or_else(
-                        |(error, _)| {
-                            panic!(
-                                "ipc_kmsg_copyout_object: {error:?}, ipc_object_destroy, not yet"
-                            )
-                        },
-                    );
+                    let port_name = space.copy_out(port, carried).unwrap_or_else(|(error, _)| {
+                        panic!("ipc_kmsg_copyout_object: {error:?}, ipc_object_destroy, not yet")
+                    });
                     // The name, zero-extended.
                     *slot = usize::try_from(u32::from(port_name)).unwrap().to_le_bytes();
                 }

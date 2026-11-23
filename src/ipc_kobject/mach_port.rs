@@ -12,7 +12,7 @@ use crate::ipc::MessageType;
 use crate::ipc::mach_port::Status;
 use crate::ipc::port::port::Port;
 use crate::ipc::port::port_name::{PortName, PortType};
-use crate::ipc::port::send_right::SendRight;
+use crate::ipc::port::send_right::{SendOnceRight, SendRight};
 use crate::ipc::space::Space;
 use crate::reference::Reference;
 
@@ -29,6 +29,13 @@ mig::subsystem! {
     10 mach_port_set_qlimit(task = Port::task_space, name: PortName, qlimit: u32);
     12 mach_port_get_set_status(task = Port::task_space, name: PortName) -> (members: OutOfLine<PortName>);
     13 mach_port_move_member(task = Port::task_space, member: PortName, after: PortName);
+    14 mach_port_request_notification(
+        task = Port::task_space,
+        name: PortName,
+        id: i32,
+        sync: u32,
+        notify: SendOnceRight
+    ) -> (previous: PortOnce);
     15 mach_port_insert_right(task = Port::task_space, name: PortName, poly: SendRight);
     16 mach_port_extract_right(task = Port::task_space, name: PortName, msgt_name: u32) -> (poly: Port);
     17 mach_port_get_receive_status(task = Port::task_space, name: PortName) -> (status: Status);
@@ -233,6 +240,30 @@ fn mach_port_move_member(
         return Err(Error::InvalidTask);
     };
     space.move_member(member, after)
+}
+
+/// Serves `mach_port_request_notification`: the notification `id` for
+/// `name` in `space`, `notify` its send-once right; gives the previous
+/// request's right.
+///
+/// # Errors
+///
+/// As `Space::request_notification`.
+///
+/// # Panics
+///
+/// As `Space::request_notification`.
+fn mach_port_request_notification(
+    space: Option<&Reference<Space>>,
+    name: PortName,
+    id: i32,
+    sync: u32,
+    notify: Option<SendOnceRight>,
+) -> Result<Option<Reference<Port>>, Error> {
+    let Some(space) = space else {
+        return Err(Error::InvalidTask);
+    };
+    space.request_notification(name, id, sync, notify)
 }
 
 /// Serves `mach_port_extract_right`: the right `msgt_name` names for

@@ -46,3 +46,29 @@ impl Drop for SendRight {
         Port::release_send(unsafe { ManuallyDrop::take(&mut self.0) });
     }
 }
+
+/// A send-once right for a port, released as it drops.
+pub struct SendOnceRight(ManuallyDrop<Reference<Port>>);
+
+impl SendOnceRight {
+    /// The handle of a send-once right for `port`, which the caller gives
+    /// with its reference.
+    pub const fn new(port: Reference<Port>) -> Self {
+        Self(ManuallyDrop::new(port))
+    }
+
+    /// Its port's reference, which takes the right with it, unreleased.
+    pub fn into_reference(self) -> Reference<Port> {
+        let mut right = ManuallyDrop::new(self);
+        // SAFETY: `right` never drops, and its field is not used after.
+        unsafe { ManuallyDrop::take(&mut right.0) }
+    }
+}
+
+impl Drop for SendOnceRight {
+    /// Releases the right, as `ipc_port_release_sonce` does.
+    fn drop(&mut self) {
+        // SAFETY: drop runs once, and the field is not used after.
+        Port::release_send_once(unsafe { ManuallyDrop::take(&mut self.0) });
+    }
+}

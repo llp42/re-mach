@@ -169,8 +169,9 @@ impl Space {
                 .unwrap_or_else(|| panic!("ipc_object_copyin: copy_dead, IO_DEAD, not yet")),
             MessageType::MakeSend => state.make_send(self, name),
             MessageType::PortSend => state.move_send(name),
-            MessageType::PortSendOnce | MessageType::MakeSendOnce => {
-                panic!("ipc_right_copyin: MOVE_SEND_ONCE and MAKE_SEND_ONCE, not yet")
+            MessageType::MakeSendOnce => state.make_send_once(self, name),
+            MessageType::PortSendOnce => {
+                panic!("ipc_right_copyin: MOVE_SEND_ONCE, not yet")
             }
             _ => panic!("ipc_right_copyin: strange rights"),
         };
@@ -220,7 +221,7 @@ impl Space {
             };
         // The entry takes the right's reference, unless the right merged into
         // one it holds.
-        if let Some(entry) = state.put_right(name, message_type, &port, port_state) {
+        if let Some(entry) = state.put_right(self, name, message_type, &port, port_state) {
             entry.object = Some(Object::Port(port));
         } else {
             drop(port);
@@ -246,13 +247,14 @@ impl Space {
         message_type: MessageType,
     ) -> PortName {
         assert!(port_state.active, "ipc_object_copyout_dest: a dead port");
+        let mut no_senders = None;
         let name = match message_type {
             MessageType::PortSend => {
                 port_state.send_rights = port_state
                     .send_rights
                     .checked_sub(1)
                     .expect("ipc_object_copyout_dest: no send right");
-                // No call makes a no-senders request yet: none to notify.
+                no_senders = port_state.take_no_senders();
                 if port_state.receiver == Receiver::Space(NonNull::from(self)) {
                     port_state.receiver_name
                 } else {
@@ -276,6 +278,10 @@ impl Space {
             _ => panic!("ipc_object_copyout_dest: strange rights"),
         };
         drop(port_state);
+        if let Some((request, mscount)) = no_senders {
+            // As ipc_notify_no_senders.
+            super::notify::no_senders(request, mscount);
+        }
         name
     }
 
@@ -339,7 +345,7 @@ impl Space {
         };
         // The entry takes the right's reference, unless the right merged into
         // one it holds.
-        if let Some(entry) = state.put_right(name, message_type, &port, port_state) {
+        if let Some(entry) = state.put_right(self, name, message_type, &port, port_state) {
             entry.object = Some(Object::Port(port));
         } else {
             drop(port);

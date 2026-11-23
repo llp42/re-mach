@@ -11,6 +11,7 @@ use super::object::Object;
 use super::port;
 use super::port::port::Port;
 use super::port::port_name::{PortName, PortType, Right};
+use super::port::send_right::SendOnceRight;
 use super::port_set::PortSet;
 use super::space::{Space, SpaceState};
 use crate::arch::PAGE_SIZE;
@@ -335,6 +336,90 @@ pub const MACH_PORT_QLIMIT_MAX: u32 = 16;
 const MACH_PORT_KTYPE_USER_DEVICE: u32 = 28;
 
 impl Space {
+    /// Requests the notification `id` for `name`, `notify` its send-once
+    /// right, as `mach_port_request_notification` does; gives the previous
+    /// request's right.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidTask` for a dead space, `InvalidValue` for another `id` or a
+    /// port-destroyed request with `sync`, and as `receive_port`.
+    ///
+    /// # Panics
+    ///
+    /// For a dead name's dead-name request: not yet.
+    pub fn request_notification(
+        &self,
+        name: PortName,
+        id: i32,
+        sync: u32,
+        notify: Option<SendOnceRight>,
+    ) -> Result<Option<Reference<Port>>, Error> {
+        match id {
+            super::notify::PORT_DESTROYED => {
+                if sync != 0 {
+                    return Err(Error::InvalidValue);
+                }
+                let port = self.receive_port(name)?;
+                let mut state = port.state.lock();
+                assert!(
+                    state.active,
+                    "mach_port_request_notification: a dead port, not yet"
+                );
+                let previous =
+                    state.set_port_destroyed_request(notify.map(SendOnceRight::into_reference));
+                drop(state);
+                Ok(previous)
+            }
+            super::notify::NO_SENDERS => {
+                let port = self.receive_port(name)?;
+                let mut state = port.state.lock();
+                let (previous, immediate) =
+                    state.set_no_senders_request(sync, notify.map(SendOnceRight::into_reference));
+                drop(state);
+                if let Some((request, mscount)) = immediate {
+                    super::notify::no_senders(request, mscount);
+                }
+                Ok(previous)
+            }
+            super::notify::DEAD_NAME => {
+                let mut state = self.state.write();
+                if !state.active {
+                    return Err(Error::InvalidTask);
+                }
+                let entry = state.map.get_mut(name.key()).ok_or(Error::InvalidName)?;
+                if entry.bits.rights.bits() == Rights::DEAD_NAME.bits() {
+                    assert!(
+                        sync != 0 && notify.is_some(),
+                        "mach_port_request_notification: a dead name, KERN_INVALID_ARGUMENT, not yet"
+                    );
+                    let request = notify.unwrap().into_reference();
+                    assert!(
+                        entry.bits.user_references < u16::MAX,
+                        "mach_port_request_notification: MACH_PORT_UREFS_MAX, not yet"
+                    );
+                    entry.bits.user_references += 1;
+                    let dead_name = entry.name;
+                    drop(state);
+                    super::notify::dead_name(request, dead_name);
+                    return Ok(None);
+                }
+                assert!(
+                    entry
+                        .bits
+                        .rights
+                        .intersects(Rights::SEND | Rights::SEND_ONCE | Rights::RECEIVE),
+                    "mach_port_request_notification: an entry with no right, KERN_INVALID_RIGHT, not yet"
+                );
+                let previous = entry.dead_name.take();
+                entry.dead_name = notify.map(SendOnceRight::into_reference);
+                drop(state);
+                Ok(previous)
+            }
+            _ => Err(Error::InvalidValue),
+        }
+    }
+
     /// The receive right `name` holds, with a reference, as
     /// `ipc_port_translate_receive` gives it.
     ///

@@ -366,15 +366,20 @@ impl KernelMessage {
                 let Ok(
                     message_type @ (MessageType::CopySend
                     | MessageType::MakeSend
-                    | MessageType::PortSend),
+                    | MessageType::PortSend
+                    | MessageType::MakeSendOnce),
                 ) = MessageType::try_from(name)
                 else {
                     panic!(
-                        "ipc_kmsg_copyin_body: type {name}, MOVE_RECEIVE, MOVE_SEND_ONCE and MAKE_SEND_ONCE rights, not yet"
+                        "ipc_kmsg_copyin_body: type {name}, MOVE_RECEIVE and MOVE_SEND_ONCE rights, not yet"
                     );
                 };
                 // As ipc_object_copyin_type.
-                word = (word & !0xff) | u64::from(MessageType::PortSend.number());
+                let carried = match message_type {
+                    MessageType::MakeSendOnce => MessageType::PortSendOnce,
+                    _ => MessageType::PortSend,
+                };
+                word = (word & !0xff) | u64::from(carried.number());
                 message[place..place + 8].copy_from_slice(&word.to_le_bytes());
                 // Inline, else in the out-of-line array.
                 let ports = array.unwrap_or_else(|| &mut message[data..offset]);

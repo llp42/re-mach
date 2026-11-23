@@ -5,6 +5,7 @@
 use core::ptr::NonNull;
 
 use crate::ipc::entry::Rights;
+use crate::ipc::notify;
 use crate::ipc::object::Object;
 use crate::ipc::port::port::Receiver;
 use crate::ipc::port::port_name::PortName;
@@ -88,7 +89,7 @@ impl SpaceState {
                 .send_rights
                 .checked_sub(1)
                 .expect("ipc_right_dealloc: a port with no send right");
-            // No call makes a no-senders request yet: the last sender leaves none.
+            let no_senders = port_state.take_no_senders();
             assert!(
                 entry.request == 0,
                 "ipc_right_dealloc: ipc_right_dncancel, not yet"
@@ -113,6 +114,10 @@ impl SpaceState {
             drop(state);
             // As ip_release, once nothing borrows the port.
             drop(port);
+            if let Some((request, mscount)) = no_senders {
+                // As ipc_notify_no_senders.
+                notify::no_senders(request, mscount);
+            }
         } else if rights == (Rights::SEND | Rights::RECEIVE).bits() {
             assert!(
                 entry.bits.user_references > 0,
@@ -132,6 +137,7 @@ impl SpaceState {
                 "ipc_right_dealloc: a port with no send right"
             );
             port_state.send_rights -= 1;
+            let no_senders = port_state.take_no_senders();
             drop(port_state);
             if entry.bits.user_references == 1 {
                 let Self {
@@ -153,8 +159,101 @@ impl SpaceState {
                     .user_references -= 1;
             }
             drop(state);
+            if let Some((request, mscount)) = no_senders {
+                // As ipc_notify_no_senders.
+                notify::no_senders(request, mscount);
+            }
         } else {
             panic!("ipc_right_dealloc: KERN_INVALID_RIGHT, not yet");
+        }
+    }
+
+    /// Destroys the receive right of `name`'s send and receive entry in the
+    /// write-locked, alive space, as `ipc_right_delta` does for a receive
+    /// right's `-1`: the send right turns into a dead name, and the port
+    /// dies, or a port-destroyed request takes it.
+    ///
+    /// # Panics
+    ///
+    /// If the space or the port is dead, the entry isn't a live send and
+    /// receive right with user references, its name isn't the port's, a
+    /// message-accepted request waits, or a dead-name request's user
+    /// references would reach the maximum. As `PortState::clear_receiver`,
+    /// `PortState::clear_receiver_limbo` and `Port::destroy`.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the port's guard is moved into its destroy"
+    )]
+    pub(in crate::ipc) fn destroy_send_receive(
+        mut state: SleepLockWriteGuard<'_, Self>,
+        space: &Space,
+        name: PortName,
+    ) {
+        assert!(state.active, "ipc_right_delta: a dead space");
+        let entry = state
+            .map
+            .get(name.key())
+            .expect("ipc_right_delta: no entry");
+        assert!(
+            entry.bits.rights.bits() == (Rights::SEND | Rights::RECEIVE).bits(),
+            "ipc_right_delta: not a send and receive right"
+        );
+        assert!(
+            entry.bits.user_references > 0,
+            "ipc_right_delta: a send and receive right with no user references"
+        );
+        assert!(
+            !entry.bits.message_accepted,
+            "ipc_right_delta: ipc_marequest_cancel, not yet"
+        );
+        let entry = state
+            .map
+            .get_mut(name.key())
+            .expect("ipc_right_delta: no entry");
+        // The entry's reference, ours now: under the space's lock, no one
+        // sees the object clear before the port locks.
+        let Some(Object::Port(port)) = entry.object.take() else {
+            panic!("ipc_right_delta: a send and receive right with no port");
+        };
+        let dead_name = entry.dead_name.take();
+        // The send right turns into a dead name; its dead-name request, if
+        // one, keeps a user reference for the notification's name.
+        entry.bits.rights = Rights::DEAD_NAME;
+        if dead_name.is_some() {
+            entry.bits.user_references = entry
+                .bits
+                .user_references
+                .checked_add(1)
+                .expect("ipc_right_delta: MACH_PORT_UREFS_MAX, not yet");
+        }
+        state.reverse_map.remove(port.reverse_key());
+        let mut port_state = port.state.lock();
+        assert!(port_state.active, "ipc_right_delta: a dead port");
+        assert!(
+            port_state.receiver == Receiver::Space(NonNull::from(space))
+                && port_state.receiver_name == name,
+            "ipc_right_delta: another space's or name's receive right"
+        );
+        if let Some(request) = port_state.take_port_destroyed() {
+            // As ipc_notify_port_destroyed: the port lives on with
+            // `port`'s reference, and a dead-name request goes with it.
+            port_state.clear_receiver_limbo();
+            drop(port_state);
+            drop(state);
+            drop(dead_name);
+            notify::port_destroyed(request, port);
+            return;
+        }
+        let send_once = port_state.no_senders.take();
+        port_state.clear_receiver();
+        port.destroy(port_state);
+        drop(state);
+        drop(port);
+        if let Some(request) = send_once {
+            notify::send_once(request);
+        }
+        if let Some(request) = dead_name {
+            notify::dead_name(request, name);
         }
     }
 
@@ -235,12 +334,12 @@ impl SpaceState {
             let Some(Object::Port(port)) = entry.object.take() else {
                 panic!("ipc_right_destroy: a receive right with no port");
             };
+            let dead_name = entry.dead_name.take();
             let mut port_state = port.state.lock();
             assert!(
                 port_state.active,
                 "ipc_right_destroy: a dead port's receive right"
             );
-            // As ipc_right_dncancel_macro: no request, none to cancel.
             assert!(
                 entry.request == 0,
                 "ipc_right_destroy: ipc_right_dncancel, not yet"
@@ -251,11 +350,31 @@ impl SpaceState {
                 port_state.receiver == Receiver::Space(NonNull::from(space)),
                 "ipc_right_destroy: another space's receive right"
             );
-            port_state.clear_receiver();
-            port.destroy(port_state);
-            // As ipc_port_destroy's ipc_port_release, once nothing borrows the
-            // port: the entry's reference, which frees it at zero.
-            drop(port);
+            if let Some(request) = port_state.take_port_destroyed() {
+                // As ipc_notify_port_destroyed: the port lives on with
+                // `port`'s reference.
+                port_state.clear_receiver_limbo();
+                drop(port_state);
+                notify::port_destroyed(request, port);
+                if let Some(request) = dead_name {
+                    // As ipc_notify_port_deleted.
+                    notify::port_deleted(request, name);
+                }
+            } else {
+                let send_once = port_state.no_senders.take();
+                port_state.clear_receiver();
+                port.destroy(port_state);
+                // As ipc_port_destroy's ipc_port_release, once nothing
+                // borrows the port: the entry's reference, which frees it at
+                // zero.
+                drop(port);
+                if let Some(request) = send_once {
+                    notify::send_once(request);
+                }
+                if let Some(request) = dead_name {
+                    notify::port_deleted(request, name);
+                }
+            }
         } else if [
             Rights::SEND,
             Rights::SEND | Rights::RECEIVE,
