@@ -5,7 +5,9 @@
 use core::mem::ManuallyDrop;
 use core::ops::Range;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{
+    AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+};
 
 use intrusive_collections::{Bound, RBTree, RBTreeAtomicLink, UnsafeRef};
 
@@ -287,7 +289,7 @@ impl Contents {
             gap_sequence: AtomicU64::new(0),
             protection: AtomicU32::new(entry.protection().bits()),
             max_protection: AtomicU32::new(entry.max_protection().bits()),
-            inheritance: entry.inheritance,
+            inheritance: AtomicU8::new(entry.inheritance.load(Ordering::Relaxed)),
             backing: Backing::Object {
                 object: AtomicPtr::new(object.load(Ordering::Relaxed)),
                 offset: AtomicUsize::new(offset.load(Ordering::Relaxed)),
@@ -361,7 +363,7 @@ impl Contents {
             gap_sequence: AtomicU64::new(0),
             protection: AtomicU32::new(entry.protection().bits()),
             max_protection: AtomicU32::new(entry.max_protection().bits()),
-            inheritance: entry.inheritance,
+            inheritance: AtomicU8::new(entry.inheritance.load(Ordering::Relaxed)),
             backing: Backing::Object {
                 object: AtomicPtr::new(object.load(Ordering::Relaxed)),
                 offset: AtomicUsize::new(offset.load(Ordering::Relaxed) + (end - entry.start())),

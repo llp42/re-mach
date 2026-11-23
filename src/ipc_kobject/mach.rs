@@ -21,7 +21,7 @@ use crate::task::task::Task;
 use crate::thread;
 use crate::thread::machine::MachineThread as _;
 use crate::thread::thread::Thread;
-use crate::vm::map::change::{Change, Placement};
+use crate::vm::map::change::{Change, Placement, Source};
 use crate::vm::map::map::Map;
 use crate::vm::object::offset::Offset;
 use crate::vm::user::Mapping;
@@ -54,7 +54,35 @@ mig::subsystem! {
         set_maximum: Boolean,
         new_protection: u32
     );
+    25 vm_inherit(
+        target_task = Port::task_map,
+        address: VirtualAddress,
+        size: usize,
+        new_inheritance: u32
+    );
+    26 vm_read(
+        target_task = Port::task_map,
+        address: VirtualAddress,
+        size: usize
+    ) -> (data: OutOfLine<u8>);
     27 vm_write(target_task = Port::task_map, address: VirtualAddress, data: OutOfLine<u8>);
+    28 vm_copy(
+        target_task = Port::task_map,
+        source_address: VirtualAddress,
+        size: usize,
+        dest_address: VirtualAddress
+    );
+    29 vm_region(target_task = Port::task_map, address: VirtualAddress) -> (
+        address: VirtualAddress,
+        size: usize,
+        protection: u32,
+        max_protection: u32,
+        inheritance: u32,
+        is_shared: Boolean,
+        object_name: Port,
+        offset: usize
+    );
+    30 vm_statistics(target_task = Port::task_map) -> (vm_stats: [i32; 13]);
     56 task_suspend(target_task = Port::to_task);
     57 task_resume(target_task = Port::to_task);
     59 task_set_special_port(task = Port::to_task, which_port: i32, special_port: SendRight);
@@ -330,6 +358,137 @@ fn vm_protect(
         change,
         Protection::from_bits_retain(protection),
     )
+}
+
+/// Serves `vm_statistics`: the host's page statistics.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no map.
+fn vm_statistics(map: Option<&Reference<Map>>) -> Result<[i32; 13], Error> {
+    if map.is_none() {
+        return Err(Error::InvalidArgument);
+    }
+    Ok(vm::user::statistics())
+}
+
+/// Serves `vm_inherit`: what child tasks get of `size` bytes of `map` from
+/// `address`, as `new_inheritance` says.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no map or inheritance; as `Map::inherit`.
+///
+/// # Panics
+///
+/// For `VM_INHERIT_SHARE`: not yet. As `Map::inherit`.
+fn vm_inherit(
+    map: Option<&Reference<Map>>,
+    address: VirtualAddress,
+    size: usize,
+    new_inheritance: u32,
+) -> Result<(), Error> {
+    let Some(map) = map else {
+        return Err(Error::InvalidArgument);
+    };
+    let Some(inheritance) = Inheritance::from_number(new_inheritance) else {
+        panic!("vm_inherit: VM_INHERIT_SHARE, not yet");
+    };
+    // As trunc_page and round_page.
+    let start = address.align_down(arch::PAGE_SIZE);
+    let end = VirtualAddress::from(usize::from(address).wrapping_add(size))
+        .next_multiple_of(arch::PAGE_SIZE);
+    map.inherit(start..end, inheritance)
+}
+
+/// Serves `vm_read`: `size` bytes of `map` from `address`, in an out-of-line
+/// copy.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no map.
+///
+/// # Panics
+///
+/// As `Map::copy_in`.
+fn vm_read(
+    map: Option<&Reference<Map>>,
+    address: VirtualAddress,
+    size: usize,
+) -> Result<OutOfLine<u8>, Error> {
+    let Some(map) = map else {
+        return Err(Error::InvalidArgument);
+    };
+    if size == 0 {
+        return Ok(OutOfLine::empty());
+    }
+    let copy = map.copy_in(address..address + size, Source::Keep);
+    Ok(OutOfLine::new(copy, size))
+}
+
+/// Serves `vm_copy`: `size` bytes of `map` from `source` copied over it at
+/// `destination`.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no map; as `vm::user::copy`.
+///
+/// # Panics
+///
+/// As `vm::user::copy`.
+fn vm_copy(
+    map: Option<&Reference<Map>>,
+    source: VirtualAddress,
+    size: usize,
+    destination: VirtualAddress,
+) -> Result<(), Error> {
+    let Some(map) = map else {
+        return Err(Error::InvalidArgument);
+    };
+    vm::user::copy(map, source, size, destination)
+}
+
+/// Serves `vm_region`: what `map` maps at or after `address`, starting with
+/// the region's own address, and a send right for its object's name port.
+///
+/// # Errors
+///
+/// `InvalidArgument` for no map, and `NoSpace` if no entry lies at or after
+/// `address`; as `Map::region`.
+#[expect(clippy::type_complexity, reason = "vm_region's outs")]
+fn vm_region(
+    map: Option<&Reference<Map>>,
+    address: VirtualAddress,
+) -> Result<
+    (
+        VirtualAddress,
+        usize,
+        u32,
+        u32,
+        u32,
+        Boolean,
+        Reference<Port>,
+        usize,
+    ),
+    Error,
+> {
+    let Some(map) = map else {
+        return Err(Error::InvalidArgument);
+    };
+    let region = map.region(address)?;
+    let object_name = region
+        .object_name
+        .unwrap_or_else(|| panic!("vm_region: an object with no name port, not yet"));
+    Ok((
+        region.start,
+        region.end - region.start,
+        region.protection.bits(),
+        region.max_protection.bits(),
+        u32::from(region.inheritance.number()),
+        Boolean::from(false),
+        object_name,
+        usize::from(region.offset),
+    ))
 }
 
 /// Serves `vm_write`: the memory `data` holds written over `map` from

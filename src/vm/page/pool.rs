@@ -88,6 +88,22 @@ pub fn print_pools() {
     }
 }
 
+/// The pages free, active, inactive and wired, as `vm_statistics` reports
+/// them.
+///
+/// # Panics
+///
+/// If the page array is not set up.
+pub(in crate::vm) fn statistics() -> (usize, usize, usize, usize) {
+    let free = DMA_RESERVE.lock().free + QUEUES.free.pages.load(Ordering::Relaxed);
+    (
+        free,
+        QUEUES.active.pages.load(Ordering::Relaxed),
+        QUEUES.inactive.pages.load(Ordering::Relaxed),
+        QUEUES.wired_pages.load(Ordering::Relaxed),
+    )
+}
+
 /// Whether every pool is usable for unprivileged allocations: it has no
 /// page in use to page out, or at least its high threshold of free pages.
 /// The DMA reserve's pages are never paged out.

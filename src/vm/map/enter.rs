@@ -5,7 +5,9 @@
 use core::mem::ManuallyDrop;
 use core::ops::Range;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{
+    AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+};
 
 use intrusive_collections::{Bound, RBTreeAtomicLink};
 
@@ -71,7 +73,7 @@ impl Map {
             gap_sequence: AtomicU64::new(0),
             protection: AtomicU32::new(protection.bits()),
             max_protection: AtomicU32::new(max_protection.bits()),
-            inheritance,
+            inheritance: AtomicU8::new(inheritance.number()),
             backing: Backing::Object {
                 object: AtomicPtr::new(
                     object
@@ -114,7 +116,8 @@ impl Map {
         let extends = |neighbour: &Entry| {
             !matches!(neighbour.backing, Backing::Submap(_))
                 && !neighbour.in_transition.load(Ordering::Relaxed)
-                && neighbour.inheritance == entry.inheritance
+                && neighbour.inheritance.load(Ordering::Relaxed)
+                    == entry.inheritance.load(Ordering::Relaxed)
                 && neighbour.protection() == entry.protection()
                 && neighbour.max_protection() == entry.max_protection()
                 && neighbour.wire_count() == 0
@@ -287,7 +290,7 @@ impl Map {
             gap_sequence: AtomicU64::new(0),
             protection: AtomicU32::new((Protection::READ | Protection::WRITE).bits()),
             max_protection: AtomicU32::new(Protection::all().bits()),
-            inheritance: Inheritance::Copy,
+            inheritance: AtomicU8::new(Inheritance::Copy.number()),
             backing: Backing::Submap(submap.get().unwrap()),
             wire_count: AtomicU32::new(0),
             wired_access: AtomicU32::new(Protection::empty().bits()),
@@ -341,7 +344,7 @@ impl Map {
             gap_sequence: AtomicU64::new(0),
             protection: AtomicU32::new(protection.bits()),
             max_protection: AtomicU32::new(max_protection.bits()),
-            inheritance: Inheritance::Copy,
+            inheritance: AtomicU8::new(Inheritance::Copy.number()),
             backing: Backing::Object {
                 object: AtomicPtr::new(
                     object.map_or(ptr::null_mut(), |object| ptr::from_ref(object).cast_mut()),

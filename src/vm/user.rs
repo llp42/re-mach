@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The virtual memory calls of Mach's interface.
 
-use super::map::change::{Change, Placement, RangeCheck};
+use super::map::change::{Change, Placement, RangeCheck, Source};
 use super::map::copy::MapCopy;
 use super::map::map::Map;
 use super::object::{self, object::Object, offset::Offset};
@@ -204,6 +204,31 @@ pub fn cache_statistics() -> [i32; 11] {
     stats
 }
 
+/// The statistics `vm_statistics` reports, as GNU Mach fills them.
+pub fn statistics() -> [i32; 13] {
+    let (free, active, inactive, wired) = page::pool::statistics();
+    let count = |count: &core::sync::atomic::AtomicU32| {
+        i32::try_from(count.load(core::sync::atomic::Ordering::Relaxed)).unwrap()
+    };
+    [
+        i32::try_from(PAGE_SIZE).unwrap(),
+        i32::try_from(free).unwrap(),
+        i32::try_from(active).unwrap(),
+        i32::try_from(inactive).unwrap(),
+        i32::try_from(wired).unwrap(),
+        count(&super::STATISTICS.zero_fill_count),
+        // No reactivations are counted yet.
+        0,
+        count(&super::STATISTICS.pageins),
+        // No pageouts are counted yet.
+        0,
+        count(&super::STATISTICS.faults),
+        count(&super::STATISTICS.cow_faults),
+        count(&super::STATISTICS.lookups),
+        count(&super::STATISTICS.hits),
+    ]
+}
+
 /// Allocates `size` bytes of contiguous physical memory from `pmin` up to
 /// `pmax` and maps them into `map` for reading and writing, as
 /// `vm_allocate_contiguous` does; gives the address and the first page's
@@ -290,6 +315,29 @@ pub fn allocate_contiguous(
         page.unwire();
     }
     Ok((range.start, pages[0].address().0))
+}
+
+/// Copies `size` bytes of `map` from `source` over it at `destination`, as
+/// `vm_copy` does.
+///
+/// # Errors
+///
+/// As `Map::copy_overwrite`.
+///
+/// # Panics
+///
+/// As `Map::copy_in`.
+pub fn copy(
+    map: &Map,
+    source: VirtualAddress,
+    size: usize,
+    destination: VirtualAddress,
+) -> Result<(), Error> {
+    if size == 0 {
+        return Ok(());
+    }
+    let copy = map.copy_in(source..source + size, Source::Keep);
+    map.copy_overwrite(destination, Some(copy))
 }
 
 /// Wires `size` bytes of `map` from `address` for `access`, or unwires them

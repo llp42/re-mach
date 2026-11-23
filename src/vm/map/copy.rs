@@ -189,7 +189,7 @@ impl Map {
             // `ENTRY_CACHE`'s boxes (`Map::copy_in`), and its tree held the
             // only pointer to each; the copy has one owner and its entries'
             // gap links are unused, so out of the tree, it is the box's alone.
-            let mut entry = unsafe { CacheBox::from_raw(&ENTRY_CACHE, entry) };
+            let entry = unsafe { CacheBox::from_raw(&ENTRY_CACHE, entry) };
             assert!(
                 entry.wire_count() == 0,
                 "vm_map_copyout: a wired entry, PMAP_ENTER, not yet"
@@ -199,7 +199,9 @@ impl Map {
                 .start
                 .store(usize::from(range.start), Ordering::Relaxed);
             entry.end.store(usize::from(range.end), Ordering::Relaxed);
-            entry.inheritance = Inheritance::Copy;
+            entry
+                .inheritance
+                .store(Inheritance::Copy.number(), Ordering::Relaxed);
             entry.protection.store(
                 (Protection::READ | Protection::WRITE).bits(),
                 Ordering::Relaxed,

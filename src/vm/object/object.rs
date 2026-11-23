@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 
+use core::mem::ManuallyDrop;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, Ordering};
 
@@ -82,6 +83,17 @@ impl Object {
     /// `vm_region_create_proxy` copies one.
     pub fn pager_port(&self) -> Option<Reference<Port>> {
         self.lock().pager.as_ref().map(Port::copy_send)
+    }
+
+    /// A send right for its name port, if it has one, as `vm_object_name`
+    /// gives it.
+    pub fn name_port(&self) -> Option<Reference<Port>> {
+        let pointer = self.pager_name.load(Ordering::Acquire);
+        let port = NonNull::new(pointer)?;
+        // SAFETY: the slot keeps its port's reference while the object
+        // lives; this handle borrows it and never drops it.
+        let port = ManuallyDrop::new(unsafe { Reference::from_raw(port) });
+        Some(Port::make_send(&port))
     }
 }
 

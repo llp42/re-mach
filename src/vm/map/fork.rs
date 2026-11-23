@@ -53,7 +53,9 @@ impl Map {
                 matches!(entry.backing, Backing::Object { .. }),
                 "vm_map_fork: encountered a submap"
             );
-            match entry.inheritance {
+            match Inheritance::from_number(u32::from(entry.inheritance.load(Ordering::Relaxed)))
+                .expect("vm_map_fork: a bad inheritance")
+            {
                 Inheritance::Copy => {}
                 Inheritance::None => panic!("vm_map_fork: VM_INHERIT_NONE, not yet"),
             }

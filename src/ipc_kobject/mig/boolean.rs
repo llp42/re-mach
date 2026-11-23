@@ -11,6 +11,12 @@ use super::argument::{Inline, type_word};
 #[repr(transparent)]
 pub(in crate::ipc_kobject) struct Boolean(u32);
 
+impl From<bool> for Boolean {
+    fn from(boolean: bool) -> Self {
+        Self(u32::from(boolean))
+    }
+}
+
 impl From<Boolean> for bool {
     fn from(boolean: Boolean) -> Self {
         boolean.0 != 0

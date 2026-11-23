@@ -3,7 +3,9 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{
+    AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+};
 
 use intrusive_collections::rbtree::Cursor;
 use intrusive_collections::{KeyAdapter, RBTree, RBTreeAtomicLink, UnsafeRef, intrusive_adapter};
@@ -59,7 +61,7 @@ impl EntryReservation {
                     gap_sequence: AtomicU64::new(0),
                     protection: AtomicU32::new(Protection::empty().bits()),
                     max_protection: AtomicU32::new(Protection::empty().bits()),
-                    inheritance: Inheritance::Copy,
+                    inheritance: AtomicU8::new(Inheritance::Copy.number()),
                     backing: Backing::Object {
                         object: AtomicPtr::new(ptr::null_mut()),
                         offset: AtomicUsize::new(0),
@@ -133,8 +135,9 @@ pub struct Entry {
     /// The most it may ever allow, as `Protection`'s bits; changed only
     /// under the map's write lock.
     pub(super) max_protection: AtomicU32,
-    /// What a child task gets of it.
-    pub(super) inheritance: Inheritance,
+    /// What a child task gets of it, as an `Inheritance` number; changed
+    /// only under the map's write lock.
+    pub(super) inheritance: AtomicU8,
     /// What backs it.
     pub(in crate::vm) backing: Backing,
     /// How many times it is wired: its pages stay resident and mapped;
@@ -249,7 +252,7 @@ impl Entry {
             gap_sequence: AtomicU64::new(0),
             protection: AtomicU32::new(self.protection().bits()),
             max_protection: AtomicU32::new(self.max_protection().bits()),
-            inheritance: self.inheritance,
+            inheritance: AtomicU8::new(self.inheritance.load(Ordering::Relaxed)),
             backing: Backing::Object {
                 object: AtomicPtr::new(object.load(Ordering::Relaxed)),
                 offset: AtomicUsize::new(offset.load(Ordering::Relaxed)),
@@ -279,7 +282,7 @@ pub(super) fn coalesce(cursor: &Cursor<'_, EntryAdapter>) {
         || matches!(entry.backing, Backing::Submap(_))
         || previous.in_transition.load(Ordering::Relaxed)
         || entry.in_transition.load(Ordering::Relaxed)
-        || previous.inheritance != entry.inheritance
+        || previous.inheritance.load(Ordering::Relaxed) != entry.inheritance.load(Ordering::Relaxed)
         || previous.protection() != entry.protection()
         || previous.max_protection() != entry.max_protection()
         || previous.needs_copy.load(Ordering::Relaxed) != entry.needs_copy.load(Ordering::Relaxed)

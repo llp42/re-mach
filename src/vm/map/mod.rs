@@ -10,6 +10,7 @@ pub mod delete;
 pub mod enter;
 pub mod entry;
 pub mod fork;
+pub mod inherit;
 
 #[expect(clippy::module_inception, reason = "the file is named for its type")]
 pub mod map;

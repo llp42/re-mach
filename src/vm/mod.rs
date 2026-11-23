@@ -105,6 +105,25 @@ pub enum Inheritance {
     None,
 }
 
+impl Inheritance {
+    /// Its number, as Mach's `vm_inherit_t`.
+    pub const fn number(self) -> u8 {
+        match self {
+            Self::Copy => 1,
+            Self::None => 2,
+        }
+    }
+
+    /// The kind Mach's number `number` names, if it is one used here.
+    pub const fn from_number(number: u32) -> Option<Self> {
+        match number {
+            1 => Some(Self::Copy),
+            2 => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+
 /// The VM's event counts, as Mach's `vm_statistics` reports them; only
 /// those kept so far.
 struct Statistics {
@@ -119,7 +138,6 @@ struct Statistics {
     /// Lookups of a memory object's object.
     lookups: AtomicU32,
     /// Lookups that found an object.
-    #[expect(dead_code, reason = "vm_object_enter's hit counts it")]
     hits: AtomicU32,
 }
 
