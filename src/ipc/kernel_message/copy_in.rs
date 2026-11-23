@@ -251,10 +251,12 @@ impl KernelMessage {
         // the message holds a reference to it.
         let destination =
             unsafe { &*ptr::with_exposed_provenance::<Port>(self.header().remote_port) };
-        // ipc_kobject_vm_page_list: paging and device ports.
+        // ipc_kobject_vm_page_list: paging, device and user-device ports.
         let page_lists = matches!(
             destination.kernel_object(),
-            Some(KernelObject::PagingRequest(_) | KernelObject::Device(_))
+            Some(
+                KernelObject::PagingRequest(_) | KernelObject::Device(_) | KernelObject::UserDevice
+            )
         );
         let end = usize::try_from(self.header().size).unwrap();
         let message = self.message_mut();

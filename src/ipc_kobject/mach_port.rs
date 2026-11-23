@@ -5,9 +5,11 @@
 //! definitions; only those written so far.
 
 use super::mig;
-use super::mig::argument::OutOfLine;
+use super::mig::argument::{Inline, OutOfLine, type_word};
 use crate::error::Error;
+use crate::host::Host;
 use crate::ipc::MessageType;
+use crate::ipc::mach_port::Status;
 use crate::ipc::port::port::Port;
 use crate::ipc::port::port_name::{PortName, PortType};
 use crate::ipc::port::send_right::SendRight;
@@ -24,7 +26,26 @@ mig::subsystem! {
     6 mach_port_deallocate(task = Port::task_space, name: PortName);
     7 mach_port_get_refs(task = Port::task_space, name: PortName, right: u32) -> (refs: u32);
     8 mach_port_mod_refs(task = Port::task_space, name: PortName, right: u32, delta: i32);
+    10 mach_port_set_qlimit(task = Port::task_space, name: PortName, qlimit: u32);
+    12 mach_port_get_set_status(task = Port::task_space, name: PortName) -> (members: OutOfLine<PortName>);
+    13 mach_port_move_member(task = Port::task_space, member: PortName, after: PortName);
     15 mach_port_insert_right(task = Port::task_space, name: PortName, poly: SendRight);
+    16 mach_port_extract_right(task = Port::task_space, name: PortName, msgt_name: u32) -> (poly: Port);
+    17 mach_port_get_receive_status(task = Port::task_space, name: PortName) -> (status: Status);
+    21 mach_port_set_protected_payload(task = Port::task_space, name: PortName, payload: usize);
+    22 mach_port_clear_protected_payload(task = Port::task_space, name: PortName);
+    23 mach_port_set_ktype(
+        host = Port::as_privileged_host,
+        task = Port::task_space,
+        name: PortName,
+        right: u32,
+        ktype: u32
+    );
+}
+
+// SAFETY: `Status` is `repr(C)`, nine `u32`s.
+unsafe impl Inline for Status {
+    const WORD: u64 = type_word(MessageType::Integer32, 32, 9);
 }
 
 /// Serves `mach_port_names`: the names `space` holds rights under, and
@@ -161,4 +182,164 @@ fn mach_port_insert_right(
             Port::release_send(port);
             error
         })
+}
+
+/// Serves `mach_port_set_qlimit`: `name`'s receive right in `space` queues
+/// at most `qlimit` messages.
+///
+/// # Errors
+///
+/// As `Space::set_queue_limit`.
+fn mach_port_set_qlimit(
+    space: Option<&Reference<Space>>,
+    name: PortName,
+    qlimit: u32,
+) -> Result<(), Error> {
+    let Some(space) = space else {
+        return Err(Error::InvalidTask);
+    };
+    space.set_queue_limit(name, qlimit)
+}
+
+/// Serves `mach_port_get_set_status`: the names of `name`'s port set's
+/// members in `space`, in an out-of-line array.
+///
+/// # Errors
+///
+/// As `Space::set_members`.
+fn mach_port_get_set_status(
+    space: Option<&Reference<Space>>,
+    name: PortName,
+) -> Result<OutOfLine<PortName>, Error> {
+    let Some(space) = space else {
+        return Err(Error::InvalidTask);
+    };
+    let (members, count) = space.set_members(name)?;
+    Ok(members.map_or_else(OutOfLine::empty, |copy| OutOfLine::new(copy, count)))
+}
+
+/// Serves `mach_port_move_member`: `member`'s port in `space` into the set
+/// `after` names, or out of its set for `MACH_PORT_NULL`.
+///
+/// # Errors
+///
+/// As `Space::move_member`.
+fn mach_port_move_member(
+    space: Option<&Reference<Space>>,
+    member: PortName,
+    after: PortName,
+) -> Result<(), Error> {
+    let Some(space) = space else {
+        return Err(Error::InvalidTask);
+    };
+    space.move_member(member, after)
+}
+
+/// Serves `mach_port_extract_right`: the right `msgt_name` names for
+/// `name` in `space`, extracted as if `space` sent it.
+///
+/// # Errors
+///
+/// `InvalidTask` for no space, `InvalidValue` for no port right; as
+/// `Space::extract_right`.
+///
+/// # Panics
+///
+/// For a right whose copy-in is not written: not yet.
+fn mach_port_extract_right(
+    space: Option<&Reference<Space>>,
+    name: PortName,
+    msgt_name: u32,
+) -> Result<Reference<Port>, Error> {
+    let Some(space) = space else {
+        return Err(Error::InvalidTask);
+    };
+    // MACH_MSG_TYPE_PORT_ANY: from MOVE_RECEIVE to MAKE_SEND_ONCE.
+    if !(16..=21).contains(&msgt_name) {
+        return Err(Error::InvalidValue);
+    }
+    let Ok(msgt_name) = u8::try_from(msgt_name) else {
+        return Err(Error::InvalidValue);
+    };
+    let Ok(message_type) = MessageType::try_from(msgt_name) else {
+        panic!("mach_port_extract_right: type {msgt_name}, not yet");
+    };
+    if !matches!(
+        message_type,
+        MessageType::CopySend | MessageType::MakeSend | MessageType::PortSend
+    ) {
+        panic!("mach_port_extract_right: type {msgt_name}, not yet");
+    }
+    Ok(space.extract_right(name, message_type))
+}
+
+/// Serves `mach_port_get_receive_status`: the status of `name`'s receive
+/// right in `space`.
+///
+/// # Errors
+///
+/// As `Space::receive_status`.
+fn mach_port_get_receive_status(
+    space: Option<&Reference<Space>>,
+    name: PortName,
+) -> Result<Status, Error> {
+    let Some(space) = space else {
+        return Err(Error::InvalidTask);
+    };
+    space.receive_status(name)
+}
+
+/// Serves `mach_port_set_protected_payload`: `name`'s receive right in
+/// `space` carries `payload` in place of its name.
+///
+/// # Errors
+///
+/// As `Space::set_protected_payload`.
+fn mach_port_set_protected_payload(
+    space: Option<&Reference<Space>>,
+    name: PortName,
+    payload: usize,
+) -> Result<(), Error> {
+    let Some(space) = space else {
+        return Err(Error::InvalidTask);
+    };
+    space.set_protected_payload(name, Some(u64::try_from(payload).unwrap()))
+}
+
+/// Serves `mach_port_clear_protected_payload`: `name`'s receive right in
+/// `space` carries its name again.
+///
+/// # Errors
+///
+/// As `Space::set_protected_payload`.
+fn mach_port_clear_protected_payload(
+    space: Option<&Reference<Space>>,
+    name: PortName,
+) -> Result<(), Error> {
+    let Some(space) = space else {
+        return Err(Error::InvalidTask);
+    };
+    space.set_protected_payload(name, None)
+}
+
+/// Serves `mach_port_set_ktype`: `name`'s port in `space` stands for a
+/// user device, or nothing, for `host`.
+///
+/// # Errors
+///
+/// `InvalidHost` unless `host` is the privileged host; as `Space::set_ktype`.
+fn mach_port_set_ktype(
+    host: Option<&&Host>,
+    task: Option<&Space>,
+    name: PortName,
+    right: u32,
+    ktype: u32,
+) -> Result<(), Error> {
+    if host.is_none() {
+        return Err(Error::InvalidHost);
+    }
+    let Some(task) = task else {
+        return Err(Error::InvalidTask);
+    };
+    task.set_ktype(name, right, ktype)
 }

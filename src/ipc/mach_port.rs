@@ -303,3 +303,184 @@ impl Space {
         self.copy_out_as(port, message_type, name)
     }
 }
+
+/// Mach's `mach_port_status_t`, as its calls fill it.
+#[derive(Clone, Copy)]
+#[expect(dead_code, reason = "MIG's reply packs the record whole")]
+pub struct Status {
+    /// The set it is in, if any.
+    pub pset: u32,
+    /// The sequence number of the next message received from it.
+    pub seqno: u32,
+    /// How many send rights were made from its receive right.
+    pub mscount: u32,
+    /// How many messages it queues before senders wait.
+    pub qlimit: u32,
+    /// How many messages are queued on it.
+    pub msgcount: u32,
+    /// How many send-once rights for it there are.
+    pub sorights: u32,
+    /// Whether any send right for it exists.
+    pub srights: u32,
+    /// Whether a port-deleted notification is requested.
+    pub pdrequest: u32,
+    /// Whether a no-senders notification is requested.
+    pub nsrequest: u32,
+}
+
+/// `MACH_PORT_QLIMIT_MAX`.
+pub const MACH_PORT_QLIMIT_MAX: u32 = 16;
+
+/// `MACH_PORT_KTYPE_USER_DEVICE`.
+const MACH_PORT_KTYPE_USER_DEVICE: u32 = 28;
+
+impl Space {
+    /// The receive right `name` holds, with a reference, as
+    /// `ipc_port_translate_receive` gives it.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidTask` for a dead space, `InvalidName` if `name` denotes no
+    /// right, and `InvalidRight` if it holds no receive right.
+    ///
+    /// # Panics
+    ///
+    /// If the entry has no port.
+    pub(in crate::ipc) fn receive_port(&self, name: PortName) -> Result<Reference<Port>, Error> {
+        let state = self.state.read();
+        if !state.active {
+            return Err(Error::InvalidTask);
+        }
+        let entry = state.lookup(name).ok_or(Error::InvalidName)?;
+        if !entry.bits.rights.contains(Rights::RECEIVE) {
+            return Err(Error::InvalidRight);
+        }
+        let Some(Object::Port(port)) = &entry.object else {
+            panic!("ipc_port_translate_receive: a receive right with no port");
+        };
+        let port = port.clone();
+        drop(state);
+        Ok(port)
+    }
+
+    /// Sets the queue limit of `name`'s receive right, as
+    /// `mach_port_set_qlimit` does.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidValue` past `MACH_PORT_QLIMIT_MAX`; as `receive_port`.
+    pub fn set_queue_limit(&self, name: PortName, qlimit: u32) -> Result<(), Error> {
+        if qlimit > MACH_PORT_QLIMIT_MAX {
+            return Err(Error::InvalidValue);
+        }
+        let port = self.receive_port(name)?;
+        port.state.lock().queue_limit = qlimit;
+        Ok(())
+    }
+
+    /// The status of `name`'s receive right, as
+    /// `mach_port_get_receive_status` gives it.
+    ///
+    /// # Errors
+    ///
+    /// As `receive_port`.
+    ///
+    /// # Panics
+    ///
+    /// If the port or its set is dead: not yet.
+    pub fn receive_status(&self, name: PortName) -> Result<Status, Error> {
+        let port = self.receive_port(name)?;
+        let state = port.state.lock();
+        assert!(
+            state.active,
+            "mach_port_get_receive_status: a dead port, not yet"
+        );
+        let pset = state.set.map_or(PortName::NULL, |set| {
+            // SAFETY: the port's reference keeps the set alive.
+            let set = unsafe { set.as_ref() };
+            let set_state = set.state.lock();
+            assert!(
+                set_state.active,
+                "mach_port_get_receive_status: ipc_pset_remove, not yet"
+            );
+            set_state.local_name
+        });
+        Ok(Status {
+            pset: pset.into(),
+            seqno: state.sequence_number,
+            mscount: state.make_send_count,
+            qlimit: state.queue_limit,
+            msgcount: state.message_count,
+            sorights: state.send_once_rights,
+            srights: u32::from(state.send_rights > 0),
+            // No call requests notifications yet.
+            pdrequest: 0,
+            nsrequest: 0,
+        })
+    }
+
+    /// Sets `name`'s receive right's protected payload, or clears it for
+    /// none, as `mach_port_set_protected_payload` and
+    /// `mach_port_clear_protected_payload` do.
+    ///
+    /// # Errors
+    ///
+    /// As `receive_port`.
+    pub fn set_protected_payload(&self, name: PortName, payload: Option<u64>) -> Result<(), Error> {
+        let port = self.receive_port(name)?;
+        port.state.lock().protected_payload = payload;
+        Ok(())
+    }
+
+    /// Extracts the right `message_type` names for `name` from it, as
+    /// `mach_port_extract_right` does; gives the port's right.
+    ///
+    /// # Panics
+    ///
+    /// As `Space::copy_in`.
+    pub fn extract_right(&self, name: PortName, message_type: MessageType) -> Reference<Port> {
+        self.copy_in(name, message_type)
+    }
+
+    /// Makes `name`'s port stand for a user device, or nothing, as
+    /// `mach_port_set_ktype` does; `right` numbers the kind of right it must
+    /// hold, and `ktype` is `MACH_PORT_KTYPE_NONE` or
+    /// `MACH_PORT_KTYPE_USER_DEVICE`.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` for another kernel object or kind, `InvalidRight`
+    /// if `name` does not hold the right `right` numbers or is no port, and
+    /// as `receive_port`.
+    pub fn set_ktype(&self, name: PortName, right: u32, ktype: u32) -> Result<(), Error> {
+        let Ok(right) = Right::try_from(right) else {
+            return Err(Error::InvalidRight);
+        };
+        let user_device = match ktype {
+            0 => false,
+            MACH_PORT_KTYPE_USER_DEVICE => true,
+            _ => return Err(Error::InvalidArgument),
+        };
+        let state = self.state.read();
+        if !state.active {
+            return Err(Error::InvalidTask);
+        }
+        let entry = state.lookup(name).ok_or(Error::InvalidName)?;
+        let held = match right {
+            Right::Send => Rights::SEND,
+            Right::Receive => Rights::RECEIVE,
+            Right::SendOnce => Rights::SEND_ONCE,
+            Right::PortSet => Rights::PORT_SET,
+            Right::DeadName => Rights::DEAD_NAME,
+        };
+        if !entry.bits.rights.contains(held) {
+            return Err(Error::InvalidRight);
+        }
+        let Some(Object::Port(port)) = &entry.object else {
+            return Err(Error::InvalidRight);
+        };
+        let port = port.clone();
+        drop(state);
+        port.set_user_device(user_device)
+    }
+}

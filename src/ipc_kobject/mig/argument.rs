@@ -94,8 +94,8 @@ pub(in crate::ipc_kobject) unsafe trait Element: Copy {
 /// An out-of-line array a routine gives or gets: the copy holding it, and
 /// how many elements.
 pub(in crate::ipc_kobject) struct OutOfLine<T> {
-    /// The copy holding it.
-    copy: CacheBox<MapCopy>,
+    /// The copy holding it, or none for an empty array.
+    copy: Option<CacheBox<MapCopy>>,
     /// How many elements.
     count: usize,
     /// Their type.
@@ -106,8 +106,17 @@ impl<T: Element> OutOfLine<T> {
     /// `count` elements in `copy`.
     pub(in crate::ipc_kobject) const fn new(copy: CacheBox<MapCopy>, count: usize) -> Self {
         Self {
-            copy,
+            copy: Some(copy),
             count,
+            element: PhantomData,
+        }
+    }
+
+    /// No elements; MIG's `VM_MAP_COPY_NULL`.
+    pub(in crate::ipc_kobject) const fn empty() -> Self {
+        Self {
+            copy: None,
+            count: 0,
             element: PhantomData,
         }
     }
@@ -119,15 +128,19 @@ impl<T: Element> OutOfLine<T> {
     /// If the count is past 32 bits.
     pub(in crate::ipc_kobject) fn into_parts(self) -> (u64, usize) {
         let word = T::out_of_line_word(u32::try_from(self.count).unwrap());
-        (
-            word,
-            CacheBox::into_raw(self.copy).as_ptr().expose_provenance(),
-        )
+        let address = self.copy.map_or(0, |copy| {
+            CacheBox::into_raw(copy).as_ptr().expose_provenance()
+        });
+        (word, address)
     }
 
     /// The copy holding it.
+    ///
+    /// # Panics
+    ///
+    /// For an empty array.
     pub(in crate::ipc_kobject) fn into_copy(self) -> CacheBox<MapCopy> {
-        self.copy
+        self.copy.expect("an empty out-of-line array")
     }
 }
 

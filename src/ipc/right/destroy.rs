@@ -27,6 +27,10 @@ impl SpaceState {
     /// last has a dead-name or message-accepted request, or for a send-once or
     /// any other right: not yet. As `live_port`, `make_dead_name` and
     /// `SpaceState::deallocate`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "ipc_right_dealloc's arms, one per kind of right"
+    )]
     pub(in crate::ipc) fn release_user_reference(
         mut state: SleepLockWriteGuard<'_, Self>,
         name: PortName,
@@ -110,7 +114,45 @@ impl SpaceState {
             // As ip_release, once nothing borrows the port.
             drop(port);
         } else if rights == (Rights::SEND | Rights::RECEIVE).bits() {
-            panic!("ipc_right_dealloc: MACH_PORT_TYPE_SEND_RECEIVE, not yet");
+            assert!(
+                entry.bits.user_references > 0,
+                "ipc_right_dealloc: a send and receive right with no user references"
+            );
+            let Some(Object::Port(port)) = &entry.object else {
+                panic!("ipc_right_dealloc: a send and receive right with no port");
+            };
+            let port = port.clone();
+            let mut port_state = port.state.lock();
+            assert!(
+                port_state.active,
+                "ipc_right_dealloc: a dead port's send and receive right"
+            );
+            assert!(
+                port_state.send_rights > 0,
+                "ipc_right_dealloc: a port with no send right"
+            );
+            port_state.send_rights -= 1;
+            drop(port_state);
+            if entry.bits.user_references == 1 {
+                let Self {
+                    map, reverse_map, ..
+                } = &mut *state;
+                let entry = map
+                    .get_mut(name.key())
+                    .expect("ipc_right_dealloc: no entry");
+                // The send right goes; the receive right stays.
+                entry.bits.rights.remove(Rights::SEND);
+                entry.bits.user_references = 0;
+                reverse_map.remove(port.reverse_key());
+            } else {
+                state
+                    .map
+                    .get_mut(name.key())
+                    .expect("ipc_right_dealloc: no entry")
+                    .bits
+                    .user_references -= 1;
+            }
+            drop(state);
         } else {
             panic!("ipc_right_dealloc: KERN_INVALID_RIGHT, not yet");
         }

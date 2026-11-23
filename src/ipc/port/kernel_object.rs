@@ -8,6 +8,7 @@ use core::ptr::NonNull;
 use super::port::Port;
 use crate::device::Device;
 use crate::device::pager::Pager;
+use crate::error::Error;
 use crate::host::Host;
 use crate::ipc::space::Space;
 use crate::processor::processor::Processor;
@@ -58,6 +59,8 @@ pub enum KernelObject {
     Task(NonNull<Task>),
     /// A thread's port.
     Thread(NonNull<Thread>),
+    /// A user device's port, which its driver marks for Mach.
+    UserDevice,
     /// An I/O permission's port, for the ports `from` through `to`.
     IoPerm {
         #[expect(dead_code, reason = "i386_io_perm_modify reads it")]
@@ -77,6 +80,35 @@ impl Port {
     /// for, alive or not.
     pub fn replace_kernel_object(&self, object: Option<KernelObject>) -> Option<KernelObject> {
         mem::replace(&mut self.state.lock().kernel_object, object)
+    }
+
+    /// Makes it stand for a user device, or nothing, as
+    /// `ipc_kobject_set_locked` does for `MACH_PORT_KTYPE_USER_DEVICE`; only
+    /// while it stands for nothing or one already.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidArgument` if it stands for another kernel object.
+    ///
+    /// # Panics
+    ///
+    /// If it is dead.
+    pub fn set_user_device(&self, user_device: bool) -> Result<(), Error> {
+        let mut state = self.state.lock();
+        assert!(state.active, "ipc_kobject_set_locked: a dead port");
+        match state.kernel_object {
+            None => {
+                state.kernel_object = user_device.then_some(KernelObject::UserDevice);
+            }
+            Some(KernelObject::UserDevice) => {
+                if !user_device {
+                    state.kernel_object = None;
+                }
+            }
+            Some(_) => return Err(Error::InvalidArgument),
+        }
+        drop(state);
+        Ok(())
     }
 
     /// What it stands for, while it is alive.
