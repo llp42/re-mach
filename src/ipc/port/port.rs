@@ -56,14 +56,12 @@ impl Port {
         // release below.
         let set = unsafe { pointer.as_ref() };
         set.return_port_messages(self, state);
-        let active = set.active();
         let last = set.release();
         if last {
             // SAFETY: the last reference was this port's, and the set's box
             // came from its cache; nothing uses it after.
             drop(unsafe { CacheBox::from_raw(&crate::ipc::port_set::CACHE, NonNull::from(set)) });
         }
-        assert!(active, "ipc_port_clear_receiver: a dead port set");
     }
 
     /// Destroys the port, alive, cleared of its receiver and of locked state

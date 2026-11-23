@@ -378,8 +378,8 @@ impl Port {
             return Ok(());
         }
         assert!(
-            state.messages.is_empty() && state.receivers.is_empty(),
-            "ipc_pset_move: moving messages and waking receivers, not yet"
+            state.receivers.is_empty(),
+            "ipc_pset_move: waking receivers, not yet"
         );
         if old.is_none() && set.is_none() {
             return Err(Error::NotInSet);
