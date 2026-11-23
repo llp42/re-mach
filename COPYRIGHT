@@ -42,6 +42,10 @@ SPDX-FileCopyrightText: 1993-1988 Carnegie Mellon University
 SPDX-FileContributor: David B. Golub
 SPDX-License-Identifier: CMU-Mach
 
+SPDX-FileName: device/cons.c
+SPDX-FileCopyrightText: 1988-1994 The University of Utah and the Computer Systems Laboratory (CSL)
+SPDX-License-Identifier: LicenseRef-CMU-CSL
+
 SPDX-FileName: device/dev_lookup.c
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988 Carnegie Mellon University
 SPDX-FileContributor: David B. Golub
@@ -140,6 +144,10 @@ SPDX-FileCopyrightText: 2010-2014 Free Software Foundation, Inc.
 SPDX-FileContributor: Richard Braun
 SPDX-License-Identifier: GPL-2.0-or-later
 
+SPDX-FileName: i386/i386at/mbinfo.c
+SPDX-FileCopyrightText: 2024 Free Software Foundation, Inc.
+SPDX-License-Identifier: GPL-2.0-or-later
+
 SPDX-FileName: i386/i386at/ioapic.c
 SPDX-FileCopyrightText: 2019 Free Software Foundation, Inc.
 SPDX-License-Identifier: GPL-2.0-or-later
@@ -196,6 +204,10 @@ SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
 SPDX-FileContributor: David B. Golub
 SPDX-License-Identifier: CMU-Mach
 
+SPDX-FileName: include/device/device_reply.defs
+SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
+SPDX-License-Identifier: CMU-Mach
+
 SPDX-FileName: include/device/tty_status.h
 SPDX-FileCopyrightText: 1991, 1990 Carnegie Mellon University
 SPDX-FileContributor: David B. Golub
@@ -249,6 +261,14 @@ SPDX-FileCopyrightText: 1994-1988 Carnegie Mellon University
 SPDX-FileCopyrightText: 1993, 1994 The University of Utah and the Computer Systems Laboratory (CSL)
 SPDX-License-Identifier: LicenseRef-CMU-CSL
 
+SPDX-FileName: include/mach/memory_object.defs
+SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
+SPDX-License-Identifier: CMU-Mach
+
+SPDX-FileName: include/mach/memory_object_default.defs
+SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
+SPDX-License-Identifier: CMU-Mach
+
 SPDX-FileName: include/mach/machine.h
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
 SPDX-FileContributor: Avadis Tevanian, Jr.
@@ -260,6 +280,10 @@ SPDX-License-Identifier: CMU-Mach
 
 SPDX-FileName: include/mach/mig_errors.h
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
+SPDX-License-Identifier: CMU-Mach
+
+SPDX-FileName: include/mach/notify.defs
+SPDX-FileCopyrightText: 1991, 1990, 1989 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
 
 SPDX-FileName: include/mach/policy.h
@@ -278,6 +302,10 @@ SPDX-License-Identifier: CMU-Mach
 SPDX-FileName: include/mach/task_info.h
 SPDX-FileCopyrightText: 1993-1987 Carnegie Mellon University
 SPDX-License-Identifier: CMU-Mach
+
+SPDX-FileName: include/mach/task_notify.defs
+SPDX-FileCopyrightText: 2014 Free Software Foundation
+SPDX-License-Identifier: GPL-2.0-or-later
 
 SPDX-FileName: include/mach/task_special_ports.h
 SPDX-FileCopyrightText: 1991, 1990, 1989, 1988, 1987 Carnegie Mellon University
