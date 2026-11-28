@@ -9,7 +9,7 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
+use tailq::{Link, TailQueue};
 
 use crate::arch::{PAGE_SIZE, PhysAddr};
 use crate::error::Error;
@@ -60,7 +60,7 @@ const _: () = assert!(size_of::<CacheInfo>() == 15 * 8);
 /// A cache's untyped state.
 pub struct RawCache {
     /// Its place in the list of caches.
-    list_link: LinkedListAtomicLink,
+    list_link: Link,
     /// Its name, as `host_slab_info` reports it.
     name: &'static str,
     /// The size its users ask for.
@@ -97,7 +97,7 @@ impl RawCache {
         let buffer_size = object_size.next_multiple_of(align);
         assert!(buffer_size <= slab_size, "slab: objects larger than a slab");
         Self {
-            list_link: LinkedListAtomicLink::new(),
+            list_link: Link::new(),
             name,
             object_size,
             align,
@@ -114,16 +114,18 @@ impl RawCache {
                 objects: 0,
             }),
             lists: Spinlock::new(SlabLists {
-                partial: LinkedList::new(PageQueueAdapter::NEW),
-                free: LinkedList::new(PageQueueAdapter::NEW),
-                exhausted: LinkedList::new(PageQueueAdapter::NEW),
+                partial: TailQueue::new(),
+                free: TailQueue::new(),
+                exhausted: TailQueue::new(),
             }),
         }
     }
 
     /// Adds the cache to the list of caches.
     pub fn register(&'static self) {
-        CACHES.lock().push_back(self);
+        // SAFETY: the cache is `'static`, and only this list writes its link,
+        // under the lock.
+        unsafe { CACHES.lock().push_back_ptr(NonNull::from(self)) };
     }
 
     /// Its information, as `host_slab_info` reports it.
@@ -179,25 +181,38 @@ impl RawCache {
                 // The lists' lock is taken inside the CPU's slot.
                 let mut lists = self.lists.lock();
                 if let Some(page) = cpu.active.take() {
-                    lists.exhausted.push_back(page);
+                    // SAFETY: a slab's page lives while listed, and only one
+                    // slab list writes its queue link, under the lists' lock.
+                    unsafe { lists.exhausted.push_back_ptr(NonNull::from(page)) };
                 }
                 if lists.partial.is_empty() && lists.free.is_empty() {
                     // Sorts up to 16; those left exhausted go to the end.
-                    let mut left = LinkedList::new(PageQueueAdapter::NEW);
+                    let mut left = TailQueue::new();
                     for _ in 0..16 {
-                        let Some(page) = lists.exhausted.pop_front() else {
+                        let Some(page) = lists.exhausted.pop_front_ptr() else {
                             break;
                         };
-                        let freed = page.slab.free.count();
-                        match freed {
-                            0 => left.push_back(page),
-                            _ if freed == self.buffers_per_slab => lists.free.push_back(page),
-                            _ => lists.partial.push_back(page),
+                        // SAFETY: as above, moved from one list to another.
+                        unsafe {
+                            let freed = page.as_ref().slab.free.count();
+                            match freed {
+                                0 => left.push_back_ptr(page),
+                                _ if freed == self.buffers_per_slab => {
+                                    lists.free.push_back_ptr(page);
+                                }
+                                _ => lists.partial.push_back_ptr(page),
+                            }
                         }
                     }
-                    lists.exhausted.back_mut().splice_after(left);
+                    lists.exhausted.append(&mut left);
                 }
-                if let Some(page) = lists.partial.pop_front().or_else(|| lists.free.pop_front()) {
+                if let Some(page) = lists
+                    .partial
+                    .pop_front_ptr()
+                    .or_else(|| lists.free.pop_front_ptr())
+                    // SAFETY: the lists hold only `&'static Page`.
+                    .map(|page| unsafe { page.as_ref() })
+                {
                     // All carved; while listed only frees change its free word, so it
                     // is not 0.
                     cpu.active = Some(page);
@@ -233,7 +248,8 @@ impl RawCache {
                     let mut cpu = self.cpus.lock();
                     cpu.slabs += 1;
                     self.nr_slabs.fetch_add(1, Ordering::Relaxed);
-                    self.lists.lock().free.push_back(page);
+                    // SAFETY: as above.
+                    unsafe { self.lists.lock().free.push_back_ptr(NonNull::from(page)) };
                     drop(cpu);
                     continue;
                 }
@@ -412,12 +428,12 @@ struct Chain {
 /// A cache's slabs no CPU hands objects out from, each carved whole.
 struct SlabLists {
     /// Those with some objects free.
-    partial: LinkedList<PageQueueAdapter>,
+    partial: TailQueue<'static, PageQueueAdapter>,
     /// Those with every object free.
-    free: LinkedList<PageQueueAdapter>,
+    free: TailQueue<'static, PageQueueAdapter>,
     /// Those with no object free when last looked at; frees since are found
     /// by sorting them.
-    exhausted: LinkedList<PageQueueAdapter>,
+    exhausted: TailQueue<'static, PageQueueAdapter>,
 }
 
 /// One CPU's share of a cache.
@@ -437,13 +453,7 @@ struct CpuSlabs {
     objects: isize,
 }
 
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    CacheAdapter = &'static RawCache: RawCache { list_link => LinkedListAtomicLink }
-);
+tailq::adapter!(CacheAdapter = RawCache { list_link });
 
 /// A cache of objects of type `T`.
 pub struct Cache<T> {
@@ -541,8 +551,7 @@ impl<T> DerefMut for CacheBox<T> {
 }
 
 /// Every cache, for `host_slab_info` and reclaiming memory.
-static CACHES: Spinlock<LinkedList<CacheAdapter>> =
-    Spinlock::new(LinkedList::new(CacheAdapter::NEW));
+static CACHES: Spinlock<TailQueue<'static, CacheAdapter>> = Spinlock::new(TailQueue::new());
 
 /// How many caches are registered.
 pub fn cache_count() -> usize {

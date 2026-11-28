@@ -6,25 +6,17 @@
 use core::mem::ManuallyDrop;
 use core::ptr::NonNull;
 
-use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
+use tailq::{Link, TailQueue};
 
-use super::pager::PagerAdapter;
 use super::{Device, DeviceState, Kind, State};
 use crate::reference::{Count, Reference};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::Spinlock;
 
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    DeviceAdapter = UnsafeRef<Device>: Device { link => LinkedListAtomicLink }
-);
+tailq::adapter!(DeviceAdapter = Device { link });
 
 /// The devices made so far, by kind and unit; never held while allocating.
-static LOOKUP: Spinlock<LinkedList<DeviceAdapter>> =
-    Spinlock::new(LinkedList::new(DeviceAdapter::NEW));
+static LOOKUP: Spinlock<TailQueue<'static, DeviceAdapter>> = Spinlock::new(TailQueue::new());
 
 /// The cache devices come from.
 static CACHE: Cache<Device> = Cache::new("mach_device");
@@ -45,15 +37,14 @@ pub(super) fn find(name: &[u8]) -> Option<Reference<Device>> {
     let mut new = None;
     loop {
         let mut list = LOOKUP.lock();
-        let mut cursor = list.front();
+        let mut cursor = list.cursor_front();
         while cursor
-            .get()
+            .current()
             .is_some_and(|device| device.kind != kind || device.unit != unit)
         {
             cursor.move_next();
         }
-        if let Some(found) = cursor.clone_pointer() {
-            let found = NonNull::new(UnsafeRef::into_raw(found)).unwrap();
+        if let Some(found) = cursor.current_ptr() {
             // SAFETY: a listed device stays allocated: its free panics, so
             // nothing unlinks it. The handle borrows it and never drops.
             let found = ManuallyDrop::new(unsafe { Reference::from_raw(found) });
@@ -65,8 +56,9 @@ pub(super) fn find(name: &[u8]) -> Option<Reference<Device>> {
         }
         if let Some(new) = new.take() {
             let device = CacheBox::into_raw(new);
-            // SAFETY: the box's object, given up, stays allocated while listed.
-            list.push_back(unsafe { UnsafeRef::from_raw(device.as_ptr()) });
+            // SAFETY: the box's object, given up, stays allocated while
+            // listed, and only this list writes its link, under the lock.
+            unsafe { list.push_back_ptr(device) };
             drop(list);
             // SAFETY: the box's one reference, given up above.
             return Some(unsafe { Reference::from_raw(device) });
@@ -78,12 +70,12 @@ pub(super) fn find(name: &[u8]) -> Option<Reference<Device>> {
                     references: Count::new(1),
                     kind,
                     unit,
-                    link: LinkedListAtomicLink::new(),
+                    link: Link::new(),
                     state: Spinlock::new(DeviceState {
                         state: State::Init,
                         open_count: 0,
                         port: None,
-                        pagers: LinkedList::new(PagerAdapter::NEW),
+                        pagers: TailQueue::new(),
                     }),
                 })
                 .unwrap_or_else(|error| panic!("device_lookup: {error:?}")),
@@ -102,7 +94,7 @@ pub(super) unsafe fn free(device: NonNull<Device>) {
         let mut list = LOOKUP.lock();
         // SAFETY: a device at its last reference was listed, and its link
         // still points into the list.
-        unsafe { list.cursor_mut_from_ptr(device.as_ptr()) }.remove();
+        unsafe { list.remove_ptr(device) };
     }
     // SAFETY: every device is a `CACHE` box, given up by
     // `CacheBox::into_raw`; nothing uses this one after.

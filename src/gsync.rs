@@ -4,9 +4,9 @@
 //! Global synchronisation: threads that wait on a word of memory, hashed
 //! into buckets by where the word is.
 
-use core::ptr;
+use core::ptr::{self, NonNull};
 
-use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
+use tailq::{Link, TailQueue};
 
 use crate::arch::{self, Machine as _};
 use crate::error::Error;
@@ -62,25 +62,19 @@ impl Key {
 /// A thread waiting on a word.
 pub struct Waiter {
     /// Its place in its bucket.
-    link: LinkedListAtomicLink,
+    link: Link,
     /// Where the word is.
     key: Key,
     /// The thread.
     thread: &'static Thread,
 }
 
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    WaiterAdapter = UnsafeRef<Waiter>: Waiter { link => LinkedListAtomicLink }
-);
+tailq::adapter!(WaiterAdapter = Waiter { link });
 
 /// The threads waiting on the words that hash to one bucket.
 struct Bucket {
     /// The waiters, in key order, each key's in the order they came.
-    waiters: Token<LinkedList<WaiterAdapter>>,
+    waiters: Token<TailQueue<'static, WaiterAdapter>>,
 }
 
 /// How many buckets there are.
@@ -89,7 +83,7 @@ const BUCKET_COUNT: usize = 512;
 /// The buckets, each alone on its cache lines.
 static BUCKETS: [CachePadded<Bucket>; BUCKET_COUNT] = [const {
     CachePadded::new(Bucket {
-        waiters: Token::new(LinkedList::new(WaiterAdapter::NEW)),
+        waiters: Token::new(TailQueue::new()),
     })
 }; BUCKET_COUNT];
 
@@ -167,19 +161,22 @@ pub fn wait(
         return Err(Error::InvalidArgument);
     }
     let waiter = Waiter {
-        link: LinkedListAtomicLink::new(),
+        link: Link::new(),
         key,
         thread,
     };
     // Before the first greater key: after its key's earlier waiters.
-    let mut cursor = waiters.front_mut();
-    while cursor.get().is_some_and(|other| other.key <= waiter.key) {
+    let mut cursor = waiters.cursor_front_mut();
+    while cursor
+        .current()
+        .is_some_and(|other| other.key <= waiter.key)
+    {
         cursor.move_next();
     }
     // SAFETY: the waiter stays on this stack until the function returns,
     // and leaves the list before: a wake unlinks it before it ends the wait
     // as awakened, and any other end of the wait unlinks it below.
-    cursor.insert_before(unsafe { UnsafeRef::from_raw(&raw const waiter) });
+    unsafe { cursor.insert_before_ptr(NonNull::from(&waiter)) };
     if flags.contains(Flags::TIMED) {
         sched::wait::will_wait_with_timeout(milliseconds);
     } else {
@@ -195,7 +192,7 @@ pub fn wait(
             let mut waiters = bucket.waiters.lock();
             if waiter.link.is_linked() {
                 // SAFETY: still linked, it is on its bucket's list, this one.
-                unsafe { waiters.cursor_mut_from_ptr(&raw const waiter) }.remove();
+                unsafe { waiters.remove_ptr(NonNull::from(&waiter)) };
             }
             drop(waiters);
             Err(Error::TimedOut)
@@ -266,20 +263,22 @@ pub fn wake(
         );
     }
     // The first waiter with the key: the list is in key order.
-    let mut cursor = waiters.front_mut();
-    while cursor.get().is_some_and(|waiter| waiter.key < key) {
+    let mut cursor = waiters.cursor_front_mut();
+    while cursor.current().is_some_and(|waiter| waiter.key < key) {
         cursor.move_next();
     }
-    if cursor.get().is_none_or(|waiter| waiter.key != key) {
+    if cursor.current().is_none_or(|waiter| waiter.key != key) {
         drop(waiters);
         return Err(Error::InvalidArgument);
     }
     loop {
         // Unlinked and read before the wake: a woken waiter's frame may go
         // at once.
-        let thread = cursor.remove().unwrap().thread;
+        // SAFETY: a waiter's frame lives until it is woken, below.
+        let thread = unsafe { cursor.remove_current_ptr().unwrap().as_ref() }.thread;
         sched::wait::clear_wait(thread, WaitResult::Awakened);
-        if !flags.contains(Flags::BROADCAST) || cursor.get().is_none_or(|waiter| waiter.key != key)
+        if !flags.contains(Flags::BROADCAST)
+            || cursor.current().is_none_or(|waiter| waiter.key != key)
         {
             break;
         }

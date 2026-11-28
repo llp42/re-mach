@@ -7,7 +7,7 @@ use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, Ordering};
 
-use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
+use tailq::{Link, TailQueue};
 
 use crate::config::MAX_CPUS;
 use crate::error::Error;
@@ -20,15 +20,14 @@ use crate::sched::priority::{Priority, SYSTEM_PRIORITY};
 use crate::slab::CacheBox;
 use crate::smp;
 use crate::sync::{Token, TokenGuard};
-use crate::task::task::{SetTaskAdapter, Task};
-use crate::thread::thread::{SetThreadAdapter, Thread};
+use crate::task::task::Task;
+use crate::thread::thread::Thread;
 
 use super::all_sets::{ALL_SETS, DEFAULT_SET, SET_CACHE};
 use super::members::Members;
 use super::processor::Processor;
 
 /// A set of processors, and the threads that run on them.
-#[expect(dead_code, reason = "processor_set_info and thread_create read them")]
 pub struct ProcessorSet {
     /// Whether it is in use; a destroyed set is not. Changed only under
     /// `members`' token.
@@ -69,16 +68,10 @@ pub struct ProcessorSet {
     /// Its tasks and threads, and how many of each.
     pub(super) members: Token<Members>,
     /// Its place in the list of all sets.
-    all_link: LinkedListAtomicLink,
+    all_link: Link,
 }
 
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    pub AllSetsAdapter = &'static ProcessorSet: ProcessorSet { all_link => LinkedListAtomicLink }
-);
+tailq::adapter!(pub AllSetsAdapter = ProcessorSet { all_link });
 
 impl ProcessorSet {
     /// A new set, not in use yet, with one reference, no processor and no
@@ -100,12 +93,12 @@ impl ProcessorSet {
             port: AtomicPtr::new(ptr::null_mut()),
             name_port: AtomicPtr::new(ptr::null_mut()),
             members: Token::new(Members {
-                tasks: LinkedList::new(SetTaskAdapter::NEW),
+                tasks: TailQueue::new(),
                 task_count: 0,
-                threads: LinkedList::new(SetThreadAdapter::NEW),
+                threads: TailQueue::new(),
                 thread_count: 0,
             }),
-            all_link: LinkedListAtomicLink::new(),
+            all_link: Link::new(),
         }
     }
 
@@ -337,9 +330,11 @@ impl ProcessorSet {
         };
         // SAFETY: the task is on this set's list, which it joined in
         // `add_task`, and both tokens keep it there.
-        unsafe { old_members.tasks.cursor_mut_from_ptr(task) }.remove();
+        unsafe { old_members.tasks.remove_ptr(NonNull::from(task)) };
         old_members.task_count -= 1;
-        new_members.tasks.push_back(task);
+        // SAFETY: the task lives while in a set, and only its set's list
+        // writes its set link, under both tokens.
+        unsafe { new_members.tasks.push_back_ptr(NonNull::from(task)) };
         new_members.task_count += 1;
         task.set
             .store(ptr::from_ref(new).cast_mut(), Ordering::Release);
@@ -374,7 +369,9 @@ impl ProcessorSet {
     /// Takes `thread`, new and in no set, into its `members`; the thread
     /// keeps the reference the caller took for it.
     pub(crate) fn add_thread(&self, members: &mut Members, thread: &'static Thread) {
-        members.threads.push_back(thread);
+        // SAFETY: the thread lives until `remove_thread`, and only this list
+        // writes its set link, under the token.
+        unsafe { members.threads.push_back_ptr(NonNull::from(thread)) };
         thread.set_processor_set(Some(self));
         members.thread_count += 1;
     }
@@ -383,7 +380,7 @@ impl ProcessorSet {
     pub(crate) fn remove_thread(members: &mut Members, thread: &Thread) {
         // SAFETY: the thread is on this list, which it joined as it was
         // created.
-        unsafe { members.threads.cursor_mut_from_ptr(thread) }.remove();
+        unsafe { members.threads.remove_ptr(NonNull::from(thread)) };
         thread.set_processor_set(None);
         members.thread_count -= 1;
     }
@@ -476,7 +473,9 @@ impl ProcessorSet {
     /// Adds it to the list of all sets.
     pub(super) fn join_all(&'static self) {
         let mut all = ALL_SETS.lock();
-        all.list.push_back(self);
+        // SAFETY: a set lives while listed, and only this list writes its
+        // link, under the token.
+        unsafe { all.list.push_back_ptr(NonNull::from(self)) };
         all.count += 1;
         drop(all);
     }
@@ -485,7 +484,9 @@ impl ProcessorSet {
     /// caller took for it.
     pub(crate) fn add_task(&self, task: &'static Task) {
         let mut members = self.members.lock();
-        members.tasks.push_back(task);
+        // SAFETY: the task lives until `remove_task`, and only its set's list
+        // writes its set link, under the token.
+        unsafe { members.tasks.push_back_ptr(NonNull::from(task)) };
         task.set
             .store(ptr::from_ref(self).cast_mut(), Ordering::Release);
         members.task_count += 1;
@@ -505,7 +506,7 @@ impl ProcessorSet {
             "pset_remove_task: a task in another set, not yet"
         );
         // SAFETY: the task is on this list, which it joined in `add_task`.
-        unsafe { members.tasks.cursor_mut_from_ptr(task) }.remove();
+        unsafe { members.tasks.remove_ptr(NonNull::from(task)) };
         task.set.store(ptr::null_mut(), Ordering::Release);
         members.task_count -= 1;
         drop(members);
@@ -543,7 +544,7 @@ unsafe impl Counted for ProcessorSet {
         );
         drop(members);
         // SAFETY: the set is on this list, which it joined in `join_all`.
-        unsafe { all.list.cursor_mut_from_ptr(this) }.remove();
+        unsafe { all.list.remove_ptr(NonNull::from(this)) };
         all.count -= 1;
         drop(all);
         // SAFETY: a `SET_CACHE` box `create` gave up, with that box's

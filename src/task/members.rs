@@ -6,7 +6,7 @@ use core::mem::{ManuallyDrop, MaybeUninit};
 use core::ptr::{self, NonNull};
 use core::slice;
 
-use intrusive_collections::LinkedList;
+use tailq::TailQueue;
 
 use crate::error::Error;
 use crate::kalloc;
@@ -31,7 +31,7 @@ pub struct TaskMembers {
     /// How many times users stopped the task; the first suspends it.
     pub(super) user_stop_count: u32,
     /// The threads, in the order the task took them.
-    pub(super) threads: LinkedList<TaskThreadAdapter>,
+    pub(super) threads: TailQueue<'static, TaskThreadAdapter>,
     /// How many threads there are.
     pub(super) thread_count: u32,
     /// The task's name, ending with a NUL.
@@ -47,7 +47,9 @@ impl Task {
         // The thread's, which it keeps.
         Reference::into_raw(Reference::clone(&task));
         members.thread_count += 1;
-        members.threads.push_back(thread);
+        // SAFETY: the thread lives until `remove_thread`, and only this list
+        // writes its task link, under the token.
+        unsafe { members.threads.push_back_ptr(NonNull::from(thread)) };
     }
 
     /// Lets `thread`, being freed, out of its `members`; gives back the
@@ -60,7 +62,7 @@ impl Task {
         members.thread_count -= 1;
         // SAFETY: the thread is on this list, which it joined as it was
         // created.
-        unsafe { members.threads.cursor_mut_from_ptr(thread) }.remove();
+        unsafe { members.threads.remove_ptr(NonNull::from(thread)) };
         // SAFETY: the thread's reference, which it gives up here.
         unsafe { Reference::from_raw(NonNull::from(self)) }
     }

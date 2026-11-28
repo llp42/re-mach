@@ -5,9 +5,8 @@
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicUsize, Ordering};
 
-use intrusive_collections::{
-    KeyAdapter, LinkedListAtomicLink, RBTreeAtomicLink, intrusive_adapter,
-};
+use intrusive_collections::{KeyAdapter, RBTreeAtomicLink, intrusive_adapter};
+use tailq::Link;
 
 use super::pool::pages;
 use super::queue::{QUEUES, color};
@@ -21,7 +20,7 @@ use crate::vm::object::object::Object;
 pub struct Page {
     /// Its place in the page queue it is on, or in its cache's list while it
     /// is a slab.
-    queue_link: LinkedListAtomicLink,
+    queue_link: Link,
     /// Its place in its object's tree, while it belongs to one.
     object_link: RBTreeAtomicLink,
     /// The object it belongs to; null while it belongs to none. Changed
@@ -53,7 +52,7 @@ impl Page {
     /// One on no queue, in no object.
     pub(super) const fn new() -> Self {
         Self {
-            queue_link: LinkedListAtomicLink::new(),
+            queue_link: Link::new(),
             object_link: RBTreeAtomicLink::new(),
             object: AtomicPtr::new(ptr::null_mut()),
             offset: AtomicUsize::new(0),
@@ -392,13 +391,7 @@ impl<'a> KeyAdapter<'a> for PageTreeAdapter {
     }
 }
 
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    pub PageQueueAdapter = &'static Page: Page { queue_link => LinkedListAtomicLink }
-);
+tailq::adapter!(pub PageQueueAdapter = Page { queue_link });
 
 /// The cache fictitious pages come from: pages outside the page array, such
 /// as placeholders.

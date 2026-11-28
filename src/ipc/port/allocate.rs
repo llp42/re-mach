@@ -4,19 +4,17 @@
 
 use core::ptr::{self, NonNull};
 
-use intrusive_collections::LinkedList;
+use tailq::TailQueue;
 
 use super::port::{Port, Receiver};
 use super::port_name::PortName;
 use super::state::PortState;
 use crate::error::Error;
-use crate::ipc::kernel_message;
 use crate::ipc::object;
 use crate::ipc::space::{self, Space};
 use crate::reference::{Count, Reference};
 use crate::slab::{Cache, CacheBox};
 use crate::sync::Spinlock;
-use crate::thread::thread::IpcQueueAdapter;
 impl Port {
     /// A new live port that `receiver` receives on, with one reference and
     /// no rights out, as `ipc_port_init` sets it up.
@@ -33,11 +31,11 @@ impl Port {
                 kernel_object: None,
                 set: None,
                 sequence_number: 0,
-                messages: LinkedList::new(kernel_message::QueueAdapter::NEW),
+                messages: TailQueue::new(),
                 message_count: 0,
                 // MACH_PORT_QLIMIT_DEFAULT.
                 queue_limit: 5,
-                receivers: LinkedList::new(IpcQueueAdapter::NEW),
+                receivers: TailQueue::new(),
                 protected_payload: None,
                 orphaned: false,
                 no_senders: None,

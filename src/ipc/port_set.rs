@@ -7,7 +7,7 @@ use core::mem::size_of;
 use core::ptr::{self, NonNull};
 use core::slice;
 
-use intrusive_collections::LinkedList;
+use tailq::TailQueue;
 
 use super::entry::Rights;
 use super::kernel_message;
@@ -43,7 +43,7 @@ pub(super) struct PortSetState {
     /// Its name in the space that holds it.
     pub(in crate::ipc) local_name: PortName,
     /// The messages queued on it, oldest first.
-    pub(super) messages: LinkedList<kernel_message::QueueAdapter>,
+    pub(super) messages: TailQueue<'static, kernel_message::QueueAdapter>,
     /// How many messages are queued on it.
     pub(super) message_count: u32,
     /// How many messages it queues before senders wait.
@@ -51,7 +51,7 @@ pub(super) struct PortSetState {
     /// The sequence number of the next message received from it.
     pub(super) sequence_number: u32,
     /// The threads waiting to receive from it, latest first.
-    pub(super) receivers: LinkedList<IpcQueueAdapter>,
+    pub(super) receivers: TailQueue<'static, IpcQueueAdapter>,
 }
 
 impl PortSet {
@@ -62,12 +62,12 @@ impl PortSet {
                 active: true,
                 references: 1,
                 local_name: PortName::NULL,
-                messages: LinkedList::new(kernel_message::QueueAdapter::NEW),
+                messages: TailQueue::new(),
                 // MACH_PORT_QLIMIT_DEFAULT.
                 message_count: 0,
                 queue_limit: 5,
                 sequence_number: 0,
-                receivers: LinkedList::new(IpcQueueAdapter::NEW),
+                receivers: TailQueue::new(),
             }),
         }
     }
@@ -184,11 +184,13 @@ impl PortSet {
     pub(super) fn return_port_messages(&self, port: &Port, port_state: &mut PortState) {
         let mut state = self.state.lock();
         let mut moved = 0;
-        let mut cursor = state.messages.front_mut();
-        while let Some(message) = cursor.get() {
+        let mut cursor = state.messages.cursor_front_mut();
+        while let Some(message) = cursor.current() {
             if message.header().remote_port == ptr::from_ref(port).addr() {
                 let message = kernel_message::KernelMessage::from_queued(
-                    cursor.remove().expect("ipc_mqueue_move: no message"),
+                    cursor
+                        .remove_current_ptr()
+                        .expect("ipc_mqueue_move: no message"),
                 );
                 moved += 1;
                 port_state.message_count += 1;

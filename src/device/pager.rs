@@ -8,7 +8,8 @@
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
-use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
+use intrusive_collections::UnsafeRef;
+use tailq::Link;
 
 use super::{Device, Kind, time};
 use crate::arch::PhysAddr;
@@ -19,13 +20,7 @@ use crate::slab::{Cache, CacheBox};
 use crate::vm::Protection;
 use crate::vm::object::{self, offset::Offset, state::CopyStrategy};
 
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    pub(super) PagerAdapter = UnsafeRef<Pager>: Pager { link => LinkedListAtomicLink }
-);
+tailq::adapter!(pub(super) PagerAdapter = Pager { link });
 
 /// The cache pagers come from.
 static CACHE: Cache<Pager> = Cache::new("dev_pager");
@@ -51,7 +46,7 @@ pub struct Pager {
     /// `into_raw`; null until it serves one.
     name: AtomicPtr<Port>,
     /// Its place in its device's pager list.
-    link: LinkedListAtomicLink,
+    link: Link,
 }
 
 /// Sets up the device pager, on the boot CPU.
@@ -101,12 +96,12 @@ pub(super) fn setup(
             client_count: AtomicU32::new(0),
             request: AtomicPtr::new(ptr::null_mut()),
             name: AtomicPtr::new(ptr::null_mut()),
-            link: LinkedListAtomicLink::new(),
+            link: Link::new(),
         })
         .unwrap_or_else(|_| panic!("device_pager_setup: KERN_RESOURCE_SHORTAGE, not yet"));
     let address = CacheBox::into_raw(pager);
     // SAFETY: the box's object, given up, stays allocated while listed.
-    let pager = unsafe { UnsafeRef::from_raw(address.as_ptr()) };
+    let pager = unsafe { address.as_ref() };
     // dev_pager_hash_insert: its port stands for it.
     pager
         .port
@@ -118,7 +113,9 @@ pub(super) fn setup(
         state.pagers.iter().all(|other| other.offset != offset),
         "device_pager_setup: an existing pager, not yet"
     );
-    state.pagers.push_back(pager);
+    // SAFETY: as above, and only this list writes its link, under the
+    // device's lock.
+    unsafe { state.pagers.push_back_ptr(address) };
     drop(state);
     send
 }
@@ -192,14 +189,12 @@ pub unsafe fn terminate(
         "device_pager_terminate: another client"
     );
     // dev_pager_hash_delete and dev_device_hash_delete: the list lets it go.
-    let address = UnsafeRef::into_raw(record);
+    let address = NonNull::new(UnsafeRef::into_raw(record)).unwrap();
     // SAFETY: the record stays allocated while listed.
-    let device = unsafe { &(*address).device };
-    let mut state = device.state.lock();
+    let record = unsafe { address.as_ref() };
+    let mut state = record.device.state.lock();
     // SAFETY: the record is on its device's list.
-    let record = unsafe { state.pagers.cursor_mut_from_ptr(address) }
-        .remove()
-        .expect("device_pager_terminate: not listed");
+    unsafe { state.pagers.remove_ptr(address) };
     drop(state);
     // The send rights device_pager_init_pager kept.
     // SAFETY: each slot holds the reference its right gave up, taken here.
@@ -220,5 +215,5 @@ pub unsafe fn terminate(
     // mach_device_deallocate.
     // SAFETY: records are `CACHE` boxes `setup` gave up with `into_raw`, and
     // off its list nothing else uses this one.
-    drop(unsafe { CacheBox::from_raw(&CACHE, NonNull::new(UnsafeRef::into_raw(record)).unwrap()) });
+    drop(unsafe { CacheBox::from_raw(&CACHE, address) });
 }

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 
-use core::ptr;
+use core::ptr::{self, NonNull};
 
 use crate::clock;
 use crate::config::HZ;
@@ -68,7 +68,9 @@ pub fn assert_wait(event: Option<Event>) {
         );
     }
     if let Some(event) = event {
-        cpu.sleep_queues()[event.hash()].push_back(thread);
+        // SAFETY: the thread lives while it waits, and only its sleep queue
+        // writes its sleep link, under the CPU's lock.
+        unsafe { cpu.sleep_queues()[event.hash()].push_back_ptr(NonNull::from(thread)) };
         thread.set_wait_event(Some(event));
     }
     thread.insert_state(ThreadState::WAIT | ThreadState::UNINTERRUPTIBLE);
@@ -121,13 +123,14 @@ pub fn sleep<T>(event: Event, guard: SpinlockGuard<'_, T>) {
 pub fn wakeup(event: Event) {
     let _section = CriticalSection::enter();
     let mut queues = smp::current().sleep_queues();
-    let mut cursor = queues[event.hash()].front_mut();
-    while let Some(thread) = cursor.get() {
+    let mut cursor = queues[event.hash()].cursor_front_mut();
+    while let Some(thread) = cursor.current() {
         if thread.wait_event() != Some(event) {
             cursor.move_next();
             continue;
         }
-        let thread = cursor.remove().unwrap();
+        // SAFETY: `assert_wait` queues only `&'static Thread`.
+        let thread = unsafe { cursor.remove_current_ptr().unwrap().as_ref() };
         thread.set_wait_event(None);
         clock::timeout::reset_timeout_check(thread.timer());
         let state = thread.state();
@@ -168,7 +171,7 @@ pub fn clear_wait(thread: &'static Thread, result: WaitResult) {
         let mut queues = cpu.sleep_queues();
         // SAFETY: a waiting thread is on its last CPU's queue for its event,
         // this CPU by the check above.
-        unsafe { queues[event.hash()].cursor_mut_from_ptr(thread) }.remove();
+        unsafe { queues[event.hash()].remove_ptr(NonNull::from(thread)) };
         drop(queues);
         thread.set_wait_event(None);
     }

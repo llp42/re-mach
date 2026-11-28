@@ -2,9 +2,10 @@
 // SPDX-FileCopyrightText: 2026 Leonardo Lopes Pereira <leonardolopespereira@outlook.com>
 // Inspired by GNU Mach; see COPYRIGHT.
 
+use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use intrusive_collections::LinkedList;
+use tailq::TailQueue;
 
 use super::page::{Page, PageQueueAdapter};
 use crate::sync::{CachePadded, Spinlock};
@@ -24,7 +25,7 @@ pub(super) struct PageQueue {
     /// and read without it to pass an empty queue by.
     pub(super) pages: AtomicUsize,
     /// The pages.
-    list: Spinlock<LinkedList<PageQueueAdapter>>,
+    list: Spinlock<TailQueue<'static, PageQueueAdapter>>,
     /// Where a search from it last found a page after passing 8 or more
     /// empty queues, as that colour plus one; 0 for none, or once a page is
     /// found on it first. A hint, so Relaxed: it only moves where a search
@@ -37,7 +38,7 @@ impl PageQueue {
     const fn new() -> Self {
         Self {
             pages: AtomicUsize::new(0),
-            list: Spinlock::new(LinkedList::new(PageQueueAdapter::NEW)),
+            list: Spinlock::new(TailQueue::new()),
             last: AtomicUsize::new(0),
         }
     }
@@ -45,7 +46,9 @@ impl PageQueue {
     /// Puts `page` at its end, counting it in its pool's `total` too.
     fn push(&self, page: &'static Page, total: &AtomicUsize) {
         let mut list = self.list.lock();
-        list.push_back(page);
+        // SAFETY: a page is `'static`, and only the queue it is on writes its
+        // queue link, under that queue's lock.
+        unsafe { list.push_back_ptr(NonNull::from(page)) };
         // The count changes only under the lock.
         self.pages
             .store(self.pages.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
@@ -61,7 +64,7 @@ impl PageQueue {
     unsafe fn remove(&self, page: &'static Page, total: &AtomicUsize) {
         let mut list = self.list.lock();
         // SAFETY: the caller's.
-        unsafe { list.cursor_mut_from_ptr(page).remove() };
+        unsafe { list.remove_ptr(NonNull::from(page)) };
         // The count changes only under the lock.
         self.pages
             .store(self.pages.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
@@ -76,7 +79,8 @@ impl PageQueue {
             return None;
         }
         let mut list = self.list.lock();
-        let page = list.pop_front()?;
+        // SAFETY: the queue holds only `&'static Page`.
+        let page = unsafe { list.pop_front_ptr()?.as_ref() };
         // The count changes only under the lock.
         self.pages
             .store(self.pages.load(Ordering::Relaxed) - 1, Ordering::Relaxed);

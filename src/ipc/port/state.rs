@@ -4,7 +4,7 @@
 
 use core::ptr::NonNull;
 
-use intrusive_collections::LinkedList;
+use tailq::TailQueue;
 
 use super::kernel_object::KernelObject;
 use super::port::{Port, Receiver};
@@ -39,13 +39,13 @@ pub(in crate::ipc) struct PortState {
     /// The sequence number of the next message received from it.
     pub(in crate::ipc) sequence_number: u32,
     /// The messages queued on it, oldest first.
-    pub(in crate::ipc) messages: LinkedList<kernel_message::QueueAdapter>,
+    pub(in crate::ipc) messages: TailQueue<'static, kernel_message::QueueAdapter>,
     /// How many messages are queued on it.
     pub(in crate::ipc) message_count: u32,
     /// How many messages it queues before senders wait.
     pub(in crate::ipc) queue_limit: u32,
     /// The threads waiting to receive from it, latest first.
-    pub(in crate::ipc) receivers: LinkedList<IpcQueueAdapter>,
+    pub(in crate::ipc) receivers: TailQueue<'static, IpcQueueAdapter>,
     /// What its received messages carry in place of its name, if set.
     pub(in crate::ipc) protected_payload: Option<u64>,
     /// Whether, as a reply port, its thread ended: it is destroyed once every

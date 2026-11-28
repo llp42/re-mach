@@ -8,7 +8,8 @@ use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
 };
 
-use intrusive_collections::{LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
+use intrusive_collections::UnsafeRef;
+use tailq::Link;
 
 use crate::ast::Ast;
 use crate::clock;
@@ -39,15 +40,15 @@ pub const TIMER_RATE: u32 = 1_000_000;
 #[expect(dead_code, reason = "thread_freeze reads may_assign")]
 pub struct Thread {
     /// Its place in the sleep queue it waits on.
-    pub(super) sleep_link: LinkedListAtomicLink,
+    pub(super) sleep_link: Link,
     /// Its place in the run queue it waits on.
-    pub(super) run_link: LinkedListAtomicLink,
+    pub(super) run_link: Link,
     /// Its place in its task's threads.
-    pub(super) task_link: LinkedListAtomicLink,
+    pub(super) task_link: Link,
     /// Its place in its set's threads.
-    pub(super) set_link: LinkedListAtomicLink,
+    pub(super) set_link: Link,
     /// Its place in the queue of a port it waits on.
-    pub(super) ipc_link: LinkedListAtomicLink,
+    pub(super) ipc_link: Link,
     /// How many references it has.
     pub(super) references: Count,
     /// Its task.
@@ -131,45 +132,15 @@ pub struct Thread {
     pub(super) asts: AtomicU32,
 }
 
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    pub SleepQueueAdapter = &'static Thread: Thread { sleep_link => LinkedListAtomicLink }
-);
+tailq::adapter!(pub SleepQueueAdapter = Thread { sleep_link });
 
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    pub RunQueueAdapter = &'static Thread: Thread { run_link => LinkedListAtomicLink }
-);
+tailq::adapter!(pub RunQueueAdapter = Thread { run_link });
 
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    pub TaskThreadAdapter = &'static Thread: Thread { task_link => LinkedListAtomicLink }
-);
+tailq::adapter!(pub TaskThreadAdapter = Thread { task_link });
 
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    pub SetThreadAdapter = &'static Thread: Thread { set_link => LinkedListAtomicLink }
-);
+tailq::adapter!(pub SetThreadAdapter = Thread { set_link });
 
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    pub IpcQueueAdapter = &'static Thread: Thread { ipc_link => LinkedListAtomicLink }
-);
+tailq::adapter!(pub IpcQueueAdapter = Thread { ipc_link });
 
 impl Thread {
     /// Its task, which lives while it has threads.
@@ -224,7 +195,7 @@ impl Thread {
     }
 
     /// Whether it is on the queue of a port it waits on.
-    pub(crate) fn is_queued_to_receive(&self) -> bool {
+    pub(crate) const fn is_queued_to_receive(&self) -> bool {
         self.ipc_link.is_linked()
     }
 

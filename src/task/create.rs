@@ -6,7 +6,7 @@ use core::mem::ManuallyDrop;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
-use intrusive_collections::{LinkedList, LinkedListAtomicLink};
+use tailq::{Link, TailQueue};
 
 use crate::arch::{self, MAX_USER_ADDRESS, MIN_USER_ADDRESS, Machine as _};
 use crate::clock;
@@ -21,7 +21,6 @@ use crate::reference::{Count, Reference};
 use crate::sched::priority::USER_PRIORITY;
 use crate::slab::{Cache, CacheBox};
 use crate::sync::{OnceLock, Spinlock, Token};
-use crate::thread::thread::TaskThreadAdapter;
 use crate::vm::VirtualAddress;
 use crate::vm::kernel::KERNEL_MAP;
 use crate::vm::map::map::Map;
@@ -165,12 +164,12 @@ fn create_with_map(map: &'static Map, parent: Option<&Task>) -> Result<&'static 
             max_priority: DEFAULT_SET.max_priority(),
             suspend_count: 0,
             user_stop_count: 0,
-            threads: LinkedList::new(TaskThreadAdapter::NEW),
+            threads: TailQueue::new(),
             thread_count: 0,
             name: Name::new(),
         }),
         set: AtomicPtr::new(ptr::null_mut()),
-        set_link: LinkedListAtomicLink::new(),
+        set_link: Link::new(),
     })?;
     // The parent's set, or the default set if it is out of use, and the
     // parent's priorities, under its token; else the default set. The set

@@ -62,9 +62,9 @@ pub(super) fn queue(message: KernelMessage, options: Options) {
         set_state.message_count += 1;
         message.enqueue(&mut set_state.messages);
         // The oldest, with a reference that keeps it through the wake.
-        let receiver = set_state.receivers.pop_back().map(|receiver| {
+        let receiver = set_state.receivers.pop_back_ptr().map(|receiver| {
             // SAFETY: a thread lives while it waits on a set's queue.
-            unsafe { Reference::upgrade(NonNull::from(receiver)) }
+            unsafe { Reference::upgrade(receiver) }
                 .expect("ipc_mqueue_send: a receiver being freed")
         });
         drop(set_state);
@@ -93,10 +93,9 @@ pub(super) fn queue(message: KernelMessage, options: Options) {
     port_state.message_count += 1;
     message.enqueue(&mut port_state.messages);
     // The oldest, with a reference that keeps it through the wake.
-    let receiver = port_state.receivers.pop_back().map(|receiver| {
+    let receiver = port_state.receivers.pop_back_ptr().map(|receiver| {
         // SAFETY: a thread lives while it waits on a port's queue.
-        unsafe { Reference::upgrade(NonNull::from(receiver)) }
-            .expect("ipc_mqueue_send: a receiver being freed")
+        unsafe { Reference::upgrade(receiver) }.expect("ipc_mqueue_send: a receiver being freed")
     });
     // An orphaned reply port with every send-once right in its queue has no
     // receiver to come: destroyed below, with a reference of its own.
@@ -171,7 +170,9 @@ pub(super) fn dequeue<'a>(
             Some(milliseconds) => sched::wait::will_wait_with_timeout(milliseconds),
             None => sched::wait::will_wait(),
         }
-        port_state.receivers.push_front(thread);
+        // SAFETY: the thread lives while it waits, and only this queue
+        // writes its IPC link, under the port's lock.
+        unsafe { port_state.receivers.push_front_ptr(NonNull::from(thread)) };
         drop(port_state);
         sched::switch::block();
         port_state = port.state.lock();
@@ -191,7 +192,7 @@ pub(super) fn dequeue<'a>(
         }
         // Still queued, it woke for no message: MACH_RCV_IN_PROGRESS.
         // SAFETY: still linked, it is on the one queue it joined, this one.
-        unsafe { port_state.receivers.cursor_mut_from_ptr(thread) }.remove();
+        unsafe { port_state.receivers.remove_ptr(NonNull::from(thread)) };
         match thread.wait_result() {
             WaitResult::TimedOut => {
                 assert!(
@@ -248,7 +249,9 @@ pub(super) fn dequeue_set<'a>(
             Some(milliseconds) => sched::wait::will_wait_with_timeout(milliseconds),
             None => sched::wait::will_wait(),
         }
-        set_state.receivers.push_front(thread);
+        // SAFETY: the thread lives while it waits, and only this queue
+        // writes its IPC link, under the set's lock.
+        unsafe { set_state.receivers.push_front_ptr(NonNull::from(thread)) };
         drop(set_state);
         sched::switch::block();
         set_state = set.state.lock();
@@ -263,7 +266,7 @@ pub(super) fn dequeue_set<'a>(
             continue;
         }
         // SAFETY: still linked, it is on the one queue it joined, this one.
-        unsafe { set_state.receivers.cursor_mut_from_ptr(thread) }.remove();
+        unsafe { set_state.receivers.remove_ptr(NonNull::from(thread)) };
         match thread.wait_result() {
             WaitResult::TimedOut => {
                 assert!(

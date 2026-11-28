@@ -40,7 +40,14 @@ pub fn halt_self() {
     // It stays on this CPU until it blocks: the list it joins and the
     // sleep queue woken below are this CPU's.
     let section = CriticalSection::enter();
-    smp::current().dead_threads().lock().push_back(thread);
+    // SAFETY: the list's reference keeps the thread alive, and off the run
+    // queues only this list writes its run link, under the lock.
+    unsafe {
+        smp::current()
+            .dead_threads()
+            .lock()
+            .push_back_ptr(NonNull::from(thread));
+    }
     thread.insert_state(ThreadState::HALTED);
     drop(section);
     sched::wait::wakeup(Event::of(&REAPER));
@@ -64,12 +71,12 @@ pub fn reaper_thread() -> ! {
         // No thread that ends between the last look and the wait is missed.
         let mut section = CriticalSection::enter();
         while let Some(thread) =
-            (0..MAX_CPUS).find_map(|cpu| smp::of(cpu).dead_threads().lock().pop_front())
+            (0..MAX_CPUS).find_map(|cpu| smp::of(cpu).dead_threads().lock().pop_front_ptr())
         {
             drop(section);
             // SAFETY: a dead list holds the reference of its thread's being
             // alive, given up here.
-            let thread = unsafe { Reference::from_raw(NonNull::from(thread)) };
+            let thread = unsafe { Reference::from_raw(thread) };
             thread.wait_until_stopped();
             drop(thread);
             section = CriticalSection::enter();

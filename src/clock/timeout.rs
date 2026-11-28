@@ -3,10 +3,10 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! Timeouts, in a wheel for each CPU.
 
-use core::ptr;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
-use intrusive_collections::{LinkedList, LinkedListAtomicLink, intrusive_adapter};
+use tailq::{Link, TailQueue};
 
 use crate::smp;
 use crate::sync::{CriticalSection, OnceLock, Spinlock};
@@ -25,7 +25,7 @@ bitflags::bitflags! {
 /// A function to call once some ticks have passed.
 pub struct Timeout {
     /// Its place in the wheel slot of its deadline.
-    link: LinkedListAtomicLink,
+    link: Link,
     /// What it calls, with itself, at its deadline.
     pub(super) function: fn(&'static Self),
     /// What its function works on; null for nothing.
@@ -42,7 +42,7 @@ impl Timeout {
     /// One that calls `function`, with no argument, not set.
     pub const fn new(function: fn(&'static Self)) -> Self {
         Self {
-            link: LinkedListAtomicLink::new(),
+            link: Link::new(),
             function,
             argument: AtomicPtr::new(ptr::null_mut()),
             deadline: AtomicU64::new(0),
@@ -62,13 +62,7 @@ impl Timeout {
     }
 }
 
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    pub TimeoutAdapter = &'static Timeout: Timeout { link => LinkedListAtomicLink }
-);
+tailq::adapter!(pub TimeoutAdapter = Timeout { link });
 
 /// How many slots a wheel has; a timeout waits in the slot of its deadline
 /// modulo this.
@@ -78,7 +72,7 @@ pub const WHEEL_SLOTS: usize = 256;
 /// spinlock so any CPU can set or cancel one.
 pub struct Wheel {
     /// Each slot's timeouts, unsorted.
-    slots: [Spinlock<LinkedList<TimeoutAdapter>>; WHEEL_SLOTS],
+    slots: [Spinlock<TailQueue<'static, TimeoutAdapter>>; WHEEL_SLOTS],
     /// How many ticks its CPU has taken since boot.
     pub(super) ticks: AtomicU64,
     /// The last tick whose timeouts have run, moved under that tick's slot
@@ -96,7 +90,7 @@ impl Wheel {
     /// One with no timeout.
     pub const fn new() -> Self {
         Self {
-            slots: [const { Spinlock::new(LinkedList::new(TimeoutAdapter::NEW)) }; WHEEL_SLOTS],
+            slots: [const { Spinlock::new(TailQueue::new()) }; WHEEL_SLOTS],
             ticks: AtomicU64::new(0),
             checked_ticks: AtomicU64::new(0),
             thread: OnceLock::new(),
@@ -110,7 +104,7 @@ impl Wheel {
     }
 
     /// The slot of the timeouts due at `tick`.
-    pub(super) fn slot(&self, tick: u64) -> &Spinlock<LinkedList<TimeoutAdapter>> {
+    pub(super) fn slot(&self, tick: u64) -> &Spinlock<TailQueue<'static, TimeoutAdapter>> {
         &self.slots[usize::try_from(tick % u64::try_from(WHEEL_SLOTS).unwrap()).unwrap()]
     }
 }
@@ -140,7 +134,9 @@ pub fn set_timeout(timeout: &'static Timeout, ticks: u64) {
         (TimeoutFlags::ACTIVE | TimeoutFlags::PENDING).bits(),
         Ordering::Relaxed,
     );
-    slot.push_back(timeout);
+    // SAFETY: the timeout is `'static`, and only its slot writes its link,
+    // under the slot's lock.
+    unsafe { slot.push_back_ptr(NonNull::from(timeout)) };
     drop(slot);
 }
 
@@ -154,7 +150,7 @@ fn reset_timeout(timeout: &'static Timeout) {
         let wheel = smp::of(timeout.wheel.load(Ordering::Relaxed)).timeouts();
         let mut slot = wheel.slot(timeout.deadline.load(Ordering::Relaxed)).lock();
         // SAFETY: pending, it is on that slot's list.
-        unsafe { slot.cursor_mut_from_ptr(timeout) }.remove();
+        unsafe { slot.remove_ptr(NonNull::from(timeout)) };
         drop(slot);
     }
     timeout.flags.fetch_and(

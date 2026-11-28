@@ -11,7 +11,7 @@ use core::mem::{ManuallyDrop, offset_of};
 use core::ptr::{self, NonNull};
 use core::slice;
 
-use intrusive_collections::{LinkedList, LinkedListAtomicLink, UnsafeRef, intrusive_adapter};
+use tailq::{Link, TailQueue};
 
 use header::Header;
 
@@ -31,20 +31,14 @@ pub struct KernelMessage(NonNull<Buffer>);
 #[repr(C)]
 pub(super) struct Buffer {
     /// Its place in the queue of the port it waits on.
-    link: LinkedListAtomicLink,
+    link: Link,
     /// Its size, in bytes.
     size: usize,
     /// The message's header.
     header: Header,
 }
 
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    pub(super) QueueAdapter = UnsafeRef<Buffer>: Buffer { link => LinkedListAtomicLink }
-);
+tailq::adapter!(pub(super) QueueAdapter = Buffer { link });
 
 impl Buffer {
     /// Its message's header.
@@ -94,7 +88,7 @@ impl KernelMessage {
         // a `Buffer`.
         unsafe {
             buffer.cast::<u8>().write_bytes(0, size);
-            (&raw mut (*buffer.as_ptr()).link).write(LinkedListAtomicLink::new());
+            (&raw mut (*buffer.as_ptr()).link).write(Link::new());
             (&raw mut (*buffer.as_ptr()).size).write(size);
         }
         Ok(Self(buffer))
@@ -142,23 +136,21 @@ impl KernelMessage {
 
     /// Puts it last on `queue`, a port's, which takes it, as
     /// `ipc_kmsg_enqueue` does.
-    pub(super) fn enqueue(self, queue: &mut LinkedList<QueueAdapter>) {
+    pub(super) fn enqueue(self, queue: &mut TailQueue<'static, QueueAdapter>) {
         let message = ManuallyDrop::new(self);
         // SAFETY: the buffer is ours alone, given up to the queue.
-        queue.push_back(unsafe { UnsafeRef::from_raw(message.0.as_ptr()) });
+        unsafe { queue.push_back_ptr(message.0) };
     }
 
     /// The message whose buffer `buffer` is, taken off its queue.
-    pub(in crate::ipc) fn from_queued(buffer: UnsafeRef<Buffer>) -> Self {
-        Self(NonNull::new(UnsafeRef::into_raw(buffer)).unwrap())
+    pub(in crate::ipc) const fn from_queued(buffer: NonNull<Buffer>) -> Self {
+        Self(buffer)
     }
 
     /// The first message on `queue`, a port's, taken off it, as
     /// `ipc_kmsg_rmqueue_first` does; `None` if it is empty.
-    pub(super) fn dequeue(queue: &mut LinkedList<QueueAdapter>) -> Option<Self> {
-        queue
-            .pop_front()
-            .map(|buffer| Self(NonNull::new(UnsafeRef::into_raw(buffer)).unwrap()))
+    pub(super) fn dequeue(queue: &mut TailQueue<'static, QueueAdapter>) -> Option<Self> {
+        queue.pop_front_ptr().map(Self)
     }
 
     /// Destroys it, as `ipc_kmsg_destroy` does: the rights its header

@@ -7,7 +7,8 @@ use core::ops::Range;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
 
-use intrusive_collections::{Bound, LinkedList, RBTree, UnsafeRef};
+use intrusive_collections::{Bound, RBTree, UnsafeRef};
+use tailq::TailQueue;
 
 use super::object::{CACHE, Object, PersistingAdapter};
 use super::offset::Offset;
@@ -311,4 +312,4 @@ impl ObjectState {
 /// The unreferenced objects kept in case they are used again, until memory
 /// runs low.
 #[expect(dead_code, reason = "vm_object_deallocate and vm_object_lookup use it")]
-static PERSISTING: LinkedList<PersistingAdapter> = LinkedList::new(PersistingAdapter::NEW);
+static PERSISTING: TailQueue<'static, PersistingAdapter> = TailQueue::new();

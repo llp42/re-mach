@@ -3,7 +3,7 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 
 use core::ops::DerefMut;
-use core::ptr;
+use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, Ordering};
 
 use crate::collections::ArrayVec;
@@ -14,7 +14,7 @@ use crate::sched::queue::{RUN_QUEUES, RunQueue};
 use crate::sched::switch::MAX_STUCK_THREADS;
 use crate::smp;
 use crate::sync::{CpuLock, CriticalSection, OnceLock};
-use crate::thread::thread::{RunQueueAdapter, Thread};
+use crate::thread::thread::Thread;
 
 use super::set::ProcessorSet;
 use super::state::State;
@@ -67,7 +67,7 @@ impl Processor {
             // SAFETY: only `run_queues` locks it, once it checked the CPU.
             run_queues: unsafe {
                 CpuLock::new(RunQueues {
-                    lists: [const { RunQueue::new(RunQueueAdapter::NEW) }; RUN_QUEUES],
+                    lists: [const { RunQueue::new() }; RUN_QUEUES],
                     bound: 0,
                 })
             },
@@ -175,7 +175,9 @@ impl Processor {
     pub(crate) fn enqueue(&self, thread: &'static Thread) {
         let mut queues = self.run_queues();
         let priority = thread.scheduled_priority().index();
-        queues.lists[priority].push_back(thread);
+        // SAFETY: the thread lives while queued, and only its run queue
+        // writes its run link, under the lock.
+        unsafe { queues.lists[priority].push_back_ptr(NonNull::from(thread)) };
         if thread.bound().is_some() {
             queues.bound += 1;
         } else {
@@ -191,13 +193,10 @@ impl Processor {
         let RunQueues { lists, bound } = &mut *queues;
         // Its priority changes only off the run queues. Found by address: a
         // dead list shares its link.
-        let mut cursor = lists[thread.scheduled_priority().index()].front_mut();
-        while let Some(queued) = cursor.get() {
-            if !ptr::eq(queued, thread) {
-                cursor.move_next();
-                continue;
-            }
-            cursor.remove();
+        if let Some(mut cursor) =
+            lists[thread.scheduled_priority().index()].cursor_mut_find_ptr(NonNull::from(thread))
+        {
+            let _ = cursor.remove_current_ptr();
             if thread.bound().is_some() {
                 *bound -= 1;
             } else {
@@ -245,10 +244,13 @@ impl Processor {
         let mut queues = self.run_queues();
         let bound_only = queues.bound > 0;
         let Some(thread) = queues.lists.iter_mut().find_map(|list| {
-            let mut cursor = list.front_mut();
-            while let Some(thread) = cursor.get() {
+            let mut cursor = list.cursor_front_mut();
+            while let Some(thread) = cursor.current() {
                 if !bound_only || thread.bound().is_some() {
-                    return cursor.remove();
+                    // SAFETY: `enqueue` takes only `&'static Thread`.
+                    return cursor
+                        .remove_current_ptr()
+                        .map(|thread| unsafe { thread.as_ref() });
                 }
                 cursor.move_next();
             }
@@ -275,8 +277,8 @@ impl Processor {
         let mut queues = self.run_queues();
         let RunQueues { lists, bound } = &mut *queues;
         for list in lists {
-            let mut cursor = list.front_mut();
-            while let Some(thread) = cursor.get() {
+            let mut cursor = list.cursor_front_mut();
+            while let Some(thread) = cursor.current() {
                 if !thread.is_stuck() {
                     cursor.move_next();
                     continue;
@@ -284,7 +286,8 @@ impl Processor {
                 if stuck.is_full() {
                     return true;
                 }
-                let thread = cursor.remove().unwrap();
+                // SAFETY: `enqueue` takes only `&'static Thread`.
+                let thread = unsafe { cursor.remove_current_ptr().unwrap().as_ref() };
                 if thread.bound().is_some() {
                     *bound -= 1;
                 } else {

@@ -5,7 +5,7 @@
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
-use intrusive_collections::{LinkedListAtomicLink, intrusive_adapter};
+use tailq::Link;
 
 use crate::clock::time::AtomicTimeValue;
 use crate::ipc::space::Space;
@@ -20,7 +20,6 @@ use super::members::TaskMembers;
 use super::ports::TaskPorts;
 
 /// A task; so far only what a new task sets.
-#[expect(dead_code, reason = "the task calls read them")]
 pub struct Task {
     /// How many references it has.
     pub(super) references: Count,
@@ -58,16 +57,10 @@ pub struct Task {
     /// The processor set its threads run on; set as the set takes it.
     pub(crate) set: AtomicPtr<ProcessorSet>,
     /// Its place in its set's tasks.
-    pub(super) set_link: LinkedListAtomicLink,
+    pub(super) set_link: Link,
 }
 
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    pub SetTaskAdapter = &'static Task: Task { set_link => LinkedListAtomicLink }
-);
+tailq::adapter!(pub SetTaskAdapter = Task { set_link });
 
 // SAFETY: its count is its own, and every task but the kernel's, whose own
 // references never drop, is a box of `CACHE`, which `free` takes back.

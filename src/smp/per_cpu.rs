@@ -7,7 +7,7 @@ use core::ops::DerefMut;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering, compiler_fence};
 
-use intrusive_collections::LinkedList;
+use tailq::TailQueue;
 
 use crate::arch;
 use crate::ast::Ast;
@@ -15,7 +15,7 @@ use crate::clock::timeout::Wheel;
 use crate::processor::processor::Processor;
 use crate::sched::queue::{SLEEP_QUEUES, SleepQueue};
 use crate::sync::{CpuLock, CriticalSection, Spinlock};
-use crate::thread::thread::{RunQueueAdapter, SleepQueueAdapter, Thread};
+use crate::thread::thread::{RunQueueAdapter, Thread};
 
 /// One CPU's machine-independent data, held in the machine's part.
 pub struct PerCpu {
@@ -39,7 +39,7 @@ pub struct PerCpu {
     active_thread: AtomicPtr<Thread>,
     /// The threads that ended on it, waiting for the reaper, linked as on
     /// a run queue.
-    dead_threads: Spinlock<LinkedList<RunQueueAdapter>>,
+    dead_threads: Spinlock<TailQueue<'static, RunQueueAdapter>>,
     /// Its timeouts; only it runs them.
     timeouts: Wheel,
     /// The ASTs pending on it, a bit per reason.
@@ -61,12 +61,10 @@ impl PerCpu {
             spinlocks: AtomicU32::new(0),
             tokens: AtomicU32::new(0),
             // SAFETY: only `sleep_queues` locks it, once it checked the CPU.
-            sleep_queues: unsafe {
-                CpuLock::new([const { SleepQueue::new(SleepQueueAdapter::NEW) }; SLEEP_QUEUES])
-            },
+            sleep_queues: unsafe { CpuLock::new([const { SleepQueue::new() }; SLEEP_QUEUES]) },
             processor: Processor::new(),
             active_thread: AtomicPtr::new(ptr::null_mut()),
-            dead_threads: Spinlock::new(LinkedList::new(RunQueueAdapter::NEW)),
+            dead_threads: Spinlock::new(TailQueue::new()),
             timeouts: Wheel::new(),
             pending_asts: AtomicU32::new(0),
         }
@@ -93,7 +91,7 @@ impl PerCpu {
     }
 
     /// The threads that ended on it, waiting for the reaper.
-    pub const fn dead_threads(&self) -> &Spinlock<LinkedList<RunQueueAdapter>> {
+    pub const fn dead_threads(&self) -> &Spinlock<TailQueue<'static, RunQueueAdapter>> {
         &self.dead_threads
     }
 

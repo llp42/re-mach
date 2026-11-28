@@ -27,17 +27,19 @@ pub fn softclock() -> ! {
             // unlocked, so it can set itself again.
             loop {
                 let mut slot = wheel.slot(tick).lock();
-                let mut cursor = slot.front_mut();
+                let mut cursor = slot.cursor_front_mut();
                 while cursor
-                    .get()
+                    .current()
                     .is_some_and(|timeout| timeout.deadline.load(Ordering::Relaxed) != tick)
                 {
                     cursor.move_next();
                 }
-                let Some(timeout) = cursor.remove() else {
+                let Some(timeout) = cursor.remove_current_ptr() else {
                     wheel.checked_ticks.store(tick, Ordering::Relaxed);
                     break;
                 };
+                // SAFETY: `set_timeout` queues only `&'static Timeout`.
+                let timeout = unsafe { timeout.as_ref() };
                 timeout
                     .flags
                     .fetch_and(!TimeoutFlags::PENDING.bits(), Ordering::Relaxed);

@@ -110,10 +110,9 @@ impl Task {
         let mut members = self.members.lock();
         assert!(members.active, "task_release: an inactive task, not yet");
         members.suspend_count -= 1;
-        let mut cursor = members.threads.front();
-        while let Some(thread) = cursor.clone_pointer() {
-            thread.release();
-            cursor.move_next();
+        for thread in members.threads.iter_ptr() {
+            // SAFETY: `add_thread` takes only `&'static Thread`.
+            unsafe { thread.as_ref() }.release();
         }
         drop(members);
     }

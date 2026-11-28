@@ -4,7 +4,7 @@
 
 use core::sync::atomic::AtomicBool;
 
-use intrusive_collections::LinkedList;
+use tailq::TailQueue;
 
 use crate::slab::Cache;
 use crate::sync::{OnceLock, Token};
@@ -14,14 +14,14 @@ use super::set::{AllSetsAdapter, ProcessorSet};
 
 /// Every processor set, and how many there are.
 pub struct AllSets {
-    pub(crate) list: LinkedList<AllSetsAdapter>,
+    pub(crate) list: TailQueue<'static, AllSetsAdapter>,
     pub(super) count: u32,
 }
 
 /// The processor sets, behind one token: they change only as sets are
 /// created and destroyed.
 pub static ALL_SETS: Token<AllSets> = Token::new(AllSets {
-    list: LinkedList::new(AllSetsAdapter::NEW),
+    list: TailQueue::new(),
     count: 0,
 });
 

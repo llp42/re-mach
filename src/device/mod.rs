@@ -15,7 +15,7 @@ mod time;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use intrusive_collections::{LinkedList, LinkedListAtomicLink};
+use tailq::{Link, TailQueue};
 
 use crate::arch::{self, Machine as _};
 use crate::error::Error;
@@ -60,7 +60,7 @@ pub struct Device {
     /// Its unit.
     unit: u32,
     /// Its place in the lookup list.
-    link: LinkedListAtomicLink,
+    link: Link,
     /// Its state.
     state: Spinlock<DeviceState>,
 }
@@ -75,7 +75,7 @@ struct DeviceState {
     /// Its port, once opening.
     port: Option<Reference<Port>>,
     /// Its pagers, one per offset.
-    pagers: LinkedList<pager::PagerAdapter>,
+    pagers: TailQueue<'static, pager::PagerAdapter>,
 }
 
 /// How far a device is open; only the states used here.

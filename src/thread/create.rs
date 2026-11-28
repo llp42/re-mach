@@ -8,7 +8,8 @@ use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
 };
 
-use intrusive_collections::{LinkedListAtomicLink, UnsafeRef};
+use intrusive_collections::UnsafeRef;
+use tailq::Link;
 
 use crate::arch;
 use crate::clock;
@@ -76,11 +77,11 @@ impl Thread {
         // A full share of a processor.
         let sched_usage = TIMER_RATE * SCHEDULER_SCALE;
         let mut thread = CACHE.allocate(Self {
-            sleep_link: LinkedListAtomicLink::new(),
-            run_link: LinkedListAtomicLink::new(),
-            task_link: LinkedListAtomicLink::new(),
-            set_link: LinkedListAtomicLink::new(),
-            ipc_link: LinkedListAtomicLink::new(),
+            sleep_link: Link::new(),
+            run_link: Link::new(),
+            task_link: Link::new(),
+            set_link: Link::new(),
+            ipc_link: Link::new(),
             // One for being alive, one for the caller.
             references: Count::new(2),
             // SAFETY: a task lives while it has threads.

@@ -6,7 +6,8 @@ use core::mem::ManuallyDrop;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use intrusive_collections::{LinkedListAtomicLink, RBTree, UnsafeRef, intrusive_adapter};
+use intrusive_collections::RBTree;
+use tailq::Link;
 
 use super::external::EXTERNAL_COUNT;
 use super::offset::Offset;
@@ -29,18 +30,12 @@ pub struct Object {
     /// up by `into_raw`; null until it has one.
     pub(super) pager_name: AtomicPtr<Port>,
     /// Its place in the list of persisting objects.
-    persisting_link: LinkedListAtomicLink,
+    persisting_link: Link,
     /// Its state, behind its token.
     pub(super) state: Token<ObjectState>,
 }
 
-intrusive_adapter!(
-    #[expect(
-        clippy::expl_impl_clone_on_copy,
-        reason = "intrusive_adapter! writes Clone by hand"
-    )]
-    pub(super) PersistingAdapter = UnsafeRef<Object>: Object { persisting_link => LinkedListAtomicLink }
-);
+tailq::adapter!(pub(super) PersistingAdapter = Object { persisting_link });
 
 impl Object {
     /// A new object of `size` bytes, with one reference.
@@ -48,7 +43,7 @@ impl Object {
         Self {
             references: Count::new(1),
             pager_name: AtomicPtr::new(ptr::null_mut()),
-            persisting_link: LinkedListAtomicLink::new(),
+            persisting_link: Link::new(),
             state: Token::new(ObjectState {
                 size,
                 pages: Pages {
