@@ -21,10 +21,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413d67b29ef1021b4d60f4aa1e925ca031751e213832b4b1d588fae623c05c60"
 
 [[package]]
-name = "elf"
-version = "0.8.0"
+name = "elfldr"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55dd888a213fc57e957abf2aa305ee3e8a28dbe05687a251f33b637cd46b0070"
+checksum = "0d0fe6475f16932788046ac7fcb2c689bcb646567f56b15989d5cbba0fc32288"
+dependencies = [
+ "bitflags",
+]
 
 [[package]]
 name = "intrusive-collections"
@@ -62,7 +65,7 @@ version = "0.1.0"
 dependencies = [
  "bit_field",
  "bitflags",
- "elf",
+ "elfldr",
  "intrusive-collections",
  "lock_api",
  "mc146818",

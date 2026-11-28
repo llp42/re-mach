@@ -3,7 +3,6 @@
 // Inspired by GNU Mach; see COPYRIGHT.
 //! The bootstrap: tasks for the modules the loader brought.
 
-mod elf_load;
 mod script;
 
 use core::ffi::CStr;
@@ -36,7 +35,7 @@ use crate::vm::object::offset::Offset;
 use crate::vm::user::Mapping;
 use crate::vm::{Inheritance, Protection, VirtualAddress};
 use crate::{device, print, println, smp, vm};
-use elf_load::{Image, SectionType, Segment};
+use elfldr::{ElfParserError, ExecInfo, ExecSectype, Segment};
 use script::{Script, Value};
 
 /// Starts the boot modules' tasks: finds the modules, sets the boot
@@ -223,6 +222,9 @@ fn run_command(module: &'static BootModule, task: &'static Task, line: &[u8], ar
     print!("\n");
 }
 
+/// Where a position-independent image goes: 1 GiB, not GNU Mach's 128 MiB.
+const PIE_BASE: usize = 0x4000_0000;
+
 /// The work of a thread `run_command` makes, in its boot task: loads the
 /// module's program into the task and starts it; so far it loads the
 /// program, builds its stack and arguments, prints so, suspends the task,
@@ -240,25 +242,28 @@ fn load_program() -> ! {
     // thread is done with it.
     let info = unsafe { thread.argument().cast::<LoaderInfo<'_>>().as_ref() }
         .expect("user_bootstrap: no info");
-    let fail = |error: elf_load::Error| -> ! {
+    let fail = |error: ElfParserError| -> ! {
+        // exec.h's numbers.
+        let code = match error {
+            ElfParserError::NotElf => 6000,
+            ElfParserError::WrongArch => 6001,
+            _ => 6002,
+        };
         let path = CStr::from_bytes_until_nul(&info.line[info.arguments[0]..])
             .expect("user_bootstrap: a path with no NUL")
             .to_str()
             .expect("user_bootstrap: a path not UTF-8");
-        panic!(
-            "Cannot load user executable module (error code {}): {}",
-            i32::from(error),
-            path
-        )
+        panic!("Cannot load user executable module (error code {code}): {path}")
     };
     let range = &info.module.range;
     // SAFETY: the module's copy in boot memory, unwritten and kept until the
     // bootstrap frees it.
     let bytes =
         unsafe { slice::from_raw_parts(range.start.direct_map_ptr(), range.end - range.start) };
-    let image = elf_load::parse(bytes).unwrap_or_else(|error| fail(error));
+    let image = elfldr::parse(bytes, PIE_BASE).unwrap_or_else(|error| fail(error));
     for segment in image.segments() {
-        load_segment(&thread.task().map, bytes, &segment).unwrap_or_else(|error| fail(error));
+        let segment = segment.unwrap_or_else(|error| fail(error));
+        load_segment(&thread.task().map, bytes, &segment);
     }
     print!("task loaded:");
     // GNU Mach's argv.
@@ -291,7 +296,7 @@ fn load_program() -> ! {
 /// current thread's first user registers start the program there.
 fn build_arguments_and_stack<'a>(
     map: &Map,
-    image: &Image<'_>,
+    image: &ExecInfo<'_>,
     argv: impl Iterator<Item = &'a CStr> + Clone,
 ) {
     /// The stack's bytes.
@@ -314,13 +319,13 @@ fn build_arguments_and_stack<'a>(
         None,
         Offset::from(0),
         Mapping::Object,
-        image.stack_protection,
+        Protection::from_bits_truncate(image.stack_prot().bits()),
         Protection::all(),
         Inheritance::Copy,
     );
     let mut slot = arch::MachineState::set_user_registers(
         stack_base..stack_base + stack_size,
-        image.entry,
+        image.entry(),
         strings + slots,
     );
     let mut string = slot + slots;
@@ -342,34 +347,23 @@ fn build_arguments_and_stack<'a>(
 /// checks the segment, allocates its pages, copies its file bytes in and
 /// protects its pages as it asks.
 ///
-/// # Errors
-///
-/// `OutOfBounds` if the segment's file bytes lie past the image's end.
-///
 /// # Panics
 ///
 /// If the segment takes no memory, less than its file bytes, or pages past
 /// the address space's end, if its pages can't be allocated where it asks
 /// or protected, or if its file bytes can't be copied in.
-fn load_segment(map: &Map, bytes: &[u8], segment: &Segment) -> Result<(), elf_load::Error> {
-    if segment
-        .offset
-        .checked_add(segment.file_size)
-        .is_none_or(|end| end > bytes.len())
-    {
-        return Err(elf_load::Error::OutOfBounds);
+fn load_segment(map: &Map, bytes: &[u8], segment: &Segment) {
+    if !segment.sectype().contains(ExecSectype::ALLOC) {
+        return;
     }
-    if !segment.section_type.contains(SectionType::ALLOCATE) {
-        return Ok(());
-    }
-    assert!(segment.memory_size > 0);
-    assert!(segment.memory_size >= segment.file_size);
+    assert!(segment.mem_len() > 0);
+    assert!(segment.mem_len() >= segment.file_len());
     let end = segment
-        .address
-        .checked_add(segment.memory_size)
+        .addr()
+        .checked_add(segment.mem_len())
         .and_then(|end| end.checked_next_multiple_of(PAGE_SIZE))
         .expect("read_exec: a segment past the address space's end");
-    let pages = segment.address & !(PAGE_SIZE - 1)..end;
+    let pages = segment.addr() & !(PAGE_SIZE - 1)..end;
     let start = vm::user::allocate(
         map,
         Placement::Fixed(VirtualAddress::from(pages.start)),
@@ -377,12 +371,12 @@ fn load_segment(map: &Map, bytes: &[u8], segment: &Segment) -> Result<(), elf_lo
     )
     .unwrap_or_else(|error| panic!("read_exec: vm_allocate: {error:?}"));
     assert_eq!(usize::from(start), pages.start);
-    if segment.file_size > 0 {
-        let file = &bytes[segment.offset..segment.offset + segment.file_size];
-        arch::Current::copy_out(file, segment.address)
+    if segment.file_len() > 0 {
+        let file = &bytes[segment.file_range()];
+        arch::Current::copy_out(file, segment.addr())
             .unwrap_or_else(|error| panic!("read_exec: copyout: {error:?}"));
     }
-    let protection = Protection::from_bits_truncate(segment.section_type.bits());
+    let protection = Protection::from_bits_truncate(segment.sectype().bits());
     if protection != Protection::all() {
         vm::user::protect(
             map,
@@ -393,7 +387,6 @@ fn load_segment(map: &Map, bytes: &[u8], segment: &Segment) -> Result<(), elf_lo
         )
         .unwrap_or_else(|error| panic!("read_exec: vm_protect: {error:?}"));
     }
-    Ok(())
 }
 
 /// The boot script's insert of a port argument: a send right made for
