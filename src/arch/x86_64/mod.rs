@@ -61,6 +61,7 @@ use crate::sync::OnceLock;
 pub use address::PhysAddr;
 use boot_memory::Retention;
 pub use machine_state::MachineState;
+use mc146818::{Century, Rtc};
 use memory_layout::KERNEL_BASE;
 pub use memory_layout::{
     KERNEL_STACK_SIZE, MAX_KERNEL_ADDRESS, MAX_USER_ADDRESS, MIN_KERNEL_ADDRESS, MIN_USER_ADDRESS,
@@ -289,13 +290,22 @@ fn boot_slice<T>(len: usize) -> &'static mut [MaybeUninit<T>] {
 
 /// Sets the time of day from the real-time clock, on the boot CPU.
 fn init_time_of_day() {
-    if let Some(date) = rtc::read() {
+    let mut chip = Rtc::new(rtc::Cmos);
+    // Two-digit years are 1970 to 2069.
+    if chip.is_valid()
+        && let Ok(date) = chip.date_time(Century::window(1970))
+    {
         println!(
             "RTC time is {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-            date.year, date.month, date.day, date.hour, date.minute, date.second
+            date.year(),
+            date.month(),
+            date.day(),
+            date.hour(),
+            date.minute(),
+            date.second()
         );
         clock::time::set_time(TimeValue {
-            seconds: date.seconds(),
+            seconds: date.unix_timestamp(),
             nanoseconds: 0,
         });
     }

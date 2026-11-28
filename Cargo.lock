@@ -42,6 +42,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "mc146818"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c1c3fec2134c2f8173922381e6c8258b6b49c199d48fd1f1c639c4d342436a9"
+
+[[package]]
 name = "raw-cpuid"
 version = "11.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -59,6 +65,7 @@ dependencies = [
  "elf",
  "intrusive-collections",
  "lock_api",
+ "mc146818",
  "raw-cpuid",
  "x86_64",
 ]

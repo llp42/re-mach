@@ -20,6 +20,7 @@ bitflags = "2"
 elf = { version = "=0.8.0", default-features = false }
 intrusive-collections = { version = "0.10", default-features = false }
 lock_api = { version = "0.4", default-features = false }
+mc146818 = "0.3"
 raw-cpuid = "11"
 x86_64 = { git = "https://github.com/llp42/x86_64", branch = "master" }
 
